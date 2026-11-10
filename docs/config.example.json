@@ -6,6 +6,11 @@
     "token_env": "MARGIN_JIRA_TOKEN",
     "keychain_service": "margin-jira"
   },
+  "task_url_template": "https://linear.app/your-team/issue/{key}",
+  "github": {
+    "enterprise_hosts": ["github.your-company.com"],
+    "host_aliases": { "github-work": "github.com" }
+  },
   "note_author": null,
   "font_size": 13.0
 }

@@ -1,13 +1,13 @@
 # Margin
 
-A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on commits, branches, tasks, and the repo, plus **Jira** integration. An **MCP server** lets AI agents read and write the same notes you do.
+A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on commits, branches, tasks, and the repo, **GitHub PR status**, and **task-tracker** links (Jira API; Linear, Asana and others via URL template). An **MCP server** lets AI agents read and write the same notes you do.
 
 ![screenshot](docs/screenshot.png)
 
 | | |
 |---|---|
-| GUI binary (release, stripped) | ~12.6 MB |
-| MCP server binary | ~2.7 MB |
+| GUI binary (release, stripped) | ~12.7 MB |
+| MCP server binary | ~2.8 MB |
 | Idle CPU | ~0 (repaints only on input or when a note changes) |
 | Private memory, small repo | ~40 MB |
 
@@ -23,15 +23,24 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 
 **Notes**
 - Notes attach to `repo`, `branch:<name>`, `commit:<sha>`, and `task:<KEY>`.
+- **Two kinds of git notes:**
+  - **Branch note:** bound to the branch name. It's shown on the branch's **top commit** (a chip in the graph, and the default tab when you select the tip). It follows the branch through rebase, amend, and new commits. Use it for ongoing work.
+  - **Commit note:** bound to one exact SHA. After a rebase or amend it stays with the old commit. Use it for facts about that exact snapshot (benchmarks, review of that revision).
 - Markdown with tables, task lists, and links. **Images, raw HTML, and unsafe link schemes are rejected** on every write, from both the GUI and MCP.
 - Edit and preview modes, autosave, and clickable task checkboxes. Internal links like `margin:commit:abc123` and `margin:task:PROJ-42` navigate inside the app.
 - Concurrency-safe: versioned writes. If an agent edits the note you're editing, you get a *Load theirs / Keep mine* choice.
+
+**GitHub pull requests** (github.com and Enterprise Server). Display-only, so everything links out to GitHub.
+- Merge readiness: *Ready to merge*, *Changes requested*, *Review required*, *Merge conflicts*, *Behind base*, *Draft*, *Merged*…
+- CI status with each check (failures first, click to open the run).
+- Comments: conversation comments, reviews, and unresolved review threads (`file:line`), newest first.
+- Shown as a `#123` chip on the branch tip and in the sidebar, plus a PR card on the branch tab. One GraphQL request covers all local branches. It reloads on window focus (at most once a minute) and after fetch, pull, or push.
 
 **Tasks (Jira Cloud and Data Center)**
 - The task key is inferred from the branch name (`feature/PROJ-42-login` → `PROJ-42`), or you can link it explicitly.
 - The task card shows status, assignee, priority, and description. "My tasks" can create a branch from a ticket. The commit box offers an "Insert PROJ-42" button.
 
-**MCP (for agents)**: 14 tools. `get_context`, `git_status`, `git_log`, `git_show`, and `list_branches` read git. `read_note`, `write_note`, `append_note`, `list_notes`, `search_notes`, and `link_task` work on notes. `get_task`, `search_tasks`, and `my_tasks` read Jira. Git access is **read-only** for agents.
+**MCP (for agents)**: 15 tools. `get_context`, `git_status`, `git_log`, `git_show`, and `list_branches` read git. `read_note`, `write_note`, `append_note`, `list_notes`, `search_notes`, and `link_task` work on notes. `get_task`, `search_tasks`, and `my_tasks` read Jira. `get_pr` gives agents the PR's readiness, failing checks, and review comments, so they can address feedback. Git access is **read-only** for agents.
 
 ## Build
 
@@ -68,6 +77,20 @@ security add-generic-password -s margin-jira -a you@your-company.com -w
 ```
 
 TLS uses the OS trust store, so corporate CAs installed in the Keychain work. `HTTPS_PROXY` and `NO_PROXY` are honoured.
+
+## Configure GitHub
+
+Nothing is needed if you use the GitHub CLI: Margin reuses `gh auth token`. Otherwise set `GITHUB_TOKEN`, or add the token to the Keychain:
+
+```bash
+security add-generic-password -s margin-github -a github.com -w
+```
+
+For GitHub Enterprise Server, list your host in `github.enterprise_hosts`. If you use SSH host aliases from `~/.ssh/config` (`git@github-work:org/repo`), map them in `github.host_aliases`.
+
+## Link other task trackers
+
+Without a Jira API config, set `task_url_template` (for example `https://linear.app/acme/issue/{key}`). Task keys found in branch names then open in that tracker with one click.
 
 ## Where notes live
 

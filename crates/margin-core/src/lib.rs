@@ -7,11 +7,14 @@
 //! * `notes`    – Markdown notes attached to repo / branch / commit / task.
 //! * `markdown` – the note content policy (no images, no HTML, safe links only).
 //! * `tasks`    – task-tracker integration (Jira Cloud + Data Center).
+//! * `github`   – pull-request status (merge readiness, CI, comments).
 //! * `config`   – config + secret lookup (env var / macOS Keychain).
 
 pub mod config;
 pub mod diff;
 pub mod git;
+pub mod github;
+mod http;
 pub mod graph;
 pub mod markdown;
 pub mod notes;

@@ -5,17 +5,14 @@
 //!   * Jira Cloud        – REST v3, Basic auth (email + API token)
 //!   * Jira Data Center  – REST v2, Bearer auth (Personal Access Token)
 //!
-//! HTTP is blocking `ureq` (no async runtime → small binary); call from a
-//! worker thread. TLS uses the OS trust store (rustls-platform-verifier), so
-//! corporate TLS-inspection CAs installed in the macOS Keychain just work,
-//! and `HTTPS_PROXY`/`NO_PROXY` are honoured.
+//! HTTP goes through `crate::http` (blocking, OS trust store, env proxies);
+//! call from a worker thread.
 
 use crate::config::{JiraConfig, JiraFlavor};
 use crate::{Error, Result, bail};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
-use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Task {
@@ -85,6 +82,14 @@ pub fn extract_keys(s: &str) -> Vec<String> {
     keys
 }
 
+/// Browser URL for a task key: the API provider's URL if configured, else the
+/// `task_url_template` (works for Linear, Asana, YouTrack, … without an API token).
+pub fn task_url(cfg: &crate::config::Config, provider: Option<&dyn TaskProvider>, key: &str) -> Option<String> {
+    provider
+        .map(|p| p.browse_url(key))
+        .or_else(|| cfg.task_url_template.as_ref().map(|t| t.replace("{key}", key)))
+}
+
 pub fn provider_from_config(cfg: &crate::config::Config) -> Option<Box<dyn TaskProvider>> {
     let j = cfg.jira.as_ref()?;
     match Jira::new(j) {
@@ -116,16 +121,7 @@ impl Jira {
             (JiraFlavor::Cloud, None) => bail!("Jira Cloud needs `email` in config"),
             (JiraFlavor::DataCenter, _) => format!("Bearer {token}"),
         };
-        let tls = ureq::tls::TlsConfig::builder()
-            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-            .build();
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(20)))
-            .tls_config(tls)
-            .user_agent("margin-git-client")
-            .build()
-            .into();
-        Ok(Jira { base: cfg.base_url.trim_end_matches('/').to_string(), flavor: cfg.flavor.clone(), auth, agent })
+        Ok(Jira { base: cfg.base_url.trim_end_matches('/').to_string(), flavor: cfg.flavor.clone(), auth, agent: crate::http::agent() })
     }
 
     fn api(&self) -> &'static str {

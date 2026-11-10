@@ -96,6 +96,9 @@ pub struct RefInfo {
     pub name: String,
     pub target: String,
     pub upstream: Option<String>,
+    /// Remote of the upstream (`origin`) and its branch name on that remote.
+    pub upstream_remote: Option<String>,
+    pub upstream_branch: Option<String>,
     /// e.g. "ahead 2, behind 1"
     pub track: String,
     pub is_head: bool,
@@ -275,7 +278,7 @@ impl Repo {
         let out = self.run(&[
             "for-each-ref",
             "--sort=-committerdate",
-            "--format=%(refname)%1f%(objectname)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)",
+            "--format=%(refname)%1f%(objectname)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)%1f%(*objectname)%1f%(upstream:remotename)%1f%(upstream:remoteref)",
             "refs/heads",
             "refs/remotes",
             "refs/tags",
@@ -283,7 +286,7 @@ impl Repo {
         let mut refs = Vec::new();
         for line in out.lines() {
             let f: Vec<&str> = line.split('\x1f').collect();
-            if f.len() < 5 {
+            if f.len() < 8 {
                 continue;
             }
             let (kind, name) = if let Some(n) = f[0].strip_prefix("refs/heads/") {
@@ -301,13 +304,25 @@ impl Repo {
             refs.push(RefInfo {
                 kind,
                 name: name.to_string(),
-                target: f[1].to_string(),
+                // Annotated tags point at a tag object; use the peeled commit.
+                target: if f[5].is_empty() { f[1] } else { f[5] }.to_string(),
                 upstream: (!f[2].is_empty()).then(|| f[2].to_string()),
+                upstream_remote: (!f[6].is_empty()).then(|| f[6].to_string()),
+                upstream_branch: f[7].strip_prefix("refs/heads/").map(String::from),
                 track: f[3].to_string(),
                 is_head: f[4] == "*",
             });
         }
         Ok(refs)
+    }
+
+    pub fn remote_url(&self, remote: &str) -> Option<String> {
+        let key = format!("remote.{remote}.url");
+        self.run(&["config", "--get", &key]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+
+    pub fn remotes(&self) -> Vec<String> {
+        self.run(&["remote"]).map(|s| s.lines().map(String::from).collect()).unwrap_or_default()
     }
 
     pub fn stashes(&self) -> Result<Vec<Stash>> {

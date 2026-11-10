@@ -129,6 +129,7 @@ pub fn show(
     rv: &mut RepoView,
     task_cache: &HashMap<String, Result<Task, String>>,
     tasks_enabled: bool,
+    task_url: &dyn Fn(&str) -> Option<String>,
     author: &str,
     actions: &mut Vec<Action>,
 ) {
@@ -156,11 +157,14 @@ pub fn show(
         let dot = |has: bool| if has { " ●" } else { "" };
         if let Some(id) = &commit_id {
             let has = rv.has_note(&NoteTarget::Commit(id.clone()));
-            ui.selectable_value(&mut rv.editor.tab, NoteTab::Commit, format!("Commit {}{}", &id[..7.min(id.len())], dot(has)));
+            ui.selectable_value(&mut rv.editor.tab, NoteTab::Commit, format!("Commit {}{}", &id[..7.min(id.len())], dot(has)))
+                .on_hover_text("Bound to this exact commit. After a rebase/amend it stays with the old commit.");
         }
         if let Some(b) = &branch {
             let has = rv.has_note(&NoteTarget::Branch(b.clone()));
-            ui.selectable_value(&mut rv.editor.tab, NoteTab::Branch, format!("Branch {b}{}", dot(has)));
+            let pr = rv.prs.get(b).map(|p| format!("  #{}", p.number)).unwrap_or_default();
+            ui.selectable_value(&mut rv.editor.tab, NoteTab::Branch, format!("Branch {b}{}{pr}", dot(has)))
+                .on_hover_text("Bound to the branch name. Shown on the branch's top commit and follows it through rebase/amend.");
         }
         match &task {
             Some(k) => {
@@ -219,10 +223,19 @@ pub fn show(
     });
     ui.separator();
 
-    // ---- task card
+    // ---- PR card (branch tab) / task card (task tab)
+    if rv.editor.tab == NoteTab::Branch {
+        if let Some(b) = &branch {
+            // Own scroll region so a long review never hides the note below.
+            let max = (ui.available_height() * 0.5).max(80.0);
+            egui::ScrollArea::vertical().id_salt("pr_scroll").max_height(max).auto_shrink([false, true]).show(ui, |ui| {
+                crate::pr_view::card(ui, rv, b, actions);
+            });
+        }
+    }
     if rv.editor.tab == NoteTab::Task {
         if let Some(k) = &task {
-            task_card(ui, k, task_cache.get(k), tasks_enabled, &mut rv.editor.requested_tasks, actions);
+            task_card(ui, k, task_cache.get(k), tasks_enabled, task_url(k), &mut rv.editor.requested_tasks, actions);
         }
     }
 
@@ -300,7 +313,7 @@ pub fn show(
     if ed.dirty && !ed.external && ed.violations.is_empty() {
         if now - ed.last_edit > 1.5 {
             ed.save(&rv.notes);
-            rv.note_index = rv.notes.list().map(|l| l.into_iter().map(|m| m.target).collect()).unwrap_or_default();
+            rv.note_index = rv.notes.list().map(|l| l.into_iter().map(|m| (m.target, m.title)).collect()).unwrap_or_default();
         } else {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(400));
         }
@@ -312,11 +325,22 @@ fn task_card(
     key: &str,
     t: Option<&Result<Task, String>>,
     enabled: bool,
+    url: Option<String>,
     requested: &mut HashSet<String>,
     actions: &mut Vec<Action>,
 ) {
     if !enabled {
-        ui.weak("Configure Jira in config.json to see ticket details here.");
+        // No API configured: still one click to the tracker (Linear, Asana, Jira…).
+        match url {
+            Some(u) => {
+                if ui.link(format!("Open {key} ↗")).on_hover_text(&u).clicked() {
+                    actions.push(Action::OpenUrl(u));
+                }
+            }
+            None => {
+                ui.weak("Set `task_url_template` (or `jira`) in config.json to link tasks.");
+            }
+        }
         ui.separator();
         return;
     }

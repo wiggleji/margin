@@ -153,23 +153,72 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 sp.rect_filled(Rect::from_center_size(pos2(x + 4.0, rect.center().y), vec2(6.0, 10.0)), 1.0, theme::ACCENT);
                 x += 12.0;
             }
+            let tips = rv.tips.get(&c.id);
+            let mut hover_extra = String::new();
             for r in &c.refs {
                 let (label, color) = ref_chip(r);
-                let g = sp.layout_no_wrap(label, small.clone(), Color32::BLACK);
+                let g = sp.layout_no_wrap(label.clone(), small.clone(), Color32::BLACK);
                 let chip = Rect::from_min_size(pos2(x, rect.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(10.0, 2.0));
                 sp.rect_filled(chip, 3.0, color);
                 sp.galley(chip.min + vec2(5.0, 1.0), g, Color32::BLACK);
                 x = chip.right() + 4.0;
+
+                // Local branch tip: show its PR status and its branch note here.
+                // Branch notes are keyed by name, so after rebase/amend they
+                // simply move to the new tip commit.
+                if !tips.is_some_and(|t| t.contains(&label)) {
+                    continue;
+                }
+                if let Some(pr) = rv.prs.get(&label) {
+                    let tone = crate::pr_view::tone_color(pr.readiness().1);
+                    let g = sp.layout_no_wrap(format!("#{}", pr.number), small.clone(), tone);
+                    let chip = Rect::from_min_size(pos2(x, rect.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(16.0, 2.0));
+                    sp.rect_stroke(chip, 3.0, Stroke::new(1.0, tone), egui::StrokeKind::Inside);
+                    sp.circle_filled(pos2(chip.left() + 6.0, chip.center().y), 2.5, ci_color(pr.ci));
+                    sp.galley(chip.min + vec2(11.0, 1.0), g, tone);
+                    x = chip.right() + 4.0;
+                    hover_extra += &format!("\n\n{}", crate::pr_view::hover_summary(pr));
+                }
+                if let Some(title) = rv.note_title(&NoteTarget::Branch(label.clone())) {
+                    let short: String = title.chars().take(32).collect();
+                    let short = if short.len() < title.len() { format!("{short}…") } else { short };
+                    let g = sp.layout_no_wrap(short, small.clone(), theme::ACCENT);
+                    let chip = Rect::from_min_size(pos2(x, rect.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(18.0, 2.0));
+                    sp.rect_stroke(chip, 3.0, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
+                    note_icon(&sp, pos2(chip.left() + 7.0, chip.center().y));
+                    sp.galley(chip.min + vec2(13.0, 1.0), g, theme::ACCENT);
+                    x = chip.right() + 4.0;
+                    hover_extra += &format!("\n\nBranch note ({label}): {title}");
+                }
             }
             sp.text(pos2(x + 2.0, rect.center().y), Align2::LEFT_CENTER, &c.subject, font.clone(), theme::TEXT);
 
             if resp.clicked() {
                 actions.push(Action::Select(Sel::Commit(c.id.clone())));
             }
-            resp.on_hover_text_at_pointer(format!("{}\n{} <{}>", c.short_id(), c.author, c.email))
+            resp.on_hover_text_at_pointer(format!("{}\n{} <{}>{hover_extra}", c.short_id(), c.author, c.email))
                 .context_menu(|ui| commit_menu(ui, c, actions));
         }
     });
+}
+
+fn ci_color(ci: margin_core::github::CiState) -> Color32 {
+    use margin_core::github::CiState::*;
+    match ci {
+        Success => theme::ADDED,
+        Failure => theme::ERROR,
+        Pending => theme::ACCENT,
+        None => theme::TEXT_DIM,
+    }
+}
+
+/// Tiny "page" glyph drawn with the painter (no icon font needed).
+fn note_icon(p: &egui::Painter, c: egui::Pos2) {
+    let r = Rect::from_center_size(c, vec2(7.0, 9.0));
+    p.rect_stroke(r, 1.0, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
+    for dy in [-1.5, 1.0] {
+        p.line_segment([pos2(r.left() + 2.0, c.y + dy), pos2(r.right() - 2.0, c.y + dy)], Stroke::new(1.0, theme::ACCENT));
+    }
 }
 
 fn bg(p: &egui::Painter, rect: Rect, selected: bool, hovered: bool, alt: bool) {

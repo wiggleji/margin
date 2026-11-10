@@ -26,6 +26,7 @@ struct Server {
     notes: NoteStore,
     tasks: Option<Box<dyn TaskProvider>>,
     author: String,
+    cfg: config::Config,
 }
 
 fn main() {
@@ -55,10 +56,11 @@ fn main() {
     let notes = NoteStore::for_repo(&repo).expect("create notes dir");
     let cfg = config::load_config();
     let mut srv = Server {
-        tasks: tasks::provider_from_config(&cfg),
+        tasks: tasks::provider_from_config(&cfg).map(|p| p as Box<dyn TaskProvider>),
         author: std::env::var("MARGIN_AGENT_NAME").unwrap_or_else(|_| "agent".into()),
         repo,
         notes,
+        cfg,
     };
 
     let stdin = std::io::stdin();
@@ -251,6 +253,31 @@ impl Server {
                 let q = s("query").ok_or_else(|| Error("query is required".into()))?;
                 Ok(json!({"tasks": p.search(q, n("limit", 20))?}))
             }
+            "get_pr" => {
+                let branch = match s("branch") {
+                    Some(b) if b != "@" => b.to_string(),
+                    _ => self.current_branch()?,
+                };
+                // PR head = upstream branch name when it differs from the local name.
+                let head = self
+                    .repo
+                    .refs()?
+                    .into_iter()
+                    .find(|r| r.kind == margin_core::git::RefKind::Local && r.name == branch)
+                    .and_then(|r| r.upstream_branch)
+                    .unwrap_or_else(|| branch.clone());
+                let gh = margin_core::github::GitHub::for_repo(&self.repo, &self.cfg, None)?
+                    .ok_or_else(|| Error("origin is not a GitHub remote (see `github` in Margin config)".into()))?;
+                match gh.pr_detail(&head)? {
+                    Some(d) => {
+                        let mut v = serde_json::to_value(&d)?;
+                        v["readiness"] = json!(d.summary.readiness().0);
+                        v["ci_label"] = json!(d.summary.ci_label().0);
+                        Ok(v)
+                    }
+                    None => Ok(json!({"branch": branch, "pull_request": null})),
+                }
+            }
             "my_tasks" => {
                 let p = self.provider()?;
                 Ok(json!({"tasks": p.my_open(n("limit", 20))?}))
@@ -303,7 +330,7 @@ impl Server {
             "changed_files": st.files.len(),
             "pending_operation": self.repo.pending_operation(),
             "task_key": task,
-            "task_url": task.as_ref().and_then(|k| self.tasks.as_ref().map(|p| p.browse_url(k))),
+            "task_url": task.as_ref().and_then(|k| tasks::task_url(&self.cfg, self.tasks.as_deref(), k)),
             "repo_note": read(&NoteTarget::Repo)?,
             "branch_note": match &branch_note { Some(t) => read(t)?, None => Value::Null },
             "task_note": match &task { Some(k) => read(&NoteTarget::Task(k.clone()))?, None => Value::Null },
@@ -317,7 +344,10 @@ fn as_text(v: &Value) -> String {
 
 const INSTRUCTIONS: &str = "Margin shares Markdown notes between a developer and AI agents, attached to the repo, \
 branches, commits and tasks (e.g. Jira tickets). Call get_context first. Targets: `repo`, `branch:<name>` \
-(`branch:@` = current), `commit:<rev>`, `task:<KEY>` (`task:@` = current branch's task). Prefer append_note for \
+(`branch:@` = current), `commit:<rev>`, `task:<KEY>` (`task:@` = current branch's task). Branch notes are the \
+working notes for a line of work: they follow the branch through rebase/amend and are shown on its top commit. \
+Commit notes stay bound to one exact SHA (a rebase/amend leaves them on the old commit). get_pr returns the \
+branch's GitHub PR: merge readiness, CI checks and review comments. Prefer append_note for \
 progress logs; use write_note with if_version (from read_note) for edits so you never overwrite concurrent changes. \
 Notes are Markdown: links are allowed; images and raw HTML are rejected. Git access is read-only.";
 
@@ -344,7 +374,7 @@ fn tool_defs() -> Value {
             "kind": {"type": "string", "enum": ["repo", "branch", "commit", "task"]}}}, "annotations": ro},
         {"name": "read_note", "description": "Read a note. Returns content and a version token for write_note.",
          "inputSchema": {"type": "object", "required": ["target"], "properties": {"target": target}}, "annotations": ro},
-        {"name": "write_note", "description": "Replace a note's Markdown (empty content deletes). Pass if_version from read_note to avoid clobbering concurrent edits (\"\" = must not exist).",
+        {"name": "write_note", "description": "Replace a note's Markdown. Use branch:@ for notes about the ongoing work (they follow rebases); commit:<rev> only for notes about that exact commit. Empty content deletes. Pass if_version from read_note to avoid clobbering concurrent edits (\"\" = must not exist).",
          "inputSchema": {"type": "object", "required": ["target", "content"], "properties": {
             "target": target, "content": {"type": "string"}, "if_version": {"type": "string"}}},
          "annotations": {"destructiveHint": true, "idempotentHint": true, "openWorldHint": false}},
@@ -366,6 +396,10 @@ fn tool_defs() -> Value {
         {"name": "search_tasks", "description": "Search tickets with the tracker's query language (JQL for Jira).",
          "inputSchema": {"type": "object", "required": ["query"], "properties": {
             "query": {"type": "string"}, "limit": {"type": "integer"}}},
+         "annotations": {"readOnlyHint": true, "openWorldHint": true}},
+        {"name": "get_pr", "title": "Pull request status",
+         "description": "GitHub PR for a branch (default current): merge readiness, CI checks (failures first), review decision, conversation comments, reviews and unresolved review threads with file:line.",
+         "inputSchema": {"type": "object", "properties": {"branch": {"type": "string"}}},
          "annotations": {"readOnlyHint": true, "openWorldHint": true}},
         {"name": "my_tasks", "description": "Open tickets assigned to the configured user.",
          "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}},

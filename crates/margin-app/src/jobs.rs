@@ -4,7 +4,11 @@
 use eframe::egui;
 use margin_core::diff::FileDiff;
 use margin_core::git::{Commit, CommitDetail, RefInfo, Stash, Status};
+use margin_core::github::{GitHub, PrDetail, PrSummary};
 use margin_core::tasks::Task;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub struct Snapshot {
@@ -24,6 +28,10 @@ pub enum Msg {
     OpDone { label: String, result: Result<String, String>, refresh: bool },
     Task { key: String, result: Result<Task, String> },
     MyTasks(Result<Vec<Task>, String>),
+    // GitHub messages carry the repo path so late replies for a closed repo are dropped.
+    GithubReady { workdir: PathBuf, result: Result<Option<Arc<GitHub>>, String> },
+    Prs { workdir: PathBuf, result: Result<HashMap<String, PrSummary>, String> },
+    PrDetail { workdir: PathBuf, branch: String, result: Result<Option<PrDetail>, String> },
 }
 
 pub struct Jobs {

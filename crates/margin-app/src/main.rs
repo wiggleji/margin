@@ -7,6 +7,7 @@ mod diff_view;
 mod jobs;
 mod markdown_view;
 mod notes_panel;
+mod pr_view;
 mod sidebar;
 mod theme;
 

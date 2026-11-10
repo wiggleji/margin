@@ -43,6 +43,11 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                         if let Some(t) = &task {
                             ui.label(RichText::new(t).small().color(theme::ACCENT));
                         }
+                        if let Some(pr) = rv.prs.get(&r.name) {
+                            let tone = crate::pr_view::tone_color(pr.readiness().1);
+                            ui.label(RichText::new(format!("#{}", pr.number)).small().color(tone))
+                                .on_hover_text(crate::pr_view::hover_summary(pr));
+                        }
                         if note {
                             ui.label(RichText::new("●").small().color(theme::ACCENT)).on_hover_text("has notes");
                         }
@@ -50,8 +55,9 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                     })
                     .inner;
                 if resp.clicked() {
-                    actions.push(Action::FocusBranch(r.name.clone()));
+                    // Select the tip first (selection resets focus), then focus the branch.
                     actions.push(Action::JumpTo(r.target.clone()));
+                    actions.push(Action::FocusBranch(r.name.clone()));
                 }
                 if resp.double_clicked() && !r.is_head {
                     actions.push(Action::Checkout(r.name.clone()));

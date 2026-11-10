@@ -3,13 +3,14 @@ use crate::jobs::{Jobs, Msg, Snapshot};
 use crate::notes_panel::NoteEditor;
 use crate::theme;
 use eframe::egui;
-use margin_core::config::{self, State};
+use margin_core::config::{self, Config, State};
 use margin_core::diff;
+use margin_core::github::{GitHub, PrDetail, PrSummary};
 use margin_core::git::{CommitDetail, FileChange, Repo, ResetMode};
 use margin_core::graph::{self, GraphRow};
 use margin_core::notes::{NoteStore, NoteTarget};
 use margin_core::tasks::{self, Task, TaskProvider};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -69,6 +70,9 @@ pub enum Action {
     ShowNote(crate::notes_panel::NoteTab),
     FetchTask(String),
     FetchMyTasks,
+    /// Reload PR status for all local branches (`force` ignores the 60 s throttle).
+    FetchPrs { force: bool },
+    FetchPrDetail(String),
     OpenUrl(String),
     Copy(String),
     JumpTo(String),
@@ -96,7 +100,17 @@ pub struct RepoView {
     pub amend: bool,
     pub filter: String,
     pub filtered: Option<(String, Vec<usize>)>,
-    pub note_index: HashSet<NoteTarget>,
+    /// Existing notes → first line (title).
+    pub note_index: HashMap<NoteTarget, String>,
+    /// Commit id → local branches pointing at it (current branch first).
+    pub tips: HashMap<String, Vec<String>>,
+    pub github: Option<Arc<GitHub>>,
+    pub github_error: Option<String>,
+    /// Local branch → its latest PR.
+    pub prs: HashMap<String, PrSummary>,
+    pub pr_detail: HashMap<String, Result<PrDetail, String>>,
+    pub pr_requested: std::collections::HashSet<String>,
+    pub prs_fetched_at: Option<f64>,
     pub notes_stamp: u64,
     /// Set by the watcher thread when the notes dir changes.
     pub notes_watch: Arc<AtomicBool>,
@@ -112,8 +126,23 @@ impl RepoView {
     pub fn current_branch(&self) -> Option<&str> {
         self.snap.as_ref()?.status.branch.as_deref()
     }
+    /// The branch whose note/PR the panel shows: an explicitly focused branch,
+    /// else the branch whose *tip* is the selected commit, else HEAD's branch.
+    /// Because branch notes are keyed by name, they stay on the branch tip
+    /// through rebase / amend / new commits.
     pub fn note_branch(&self) -> Option<String> {
-        self.focus_branch.clone().or_else(|| self.current_branch().map(String::from))
+        if let Some(b) = &self.focus_branch {
+            return Some(b.clone());
+        }
+        if let Sel::Commit(id) = &self.sel {
+            if let Some(b) = self.tips.get(id).and_then(|v| v.first()) {
+                return Some(b.clone());
+            }
+        }
+        self.current_branch().map(String::from)
+    }
+    pub fn note_title(&self, t: &NoteTarget) -> Option<&str> {
+        self.note_index.get(t).map(String::as_str)
     }
     pub fn note_task(&self) -> Option<String> {
         if let Some(t) = &self.focus_task {
@@ -123,7 +152,7 @@ impl RepoView {
         self.notes.task_for_branch(&b)
     }
     pub fn has_note(&self, t: &NoteTarget) -> bool {
-        self.note_index.contains(t)
+        self.note_index.contains_key(t)
     }
     pub fn change(&self, path: &str) -> Option<&FileChange> {
         self.snap.as_ref()?.status.files.iter().find(|f| f.path == path)
@@ -131,6 +160,7 @@ impl RepoView {
 }
 
 pub struct MarginApp {
+    pub cfg: Config,
     pub state: State,
     pub jobs: Jobs,
     pub rv: Option<RepoView>,
@@ -155,6 +185,7 @@ impl MarginApp {
         let mut app = MarginApp {
             author: cfg.note_author.clone().unwrap_or_default(),
             state: config::load_state(),
+            cfg: cfg.clone(),
             jobs: Jobs::new(ctx),
             rv: None,
             tasks,
@@ -285,7 +316,7 @@ impl MarginApp {
 
     pub fn reload_notes_index(&mut self) {
         if let Some(rv) = &mut self.rv {
-            rv.note_index = rv.notes.list().map(|l| l.into_iter().map(|m| m.target).collect()).unwrap_or_default();
+            rv.note_index = rv.notes.list().map(|l| l.into_iter().map(|m| (m.target, m.title)).collect()).unwrap_or_default();
             rv.notes_stamp = rv.notes.stamp();
         }
     }
@@ -323,7 +354,14 @@ impl MarginApp {
                         amend: false,
                         filter: String::new(),
                         filtered: None,
-                        note_index: HashSet::new(),
+                        note_index: HashMap::new(),
+                        tips: HashMap::new(),
+                        github: None,
+                        github_error: None,
+                        prs: HashMap::new(),
+                        pr_detail: HashMap::new(),
+                        pr_requested: Default::default(),
+                        prs_fetched_at: None,
                         notes_stamp: 0,
                         notes_watch: Arc::new(AtomicBool::new(false)),
                         editor: NoteEditor::default(),
@@ -336,6 +374,7 @@ impl MarginApp {
                     self.reload_notes_index();
                     self.start_notes_watcher();
                     self.refresh();
+                    self.connect_github();
                 }
                 Err(e) => self.err(format!("{}: {e}", p.display())),
             },
@@ -359,6 +398,7 @@ impl MarginApp {
                 }
                 rv.sel = sel.clone();
                 rv.focus_task = None;
+                rv.focus_branch = None;
                 match sel {
                     Sel::Working => {
                         rv.commit_detail = None;
@@ -366,7 +406,16 @@ impl MarginApp {
                         self.load_work_diff();
                     }
                     Sel::Commit(id) => {
-                        rv.editor.tab = crate::notes_panel::NoteTab::Commit;
+                        // A branch tip without its own commit note opens on the
+                        // branch note — that's where the branch's notes "live".
+                        let own = rv.has_note(&NoteTarget::Commit(id.clone()));
+                        let tip_note = rv.tips.contains_key(&id)
+                            && rv.note_branch().is_some_and(|b| rv.has_note(&NoteTarget::Branch(b)));
+                        rv.editor.tab = if !own && tip_note {
+                            crate::notes_panel::NoteTab::Branch
+                        } else {
+                            crate::notes_panel::NoteTab::Commit
+                        };
                         self.load_commit(id);
                     }
                 }
@@ -478,6 +527,49 @@ impl MarginApp {
                 let Some(p) = self.tasks.clone() else { return };
                 self.jobs.spawn(move || Msg::Task { result: p.get(&key).map_err(|e| e.0), key });
             }
+            FetchPrs { force } => {
+                let now = self.ctx.input(|i| i.time);
+                let Some(rv) = &mut self.rv else { return };
+                let Some(gh) = rv.github.clone() else { return };
+                let Some(snap) = &rv.snap else { return };
+                if !force && rv.prs_fetched_at.is_some_and(|t| now - t < 60.0) {
+                    return;
+                }
+                rv.prs_fetched_at = Some(now);
+                // Local branch → name of its head on GitHub (upstream may differ).
+                let heads: Vec<(String, String)> = snap
+                    .refs
+                    .iter()
+                    .filter(|r| r.kind == margin_core::git::RefKind::Local)
+                    .take(40) // most recently committed first
+                    .map(|r| (r.name.clone(), r.upstream_branch.clone().unwrap_or_else(|| r.name.clone())))
+                    .collect();
+                let workdir = rv.repo.workdir.clone();
+                self.jobs.spawn(move || {
+                    let names: Vec<String> = heads.iter().map(|(_, h)| h.clone()).collect();
+                    let result = gh.pr_summaries(&names).map(|by_head| {
+                        heads.iter().filter_map(|(local, head)| by_head.get(head).map(|p| (local.clone(), p.clone()))).collect()
+                    });
+                    Msg::Prs { workdir, result: result.map_err(|e| e.0) }
+                });
+            }
+            FetchPrDetail(branch) => {
+                let Some(rv) = &mut self.rv else { return };
+                let Some(gh) = rv.github.clone() else { return };
+                let head = rv
+                    .snap
+                    .as_ref()
+                    .and_then(|s| s.refs.iter().find(|r| r.kind == margin_core::git::RefKind::Local && r.name == branch))
+                    .and_then(|r| r.upstream_branch.clone())
+                    .unwrap_or_else(|| branch.clone());
+                rv.pr_requested.insert(branch.clone());
+                let workdir = rv.repo.workdir.clone();
+                self.jobs.spawn(move || Msg::PrDetail {
+                    workdir,
+                    result: gh.pr_detail(&head).map_err(|e| e.0),
+                    branch,
+                });
+            }
             FetchMyTasks => {
                 let Some(p) = self.tasks.clone() else { return };
                 self.jobs.spawn(move || Msg::MyTasks(p.my_open(30).map_err(|e| e.0)));
@@ -490,8 +582,46 @@ impl MarginApp {
         }
     }
 
+    /// Resolve the GitHub remote + token off the UI thread (`gh auth token`
+    /// is a subprocess), then load PR status.
+    fn connect_github(&mut self) {
+        let Some(rv) = &self.rv else { return };
+        let repo = rv.repo.clone();
+        let cfg = self.cfg.clone();
+        let workdir = repo.workdir.clone();
+        self.jobs.spawn(move || Msg::GithubReady {
+            workdir,
+            result: GitHub::for_repo(&repo, &cfg, None).map(|o| o.map(Arc::new)).map_err(|e| e.0),
+        });
+    }
+
     fn on_msg(&mut self, m: Msg) {
         match m {
+            Msg::GithubReady { workdir, result } => {
+                let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
+                match result {
+                    Ok(gh) => rv.github = gh,
+                    Err(e) => rv.github_error = Some(e),
+                }
+                self.handle(Action::FetchPrs { force: true });
+            }
+            Msg::Prs { workdir, result } => {
+                let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
+                match result {
+                    Ok(prs) => {
+                        rv.prs = prs;
+                        rv.github_error = None;
+                        // Details are reloaded lazily for whatever is on screen.
+                        rv.pr_detail.clear();
+                        rv.pr_requested.clear();
+                    }
+                    Err(e) => rv.github_error = Some(e),
+                }
+            }
+            Msg::PrDetail { workdir, branch, result } => {
+                let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
+                rv.pr_detail.insert(branch, result.and_then(|d| d.ok_or_else(|| "No pull request for this branch".to_string())));
+            }
             Msg::Refreshed(r) => {
                 let Some(rv) = &mut self.rv else { return };
                 rv.loading = false;
@@ -500,6 +630,11 @@ impl MarginApp {
                         let (g, _w) = graph::layout(&snap.commits);
                         rv.graph = g;
                         rv.row_of = snap.commits.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
+                        rv.tips.clear();
+                        for r in snap.refs.iter().filter(|r| r.kind == margin_core::git::RefKind::Local) {
+                            let v = rv.tips.entry(r.target.clone()).or_default();
+                            if r.is_head { v.insert(0, r.name.clone()) } else { v.push(r.name.clone()) }
+                        }
                         rv.filtered = None;
                         rv.snap = Some(snap);
                         if rv.amend && rv.commit_msg.is_empty() {
@@ -508,6 +643,7 @@ impl MarginApp {
                         if rv.sel == Sel::Working {
                             self.load_work_diff();
                         }
+                        self.handle(Action::FetchPrs { force: false });
                     }
                     Err(e) => self.err(e),
                 }
@@ -552,6 +688,11 @@ impl MarginApp {
                 }
                 if refresh {
                     self.refresh();
+                }
+                if matches!(label.as_str(), "Push" | "Fetch" | "Pull") {
+                    if let Some(rv) = &mut self.rv {
+                        rv.prs_fetched_at = None; // reload PR status after the refresh
+                    }
                 }
             }
             Msg::Task { key, result } => {
@@ -802,7 +943,8 @@ impl eframe::App for MarginApp {
                 egui::Panel::bottom("notes").resizable(true).default_size(300.0).min_size(120.0).show(ui, |ui| {
                     // Fill the panel so it keeps its size instead of shrinking to content.
                     ui.set_min_height(ui.available_height());
-                    crate::notes_panel::show(ui, rv, &self.task_cache, tasks_enabled, &self.author, &mut actions);
+                    let task_url = |k: &str| tasks::task_url(&self.cfg, self.tasks.as_deref(), k);
+                    crate::notes_panel::show(ui, rv, &self.task_cache, tasks_enabled, &task_url, &self.author, &mut actions);
                 });
                 egui::CentralPanel::default().show(ui, |ui| {
                     crate::details::show(ui, rv, &mut actions);

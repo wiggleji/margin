@@ -22,6 +22,28 @@ pub struct Config {
     /// UI font size in points.
     #[serde(default)]
     pub font_size: Option<f32>,
+    #[serde(default)]
+    pub github: GithubConfig,
+    /// Link-out for task keys when no task API is configured, e.g.
+    /// `https://linear.app/acme/issue/{key}` or `https://acme.atlassian.net/browse/{key}`.
+    #[serde(default)]
+    pub task_url_template: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GithubConfig {
+    /// Set to true to never contact GitHub.
+    #[serde(default)]
+    pub disabled: bool,
+    /// GitHub Enterprise Server hosts (github.com is always recognised).
+    #[serde(default)]
+    pub enterprise_hosts: Vec<String>,
+    /// SSH host aliases from ~/.ssh/config, e.g. {"github-work": "github.com"}.
+    #[serde(default)]
+    pub host_aliases: std::collections::BTreeMap<String, String>,
+    /// Override the GraphQL endpoint (testing / unusual proxies).
+    #[serde(default)]
+    pub api_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +112,34 @@ pub fn save_state(s: &State) -> Result<()> {
     std::fs::create_dir_all(&d)?;
     std::fs::write(d.join("state.json"), serde_json::to_string_pretty(s)?)?;
     Ok(())
+}
+
+/// GitHub token lookup: `GITHUB_TOKEN`/`GH_TOKEN` → `gh auth token` (GitHub CLI,
+/// common in enterprises) → macOS Keychain service `margin-github`.
+pub fn github_token(host: &str) -> Option<String> {
+    for v in ["MARGIN_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] {
+        if let Ok(t) = std::env::var(v) {
+            if !t.trim().is_empty() {
+                return Some(t.trim().to_string());
+            }
+        }
+    }
+    // Apps launched from Finder don't get the shell PATH, so try Homebrew paths too.
+    for gh in ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"] {
+        let out = std::process::Command::new(gh)
+            .args(["auth", "token", "--hostname", host])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output();
+        if let Ok(o) = out {
+            let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if o.status.success() && !t.is_empty() {
+                return Some(t);
+            }
+            break; // gh exists but has no token for this host
+        }
+    }
+    keychain_lookup("margin-github", Some(host))
 }
 
 pub fn jira_token(cfg: &JiraConfig) -> Option<String> {
