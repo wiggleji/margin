@@ -6,7 +6,7 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 
 | | |
 |---|---|
-| GUI binary (release, stripped) | ~12.7 MB |
+| GUI binary (release, stripped) | ~12.9 MB |
 | MCP server binary | ~2.8 MB |
 | Idle CPU | ~0 (repaints only on input or when a note changes) |
 | Private memory, small repo | ~40 MB |
@@ -26,6 +26,8 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 - **Two kinds of git notes:**
   - **Branch note:** bound to the branch name. It's shown on the branch's **top commit** (a chip in the graph, and the default tab when you select the tip). It follows the branch through rebase, amend, and new commits. Use it for ongoing work.
   - **Commit note:** bound to one exact SHA. After a rebase or amend it stays with the old commit. Use it for facts about that exact snapshot (benchmarks, review of that revision).
+- **Branch renames are followed.** Renaming in Margin (right-click → Rename…) or in a terminal (`git branch -m`, read from the reflog, including chains) moves the branch note and task link to the new name.
+- **Detached notes.** Commit notes whose commit is no longer on any branch, tag, or remote, and branch notes whose branch was deleted, are listed in the sidebar. Open one to see why it's detached. **Re-attach…** suggests the rewritten commit (same subject), or you can delete it. Moving onto an existing note appends instead of overwriting.
 - Markdown with tables, task lists, and links. **Images, raw HTML, and unsafe link schemes are rejected** on every write, from both the GUI and MCP.
 - Edit and preview modes, autosave, and clickable task checkboxes. Internal links like `margin:commit:abc123` and `margin:task:PROJ-42` navigate inside the app.
 - Concurrency-safe: versioned writes. If an agent edits the note you're editing, you get a *Load theirs / Keep mine* choice.
@@ -40,7 +42,7 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 - The task key is inferred from the branch name (`feature/PROJ-42-login` → `PROJ-42`), or you can link it explicitly.
 - The task card shows status, assignee, priority, and description. "My tasks" can create a branch from a ticket. The commit box offers an "Insert PROJ-42" button.
 
-**MCP (for agents)**: 15 tools. `get_context`, `git_status`, `git_log`, `git_show`, and `list_branches` read git. `read_note`, `write_note`, `append_note`, `list_notes`, `search_notes`, and `link_task` work on notes. `get_task`, `search_tasks`, and `my_tasks` read Jira. `get_pr` gives agents the PR's readiness, failing checks, and review comments, so they can address feedback. Git access is **read-only** for agents.
+**MCP (for agents)**: 17 tools. `get_context`, `git_status`, `git_log`, `git_show`, and `list_branches` read git. `read_note`, `write_note`, `append_note`, `list_notes`, `search_notes`, and `link_task` work on notes. `get_task`, `search_tasks`, and `my_tasks` read Jira. `get_pr` gives agents the PR's readiness, failing checks, and review comments, so they can address feedback. `list_detached_notes` and `move_note` let agents tidy notes after a rebase. Git access is **read-only** for agents.
 
 ## Build
 
@@ -96,4 +98,4 @@ Without a Jira API config, set `task_url_template` (for example `https://linear.
 
 `<repo>/.git/margin/notes/`. Notes are plain `.md` files, never committed, and shared across worktrees. They're easy to grep, back up, or sync.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions and the roadmap.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions and the roadmap. Icons: [Primer Octicons](https://github.com/primer/octicons) (MIT), see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

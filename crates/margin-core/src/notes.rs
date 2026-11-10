@@ -211,6 +211,49 @@ impl NoteStore {
         bail!("could not append: note keeps changing")
     }
 
+    pub fn delete(&self, t: &NoteTarget) -> Result<()> {
+        match fs::remove_file(self.root.join(t.rel_path())) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Move a note to another target. If the destination already has a note,
+    /// the moved text is appended under a "Moved from …" marker (nothing is lost).
+    pub fn move_note(&self, from: &NoteTarget, to: &NoteTarget) -> Result<Note> {
+        if from == to {
+            bail!("source and destination are the same");
+        }
+        let Some(src) = self.read(from)? else { bail!("note '{from}' does not exist") };
+        let note = match self.read(to)? {
+            None => self.write(to, &src.content, Some(""))?,
+            Some(dst) => {
+                let merged = format!(
+                    "{}\n\n---\n\n_Moved from `{from}`:_\n\n{}\n",
+                    dst.content.trim_end(),
+                    src.content.trim()
+                );
+                self.write(to, &merged, Some(&dst.version))?
+            }
+        };
+        self.delete(from)?;
+        Ok(note)
+    }
+
+    /// Carry a branch's note and task link over to its new name.
+    pub fn rename_branch(&self, old: &str, new: &str) -> Result<()> {
+        let from = NoteTarget::Branch(old.to_string());
+        if self.exists(&from) {
+            self.move_note(&from, &NoteTarget::Branch(new.to_string()))?;
+        }
+        let mut l = self.links();
+        if let Some(task) = l.branch_tasks.remove(old) {
+            l.branch_tasks.entry(new.to_string()).or_insert(task);
+            atomic_write(&self.root.join("links.json"), serde_json::to_string_pretty(&l)?.as_bytes())?;
+        }
+        Ok(())
+    }
+
     pub fn exists(&self, t: &NoteTarget) -> bool {
         self.root.join(t.rel_path()).exists()
     }
@@ -416,6 +459,14 @@ mod tests {
         s.link_task("feature/PROJ-1-login", Some("OPS-9")).unwrap();
         assert_eq!(s.task_for_branch("feature/PROJ-1-login").as_deref(), Some("OPS-9"));
         assert!(s.write(&t, "![i](x.png)", None).is_err());
+
+        // rename: note + link follow; merging into an existing note keeps both
+        s.write(&NoteTarget::Branch("feature/new".into()), "existing", None).unwrap();
+        s.rename_branch("feature/PROJ-1-login", "feature/new").unwrap();
+        assert!(!s.exists(&t));
+        let merged = s.read(&NoteTarget::Branch("feature/new".into())).unwrap().unwrap().content;
+        assert!(merged.starts_with("existing") && merged.contains("_Moved from `branch:feature/PROJ-1-login`:_") && merged.contains("# Login"));
+        assert_eq!(s.task_for_branch("feature/new").as_deref(), Some("OPS-9"));
     }
 
     #[test]

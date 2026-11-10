@@ -52,6 +52,8 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
 
     // ---- header: number/title (links out), readiness, CI, review
     ui.horizontal_wrapped(|ui| {
+        let sz = ui.text_style_height(&egui::TextStyle::Body);
+        ui.add(crate::icons::image(ui.ctx(), crate::icons::Icon::Github, sz, theme::TEXT));
         let link = ui
             .add(egui::Label::new(RichText::new(format!("#{} {}", pr.number, pr.title)).strong().color(ui.visuals().hyperlink_color)).sense(egui::Sense::click()))
             .on_hover_text("Open on GitHub");

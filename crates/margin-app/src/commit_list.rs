@@ -1,6 +1,7 @@
 //! Commit list with graph lanes (virtualised; painter-drawn for speed).
 
 use crate::app::{Action, RepoView, Sel};
+use crate::icons::{self, Icon};
 use crate::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 use margin_core::git::{Commit, ResetMode};
@@ -149,9 +150,11 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             let mut x = rect.left() + graph_w + 4.0;
             let subj_clip = Rect::from_min_max(pos2(x, rect.top()), pos2(author_rect.left() - 8.0, rect.bottom()));
             let sp = ui.painter_at(subj_clip);
+            let isz = small.size + 1.0;
             if rv.has_note(&NoteTarget::Commit(c.id.clone())) {
-                sp.rect_filled(Rect::from_center_size(pos2(x + 4.0, rect.center().y), vec2(6.0, 10.0)), 1.0, theme::ACCENT);
-                x += 12.0;
+                // Commit note (bound to this SHA)
+                icons::paint(&sp, Icon::Note, Rect::from_center_size(pos2(x + isz / 2.0, rect.center().y), vec2(isz, isz)), theme::ACCENT);
+                x += isz + 5.0;
             }
             let tips = rv.tips.get(&c.id);
             let mut hover_extra = String::new();
@@ -171,11 +174,13 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 }
                 if let Some(pr) = rv.prs.get(&label) {
                     let tone = crate::pr_view::tone_color(pr.readiness().1);
+                    // [GitHub mark] #12 [CI dot] — mark/text coloured by merge readiness
                     let g = sp.layout_no_wrap(format!("#{}", pr.number), small.clone(), tone);
-                    let chip = Rect::from_min_size(pos2(x, rect.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(16.0, 2.0));
+                    let chip = Rect::from_min_size(pos2(x, rect.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(isz + 17.0, 2.0));
                     sp.rect_stroke(chip, 3.0, Stroke::new(1.0, tone), egui::StrokeKind::Inside);
-                    sp.circle_filled(pos2(chip.left() + 6.0, chip.center().y), 2.5, ci_color(pr.ci));
-                    sp.galley(chip.min + vec2(11.0, 1.0), g, tone);
+                    icons::paint(&sp, Icon::Github, Rect::from_center_size(pos2(chip.left() + 3.0 + isz / 2.0, chip.center().y), vec2(isz, isz)), tone);
+                    sp.galley(chip.min + vec2(isz + 5.0, 1.0), g, tone);
+                    sp.circle_filled(pos2(chip.right() - 6.0, chip.center().y), 2.5, ci_color(pr.ci));
                     x = chip.right() + 4.0;
                     hover_extra += &format!("\n\n{}", crate::pr_view::hover_summary(pr));
                 }
@@ -183,10 +188,10 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                     let short: String = title.chars().take(32).collect();
                     let short = if short.len() < title.len() { format!("{short}…") } else { short };
                     let g = sp.layout_no_wrap(short, small.clone(), theme::ACCENT);
-                    let chip = Rect::from_min_size(pos2(x, rect.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(18.0, 2.0));
+                    let chip = Rect::from_min_size(pos2(x, rect.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(isz + 11.0, 2.0));
                     sp.rect_stroke(chip, 3.0, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
-                    note_icon(&sp, pos2(chip.left() + 7.0, chip.center().y));
-                    sp.galley(chip.min + vec2(13.0, 1.0), g, theme::ACCENT);
+                    icons::paint(&sp, Icon::Note, Rect::from_center_size(pos2(chip.left() + 3.0 + isz / 2.0, chip.center().y), vec2(isz, isz)), theme::ACCENT);
+                    sp.galley(chip.min + vec2(isz + 6.0, 1.0), g, theme::ACCENT);
                     x = chip.right() + 4.0;
                     hover_extra += &format!("\n\nBranch note ({label}): {title}");
                 }
@@ -209,15 +214,6 @@ fn ci_color(ci: margin_core::github::CiState) -> Color32 {
         Failure => theme::ERROR,
         Pending => theme::ACCENT,
         None => theme::TEXT_DIM,
-    }
-}
-
-/// Tiny "page" glyph drawn with the painter (no icon font needed).
-fn note_icon(p: &egui::Painter, c: egui::Pos2) {
-    let r = Rect::from_center_size(c, vec2(7.0, 9.0));
-    p.rect_stroke(r, 1.0, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
-    for dy in [-1.5, 1.0] {
-        p.line_segment([pos2(r.left() + 2.0, c.y + dy), pos2(r.right() - 2.0, c.y + dy)], Stroke::new(1.0, theme::ACCENT));
     }
 }
 

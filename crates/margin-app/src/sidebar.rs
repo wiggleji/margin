@@ -1,4 +1,5 @@
 use crate::app::{Action, RepoView, Sel};
+use crate::icons::{self, Icon};
 use crate::notes_panel::NoteTab;
 use crate::theme;
 use eframe::egui::{self, RichText, Ui};
@@ -9,6 +10,9 @@ use std::collections::BTreeMap;
 
 pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Option<&Result<Vec<Task>, String>>, actions: &mut Vec<Action>) {
     let Some(snap) = rv.snap.as_ref() else { return };
+    let ctx = ui.ctx().clone();
+    let isz = ui.text_style_height(&egui::TextStyle::Small) + 1.0;
+    let note_icon = |tint| icons::image(&ctx, Icon::Note, isz, tint);
     egui::ScrollArea::vertical().id_salt("sidebar").auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(4.0);
         let n = snap.status.files.len();
@@ -16,7 +20,11 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
             actions.push(Action::Select(Sel::Working));
         }
         let repo_note = rv.has_note(&NoteTarget::Repo);
-        if ui.selectable_label(false, format!("Repository notes{}", if repo_note { "  ●" } else { "" })).clicked() {
+        let mut atoms = egui::Atoms::new("Repository notes");
+        if repo_note {
+            atoms.push_right(note_icon(theme::ACCENT));
+        }
+        if ui.selectable_label(false, atoms).clicked() {
             actions.push(Action::ShowNote(NoteTab::Repo));
         }
         ui.add_space(6.0);
@@ -43,13 +51,15 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                         if let Some(t) = &task {
                             ui.label(RichText::new(t).small().color(theme::ACCENT));
                         }
+                        if note {
+                            ui.add(note_icon(theme::ACCENT)).on_hover_text("has a branch note");
+                        }
                         if let Some(pr) = rv.prs.get(&r.name) {
                             let tone = crate::pr_view::tone_color(pr.readiness().1);
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.add(icons::image(&ctx, Icon::Github, isz, tone)).on_hover_text(crate::pr_view::hover_summary(pr));
                             ui.label(RichText::new(format!("#{}", pr.number)).small().color(tone))
                                 .on_hover_text(crate::pr_view::hover_summary(pr));
-                        }
-                        if note {
-                            ui.label(RichText::new("●").small().color(theme::ACCENT)).on_hover_text("has notes");
                         }
                         resp
                     })
@@ -82,15 +92,57 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                     if let Some(t) = &task {
                         item(ui, &format!("Open {t}"), Action::FocusTask(t.clone()));
                     }
+                    item(ui, "Rename…", Action::RenameBranchDialog(name.clone()));
                     item(ui, "Copy name", Action::Copy(name.clone()));
                     if !is_head {
                         ui.separator();
-                        item(ui, "Delete…", Action::Confirm { msg: format!("Delete branch {name}?"), action: Box::new(Action::DeleteBranch { name: name.clone(), force: false }) });
+                        item(ui, "Delete…", Action::Confirm { msg: format!("Delete branch {name}? Its branch note is kept under Detached notes."), action: Box::new(Action::DeleteBranch { name: name.clone(), force: false }) });
                         item(ui, "Force delete…", Action::Confirm { msg: format!("Force-delete {name}? Unmerged commits will be lost."), action: Box::new(Action::DeleteBranch { name: name.clone(), force: true }) });
                     }
                 });
             }
         });
+
+        // ------------------------------------------------------- detached notes
+        if !rv.detached.is_empty() {
+            egui::CollapsingHeader::new(RichText::new(format!("DETACHED NOTES ({})", rv.detached.len())).small().strong())
+                .id_salt("detached")
+                .default_open(true)
+                .show(ui, |ui| {
+                    for d in &rv.detached {
+                        let mut atoms = egui::Atoms::new(note_icon(theme::TEXT_DIM));
+                        atoms.push_right(crate::notes_panel::short_target(&d.note));
+                        if !d.title.is_empty() {
+                            let t: String = d.title.chars().take(28).collect();
+                            atoms.push_right(RichText::new(t).small().color(theme::TEXT_DIM));
+                        }
+                        let open = rv.pinned_note.as_ref() == Some(&d.note);
+                        let resp = ui.selectable_label(open, atoms).on_hover_text(format!(
+                            "{}{}",
+                            d.reason.describe(),
+                            d.subject.as_ref().map(|s| format!("\nwas: {s}")).unwrap_or_default()
+                        ));
+                        if resp.clicked() {
+                            actions.push(Action::OpenNote(d.note.clone()));
+                        }
+                        let t = d.note.clone();
+                        resp.context_menu(|ui| {
+                            if ui.button("Open").clicked() {
+                                actions.push(Action::OpenNote(t.clone()));
+                                ui.close();
+                            }
+                            if ui.button("Re-attach…").clicked() {
+                                actions.push(Action::ReattachDialog(t.clone()));
+                                ui.close();
+                            }
+                            if ui.button("Delete…").clicked() {
+                                actions.push(Action::Confirm { msg: format!("Delete note {t}?"), action: Box::new(Action::DeleteNote(t.clone())) });
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+        }
 
         // -------------------------------------------------------------- remotes
         let mut remotes: BTreeMap<&str, Vec<&margin_core::git::RefInfo>> = BTreeMap::new();

@@ -21,13 +21,15 @@ The GUI and the MCP server never talk to each other directly. Both work on the s
 | **Markdown policy in core** | One `validate()` used by the GUI and MCP: no images, no HTML, and only http(s), mailto, relative, and `margin:` links. Size is capped at 256 KB. |
 | **MCP hand-rolled** | Newline-delimited JSON-RPC, ~350 lines, no tokio. Supports protocol 2024-11-05 … 2025-11-25 and returns `structuredContent`. |
 | **Two note kinds** | Commit notes are keyed by SHA and deliberately never move. Branch notes are keyed by branch name, so they survive rebase and amend for free, and the UI shows them on the branch's current tip (`tips` map: commit → local branches). No rewrite tracking or hooks are needed. |
+| **Detached notes & renames** (`core::detached`) | Runs off the UI thread whenever refs or the note set change. Renames come from the reflog (`Branch: renamed refs/heads/a to refs/heads/b`; git moves a branch's reflog on rename, so chains are visible). A rename is followed only if it happened after the note was last written, which guards against reused names. Reachability uses `cat-file --batch-check` plus `for-each-ref --contains`, skipping commits already in the loaded log. |
+| **Icons without an SVG crate** | GitHub and note icons are Octicons path data, rasterised by a ~150-line nonzero scanline filler (4×4 supersampling, cubic/quadratic/arc flattening) at the exact pixel size, then cached as tinted textures. resvg would add 1–2 MB. |
 | **GitHub via GraphQL** | One aliased query returns the latest PR for up to 25 branches. A second query loads comments and checks only for the branch on screen. The PR head is the branch's upstream name, so a local name that differs from the remote still works. The token comes from env, `gh auth token`, or the Keychain. |
 | **ureq + rustls-platform-verifier** | Blocking HTTP (no runtime). Uses the OS trust store, so corporate TLS inspection works. Proxy settings come from the environment. |
 
 ## Known limitations (v0.1)
 
-- By design, commit notes stay on the old SHA after a rebase or amend. If that commit becomes unreachable, its note is only visible through MCP `list_notes` for now (a GUI "detached notes" list is planned).
-- Renaming a branch (`git branch -m`) leaves its branch note under the old name.
+- By design, commit notes stay on the old SHA after a rebase or amend. They show up under *Detached notes* with a suggested new commit; re-attaching is manual.
+- Rename detection needs reflogs (on by default in non-bare repos). With `core.logAllRefUpdates=false`, a terminal rename leaves the note detached; re-attach it from the list.
 - PRs from forks are not detected. Margin queries the repo of `origin`.
 - Times show in UTC. The commit list loads 2000 commits per page ("Load more").
 - Git status refreshes on focus and after operations; there's no filesystem watching yet.
@@ -39,7 +41,7 @@ The GUI and the MCP server never talk to each other directly. Both work on the s
 
 1. **Packaging:** a signed and notarized `.app` and universal binary, MDM-friendly (pkg), and a `margin` CLI shim like `smerge`.
 2. **Git depth:** line-level staging, merge-conflict resolver, interactive rebase, blame, file history, server-side search (`git log -S/--grep`), FSEvents watcher.
-3. **Notes:** a "detached notes" list for commit notes whose commit is gone, branch-rename handling, optional team sharing through `refs/notes/margin` push/fetch, export a branch's notes into a PR description.
+3. **Notes:** optional automatic re-attach via `git patch-id` matching, optional team sharing through `refs/notes/margin` push/fetch, export a branch's notes into a PR description.
 4. **Tasks:** API cards for Linear and Asana (today they're link-out only), Jira transitions (start ticket → "In Progress" when the branch is created), worklogs, and comments. Providers for Linear, GitHub Issues, GitLab, and Azure Boards behind the existing `TaskProvider` trait.
 5. **MCP:** Streamable HTTP transport (for remote agents), resource subscriptions for notes, an opt-in "write" tool tier (stage/commit) behind a config flag.
 6. **Windows:** the code builds on Windows (CLI git, glow). Remaining work is packaging and credential-manager testing.

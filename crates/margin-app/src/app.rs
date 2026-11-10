@@ -73,6 +73,15 @@ pub enum Action {
     /// Reload PR status for all local branches (`force` ignores the 60 s throttle).
     FetchPrs { force: bool },
     FetchPrDetail(String),
+    RenameBranchDialog(String),
+    RenameBranch { old: String, new: String },
+    /// Show any note (e.g. a detached one) in the notes panel.
+    OpenNote(NoteTarget),
+    ReattachDialog(NoteTarget),
+    /// Move a note; `to` is `commit:<rev>` or `branch:<name>`.
+    MoveNote { from: NoteTarget, to: String },
+    DeleteNote(NoteTarget),
+    ScanDetached,
     OpenUrl(String),
     Copy(String),
     JumpTo(String),
@@ -82,6 +91,8 @@ pub enum Dialog {
     Confirm { msg: String, action: Action },
     NewBranch { name: String, start: Option<String>, switch: bool },
     LinkTask { branch: String, key: String },
+    RenameBranch { old: String, new: String },
+    Reattach { from: NoteTarget, to_commit: bool, value: String },
 }
 
 pub struct RepoView {
@@ -111,6 +122,12 @@ pub struct RepoView {
     pub pr_detail: HashMap<String, Result<PrDetail, String>>,
     pub pr_requested: std::collections::HashSet<String>,
     pub prs_fetched_at: Option<f64>,
+    /// Notes whose commit/branch is gone (see margin_core::detached).
+    pub detached: Vec<margin_core::detached::DetachedNote>,
+    /// Signature of refs + notes at the last detached scan.
+    pub detached_sig: u64,
+    /// Note opened explicitly (detached notes), shown in its own tab.
+    pub pinned_note: Option<NoteTarget>,
     pub notes_stamp: u64,
     /// Set by the watcher thread when the notes dir changes.
     pub notes_watch: Arc<AtomicBool>,
@@ -362,6 +379,9 @@ impl MarginApp {
                         pr_detail: HashMap::new(),
                         pr_requested: Default::default(),
                         prs_fetched_at: None,
+                        detached: vec![],
+                        detached_sig: 0,
+                        pinned_note: None,
                         notes_stamp: 0,
                         notes_watch: Arc::new(AtomicBool::new(false)),
                         editor: NoteEditor::default(),
@@ -570,6 +590,98 @@ impl MarginApp {
                     branch,
                 });
             }
+            ScanDetached => {
+                let Some(rv) = &mut self.rv else { return };
+                let Some(snap) = &rv.snap else { return };
+                // Only rescan when refs or the set of notes changed.
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                for r in &snap.refs {
+                    std::hash::Hash::hash(&(&r.name, &r.target), &mut h);
+                }
+                std::hash::Hash::hash(&rv.note_index.len(), &mut h);
+                let sig = std::hash::Hasher::finish(&h);
+                if sig == rv.detached_sig {
+                    return;
+                }
+                rv.detached_sig = sig;
+                let (repo, notes) = (rv.repo.clone(), rv.notes.clone());
+                // Everything in the loaded log is reachable from a ref: skip those.
+                let known: std::collections::HashSet<String> = snap.commits.iter().map(|c| c.id.clone()).collect();
+                let workdir = repo.workdir.clone();
+                self.jobs.spawn(move || {
+                    let renamed = margin_core::detached::follow_renames(&repo, &notes).unwrap_or_default();
+                    let result = margin_core::detached::find(&repo, &notes, &known).map_err(|e| e.0);
+                    Msg::Detached { workdir, renamed, result }
+                });
+            }
+            RenameBranchDialog(old) => self.dialog = Some(Dialog::RenameBranch { new: old.clone(), old }),
+            RenameBranch { old, new } => {
+                let Some(rv) = &self.rv else { return };
+                let notes = rv.notes.clone();
+                self.op("Rename branch", move |r| {
+                    r.rename_branch(&old, &new)?;
+                    // Carry the branch note and task link to the new name.
+                    notes.rename_branch(&old, &new)?;
+                    Ok(format!("{old} → {new}"))
+                });
+            }
+            OpenNote(t) => {
+                if let Some(rv) = &mut self.rv {
+                    rv.pinned_note = Some(t);
+                    rv.editor.tab = crate::notes_panel::NoteTab::Pinned;
+                }
+            }
+            ReattachDialog(from) => {
+                let Some(rv) = &self.rv else { return };
+                let (to_commit, value) = match &from {
+                    NoteTarget::Commit(_) => {
+                        // Suggest the rewritten commit: same subject on a current branch.
+                        let subject = rv.detached.iter().find(|d| d.note == from).and_then(|d| d.subject.clone());
+                        let guess = subject.and_then(|s| {
+                            rv.snap.as_ref()?.commits.iter().find(|c| c.subject == s).map(|c| c.short_id().to_string())
+                        });
+                        (true, guess.unwrap_or_default())
+                    }
+                    _ => (false, rv.current_branch().unwrap_or_default().to_string()),
+                };
+                self.dialog = Some(Dialog::Reattach { from, to_commit, value });
+            }
+            MoveNote { from, to } => {
+                let Some(rv) = &mut self.rv else { return };
+                let target = match to.split_once(':') {
+                    Some(("commit", rev)) => rv.repo.resolve(rev.trim()).map(NoteTarget::Commit),
+                    Some(("branch", b)) if !b.trim().is_empty() => Ok(NoteTarget::Branch(b.trim().to_string())),
+                    _ => Err(margin_core::Error(format!("bad target '{to}'"))),
+                };
+                match target.and_then(|t| rv.notes.move_note(&from, &t).map(|_| t)) {
+                    Ok(t) => {
+                        if rv.pinned_note.as_ref() == Some(&from) {
+                            rv.pinned_note = Some(t.clone());
+                        }
+                        rv.detached_sig = 0; // force rescan
+                        self.info(format!("Moved note {from} → {t}"));
+                        self.reload_notes_index();
+                        self.handle(Action::ScanDetached);
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            DeleteNote(t) => {
+                let Some(rv) = &mut self.rv else { return };
+                match rv.notes.delete(&t) {
+                    Ok(()) => {
+                        if rv.pinned_note.as_ref() == Some(&t) {
+                            rv.pinned_note = None;
+                            rv.editor.tab = crate::notes_panel::NoteTab::Branch;
+                        }
+                        rv.detached_sig = 0;
+                        self.info(format!("Deleted note {t}"));
+                        self.reload_notes_index();
+                        self.handle(Action::ScanDetached);
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
             FetchMyTasks => {
                 let Some(p) = self.tasks.clone() else { return };
                 self.jobs.spawn(move || Msg::MyTasks(p.my_open(30).map_err(|e| e.0)));
@@ -604,6 +716,23 @@ impl MarginApp {
                     Err(e) => rv.github_error = Some(e),
                 }
                 self.handle(Action::FetchPrs { force: true });
+            }
+            Msg::Detached { workdir, renamed, result } => {
+                let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
+                match result {
+                    Ok(d) => rv.detached = d,
+                    Err(e) => self.status_line = Some((format!("Detached-notes scan: {e}"), true)),
+                }
+                if !renamed.is_empty() {
+                    let list: Vec<String> = renamed.iter().map(|r| format!("{} → {}", r.from, r.to)).collect();
+                    self.info(format!("Branch renamed — moved its note: {}", list.join(", ")));
+                    self.reload_notes_index();
+                    if let Some(rv) = &mut self.rv {
+                        rv.editor.on_external_change(&rv.notes);
+                    }
+                    // PR status is keyed by local branch name: reload under the new names.
+                    self.handle(Action::FetchPrs { force: true });
+                }
             }
             Msg::Prs { workdir, result } => {
                 let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
@@ -644,6 +773,7 @@ impl MarginApp {
                             self.load_work_diff();
                         }
                         self.handle(Action::FetchPrs { force: false });
+                        self.handle(Action::ScanDetached);
                     }
                     Err(e) => self.err(e),
                 }
@@ -737,6 +867,44 @@ impl MarginApp {
                         let ok = !name.trim().is_empty();
                         if ui.add_enabled(ok, egui::Button::new("Create")).clicked() || (ok && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                             run = Some(Action::CreateBranch { name: name.trim().to_string(), start: start.clone(), switch: *switch });
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::RenameBranch { old, new } => {
+                    ui.heading("Rename branch");
+                    ui.weak(format!("{old} — its branch note and task link move with it"));
+                    let r = ui.add(egui::TextEdit::singleline(new).desired_width(f32::INFINITY));
+                    r.request_focus();
+                    ui.horizontal(|ui| {
+                        let ok = !new.trim().is_empty() && new.trim() != old.as_str();
+                        if ui.add_enabled(ok, egui::Button::new("Rename")).clicked() || (ok && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                            run = Some(Action::RenameBranch { old: old.clone(), new: new.trim().to_string() });
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::Reattach { from, to_commit, value } => {
+                    ui.heading("Re-attach note");
+                    ui.weak(format!("from {from}"));
+                    ui.horizontal(|ui| {
+                        ui.radio_value(to_commit, true, "Commit note");
+                        ui.radio_value(to_commit, false, "Branch note");
+                    });
+                    let hint = if *to_commit { "commit SHA or rev (e.g. HEAD~2)" } else { "branch name" };
+                    ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(f32::INFINITY));
+                    ui.weak("If the target already has a note, this one is appended to it.");
+                    ui.horizontal(|ui| {
+                        let ok = !value.trim().is_empty();
+                        if ui.add_enabled(ok, egui::Button::new("Move")).clicked() || (ok && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                            let kind = if *to_commit { "commit" } else { "branch" };
+                            run = Some(Action::MoveNote { from: from.clone(), to: format!("{kind}:{}", value.trim()) });
                             close = true;
                         }
                         if ui.button("Cancel").clicked() {

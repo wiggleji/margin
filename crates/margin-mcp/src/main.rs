@@ -224,6 +224,24 @@ impl Server {
                 let note = self.notes.append(&t, content, &author)?;
                 Ok(json!({"target": t.to_string(), "version": note.version}))
             }
+            "list_detached_notes" => {
+                // Same maintenance the GUI does: carry notes of renamed branches first.
+                let renamed = margin_core::detached::follow_renames(&self.repo, &self.notes)?;
+                let detached = margin_core::detached::find(&self.repo, &self.notes, &Default::default())?;
+                Ok(json!({
+                    "renamed_branches_followed": renamed,
+                    "detached": detached.iter().map(|d| json!({
+                        "target": d.target, "title": d.title, "reason": d.reason, "why": d.reason.describe(),
+                        "old_commit_subject": d.subject, "modified": margin_core::format_utc(d.modified),
+                    })).collect::<Vec<_>>()
+                }))
+            }
+            "move_note" => {
+                let from = NoteTarget::parse(s("from").ok_or_else(|| Error("from is required".into()))?)?;
+                let to = self.target(s("to"))?;
+                let n = self.notes.move_note(&from, &to)?;
+                Ok(json!({"from": from.to_string(), "to": to.to_string(), "version": n.version}))
+            }
             "search_notes" => {
                 let q = s("query").ok_or_else(|| Error("query is required".into()))?;
                 let hits = self.notes.search(q, n("limit", 50))?;
@@ -346,7 +364,8 @@ const INSTRUCTIONS: &str = "Margin shares Markdown notes between a developer and
 branches, commits and tasks (e.g. Jira tickets). Call get_context first. Targets: `repo`, `branch:<name>` \
 (`branch:@` = current), `commit:<rev>`, `task:<KEY>` (`task:@` = current branch's task). Branch notes are the \
 working notes for a line of work: they follow the branch through rebase/amend and are shown on its top commit. \
-Commit notes stay bound to one exact SHA (a rebase/amend leaves them on the old commit). get_pr returns the \
+Commit notes stay bound to one exact SHA (a rebase/amend leaves them on the old commit; see \
+list_detached_notes / move_note). Branch renames carry the branch note along. get_pr returns the \
 branch's GitHub PR: merge readiness, CI checks and review comments. Prefer append_note for \
 progress logs; use write_note with if_version (from read_note) for edits so you never overwrite concurrent changes. \
 Notes are Markdown: links are allowed; images and raw HTML are rejected. Git access is read-only.";
@@ -381,6 +400,12 @@ fn tool_defs() -> Value {
         {"name": "append_note", "description": "Append a timestamped, attributed Markdown section to a note (creates it if missing). Safe under concurrency.",
          "inputSchema": {"type": "object", "required": ["target", "content"], "properties": {
             "target": target, "content": {"type": "string"}, "author": {"type": "string"}}},
+         "annotations": {"destructiveHint": false, "openWorldHint": false}},
+        {"name": "list_detached_notes", "description": "Notes whose commit is no longer on any branch (rebased/amended/deleted) or whose branch was deleted. Branch notes of renamed branches are moved to the new name automatically first.",
+         "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": false, "idempotentHint": true, "openWorldHint": false}},
+        {"name": "move_note", "description": "Re-attach a note to another target (e.g. a detached commit note to the rewritten commit, or to branch:@). If the destination has a note, the moved text is appended to it.",
+         "inputSchema": {"type": "object", "required": ["from", "to"], "properties": {
+            "from": {"type": "string", "description": "exact existing target, e.g. commit:<full-sha> or branch:<old-name>"}, "to": target}},
          "annotations": {"destructiveHint": false, "openWorldHint": false}},
         {"name": "search_notes", "description": "Case-insensitive full-text search across all notes.",
          "inputSchema": {"type": "object", "required": ["query"], "properties": {

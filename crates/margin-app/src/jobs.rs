@@ -32,6 +32,12 @@ pub enum Msg {
     GithubReady { workdir: PathBuf, result: Result<Option<Arc<GitHub>>, String> },
     Prs { workdir: PathBuf, result: Result<HashMap<String, PrSummary>, String> },
     PrDetail { workdir: PathBuf, branch: String, result: Result<Option<PrDetail>, String> },
+    /// Branch notes moved after renames, and the notes left detached.
+    Detached {
+        workdir: PathBuf,
+        renamed: Vec<margin_core::detached::Renamed>,
+        result: Result<Vec<margin_core::detached::DetachedNote>, String>,
+    },
 }
 
 pub struct Jobs {

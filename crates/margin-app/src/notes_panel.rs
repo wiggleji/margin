@@ -2,6 +2,7 @@
 //! Autosaves when valid; detects edits made concurrently by MCP agents.
 
 use crate::app::{Action, RepoView, Sel};
+use crate::icons::{self, Icon};
 use crate::markdown_view::{self, MdAction};
 use crate::theme;
 use eframe::egui::{self, RichText, Ui};
@@ -17,6 +18,8 @@ pub enum NoteTab {
     Branch,
     Task,
     Repo,
+    /// A note opened explicitly (e.g. from "Detached notes").
+    Pinned,
 }
 
 #[derive(Default)]
@@ -147,29 +150,43 @@ pub fn show(
         NoteTab::Branch => branch.clone().map(NoteTarget::Branch),
         NoteTab::Task => task.clone().map(NoteTarget::Task),
         NoteTab::Repo => Some(NoteTarget::Repo),
+        NoteTab::Pinned => rv.pinned_note.clone(),
     };
     rv.editor.sync(desired, &rv.notes);
     let now = ui.input(|i| i.time);
 
-    // ---- tab bar
+    // ---- tab bar (wraps when the panel is narrow)
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let dot = |has: bool| if has { " ●" } else { "" };
+    ui.horizontal_wrapped(|ui| {
+        let ctx = ui.ctx().clone();
+        let icon_size = ui.text_style_height(&egui::TextStyle::Body) - 1.0;
+        // Tab label: text, then a note icon if the note exists, then a GitHub icon + PR number.
+        let label = |text: String, has: bool, pr: Option<&margin_core::github::PrSummary>| {
+            let mut a = egui::Atoms::new(text);
+            if has {
+                a.push_right(icons::image(&ctx, Icon::Note, icon_size, theme::ACCENT));
+            }
+            if let Some(pr) = pr {
+                let tone = crate::pr_view::tone_color(pr.readiness().1);
+                a.push_right(icons::image(&ctx, Icon::Github, icon_size, tone));
+                a.push_right(RichText::new(format!("#{}", pr.number)).color(tone));
+            }
+            a
+        };
         if let Some(id) = &commit_id {
             let has = rv.has_note(&NoteTarget::Commit(id.clone()));
-            ui.selectable_value(&mut rv.editor.tab, NoteTab::Commit, format!("Commit {}{}", &id[..7.min(id.len())], dot(has)))
+            ui.selectable_value(&mut rv.editor.tab, NoteTab::Commit, label(format!("Commit {}", &id[..7.min(id.len())]), has, None))
                 .on_hover_text("Bound to this exact commit. After a rebase/amend it stays with the old commit.");
         }
         if let Some(b) = &branch {
             let has = rv.has_note(&NoteTarget::Branch(b.clone()));
-            let pr = rv.prs.get(b).map(|p| format!("  #{}", p.number)).unwrap_or_default();
-            ui.selectable_value(&mut rv.editor.tab, NoteTab::Branch, format!("Branch {b}{}{pr}", dot(has)))
-                .on_hover_text("Bound to the branch name. Shown on the branch's top commit and follows it through rebase/amend.");
+            ui.selectable_value(&mut rv.editor.tab, NoteTab::Branch, label(format!("Branch {b}"), has, rv.prs.get(b)))
+                .on_hover_text("Bound to the branch name. Shown on the branch's top commit and follows it through rebase/amend/rename.");
         }
         match &task {
             Some(k) => {
                 let has = rv.has_note(&NoteTarget::Task(k.clone()));
-                ui.selectable_value(&mut rv.editor.tab, NoteTab::Task, format!("Task {k}{}", dot(has)));
+                ui.selectable_value(&mut rv.editor.tab, NoteTab::Task, label(format!("Task {k}"), has, None));
             }
             None => {
                 if let Some(b) = &branch {
@@ -180,7 +197,18 @@ pub fn show(
             }
         }
         let has = rv.has_note(&NoteTarget::Repo);
-        ui.selectable_value(&mut rv.editor.tab, NoteTab::Repo, format!("Repo{}", dot(has)));
+        ui.selectable_value(&mut rv.editor.tab, NoteTab::Repo, label("Repo".into(), has, None));
+        if let Some(p) = rv.pinned_note.clone() {
+            let detached = rv.detached.iter().any(|d| d.note == p);
+            let text = if detached { format!("Detached {}", short_target(&p)) } else { short_target(&p) };
+            ui.selectable_value(&mut rv.editor.tab, NoteTab::Pinned, label(text, false, None));
+            if ui.small_button("×").on_hover_text("Close").clicked() {
+                rv.pinned_note = None;
+                if rv.editor.tab == NoteTab::Pinned {
+                    rv.editor.tab = NoteTab::Branch;
+                }
+            }
+        }
     });
     // Second row: editor controls (kept separate so long branch names never overlap them).
     ui.horizontal(|ui| {
@@ -222,6 +250,27 @@ pub fn show(
         }
     });
     ui.separator();
+
+    // ---- detached-note banner
+    if rv.editor.tab == NoteTab::Pinned {
+        if let Some(d) = rv.pinned_note.as_ref().and_then(|p| rv.detached.iter().find(|d| &d.note == p)) {
+            let from = d.note.clone();
+            egui::Frame::new().fill(theme::HUNK_BG).inner_margin(6.0).corner_radius(3.0).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!("Detached: {}.", d.reason.describe())).color(theme::ACCENT));
+                    if let Some(sj) = &d.subject {
+                        ui.label(RichText::new(format!("Was: “{sj}”")).color(theme::TEXT_DIM));
+                    }
+                    if ui.small_button("Re-attach…").clicked() {
+                        actions.push(Action::ReattachDialog(from.clone()));
+                    }
+                    if ui.small_button("Delete…").clicked() {
+                        actions.push(Action::Confirm { msg: format!("Delete note {from}?"), action: Box::new(Action::DeleteNote(from.clone())) });
+                    }
+                });
+            });
+        }
+    }
 
     // ---- PR card (branch tab) / task card (task tab)
     if rv.editor.tab == NoteTab::Branch {
@@ -317,6 +366,16 @@ pub fn show(
         } else {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(400));
         }
+    }
+}
+
+/// "commit 1a2b3c4" / "branch feat/x" / "task PROJ-1".
+pub fn short_target(t: &NoteTarget) -> String {
+    match t {
+        NoteTarget::Commit(c) => format!("commit {}", &c[..7.min(c.len())]),
+        NoteTarget::Branch(b) => format!("branch {b}"),
+        NoteTarget::Task(k) => format!("task {k}"),
+        NoteTarget::Repo => "repo".into(),
     }
 }
 

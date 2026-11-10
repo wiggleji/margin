@@ -316,6 +316,85 @@ impl Repo {
         Ok(refs)
     }
 
+    /// Which of `ids` still exist as commit objects (`git cat-file --batch-check`).
+    pub fn existing_commits(&self, ids: &[String]) -> Result<std::collections::HashSet<String>> {
+        if ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let input = ids.iter().map(|i| format!("{i}\n")).collect::<String>();
+        let out = self.run_stdin(&["cat-file", "--batch-check=%(objectname) %(objecttype)"], input.as_bytes())?;
+        Ok(out
+            .lines()
+            .filter_map(|l| l.strip_suffix(" commit").map(String::from))
+            .collect())
+    }
+
+    /// Is `id` contained in any branch, remote branch, tag, stash or HEAD?
+    pub fn is_reachable(&self, id: &str) -> bool {
+        let found = self
+            .run(&["for-each-ref", "--count=1", "--format=x", "--contains", id, "refs/heads", "refs/remotes", "refs/tags", "refs/stash"])
+            .map(|o| !o.trim().is_empty())
+            .unwrap_or(false);
+        found || self.run(&["merge-base", "--is-ancestor", id, "HEAD"]).is_ok()
+    }
+
+    pub fn subject_of(&self, id: &str) -> Option<String> {
+        self.run(&["log", "-1", "--format=%s", id, "--"]).ok().map(|s| s.trim().to_string())
+    }
+
+    /// Branch renames recorded in the reflogs of the given local branches:
+    /// `(old, new, unix_time)`, in the order they happened per branch.
+    /// Git moves a branch's reflog on `branch -m`, so a branch's log holds its
+    /// whole rename chain ("Branch: renamed refs/heads/a to refs/heads/b").
+    pub fn branch_renames(&self, branches: &[String]) -> Vec<(String, String, i64)> {
+        let mut out = Vec::new();
+        for b in branches {
+            let file = self.common_dir.join("logs/refs/heads").join(b);
+            // (time, message) entries
+            let msgs: Vec<(i64, String)> = match std::fs::read_to_string(&file) {
+                // "<old> <new> Name <email> <unix-ts> <tz>\t<message>"
+                Ok(t) => t
+                    .lines()
+                    .filter_map(|l| {
+                        let (head, msg) = l.split_once('\t')?;
+                        let ts = head.split_whitespace().rev().nth(1)?.parse().ok()?;
+                        Some((ts, msg.to_string()))
+                    })
+                    .collect(),
+                // reftable backend or reflog elsewhere: ask git (newest first → reverse).
+                Err(_) => {
+                    let r = format!("refs/heads/{b}");
+                    let mut v: Vec<(i64, String)> = self
+                        .run(&["reflog", "show", "--date=unix", "--format=%gd%x1f%gs", &r, "--"])
+                        .map(|o| {
+                            o.lines()
+                                .filter_map(|l| {
+                                    let (sel, msg) = l.split_once('\x1f')?;
+                                    let ts = sel.rsplit_once("@{")?.1.trim_end_matches('}').parse().ok()?;
+                                    Some((ts, msg.to_string()))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    v.reverse();
+                    v
+                }
+            };
+            for (ts, m) in msgs {
+                if let Some(rest) = m.strip_prefix("Branch: renamed refs/heads/") {
+                    if let Some((old, new)) = rest.split_once(" to refs/heads/") {
+                        out.push((old.to_string(), new.trim().to_string(), ts));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub fn rename_branch(&self, old: &str, new: &str) -> Result<()> {
+        self.run(&["branch", "-m", old, new]).map(drop)
+    }
+
     pub fn remote_url(&self, remote: &str) -> Option<String> {
         let key = format!("remote.{remote}.url");
         self.run(&["config", "--get", &key]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
