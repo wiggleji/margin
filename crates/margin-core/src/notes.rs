@@ -355,7 +355,7 @@ impl NoteStore {
     }
 }
 
-fn atomic_write(p: &Path, data: &[u8]) -> Result<()> {
+pub(crate) fn atomic_write(p: &Path, data: &[u8]) -> Result<()> {
     if let Some(dir) = p.parent() {
         fs::create_dir_all(dir)?;
     }

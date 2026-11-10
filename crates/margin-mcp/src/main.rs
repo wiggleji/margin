@@ -236,12 +236,19 @@ impl Server {
                 Ok(json!({
                     "renamed_branches_followed": renamed,
                     "reattached_by_patch_id": reattached,
+                    "undoable_reattachments": margin_core::journal::active(&self.notes).iter().map(|e| json!({
+                        "id": e.id, "from": e.from, "to": e.to, "at": margin_core::format_utc(e.at)
+                    })).collect::<Vec<_>>(),
                     "detached": detached.iter().map(|d| json!({
                         "target": d.target, "title": d.title, "reason": d.reason, "why": d.reason.describe(),
                         "old_commit_subject": d.subject, "modified": margin_core::format_utc(d.modified),
                         "same_change_in": d.candidates,
                     })).collect::<Vec<_>>()
                 }))
+            }
+            "undo_reattach" => {
+                let id = s("id").ok_or_else(|| Error("id is required".into()))?;
+                Ok(serde_json::to_value(margin_core::journal::undo(&self.notes, id)?)?)
             }
             "move_note" => {
                 let from = NoteTarget::parse(s("from").ok_or_else(|| Error("from is required".into()))?)?;
@@ -410,6 +417,9 @@ fn tool_defs() -> Value {
          "annotations": {"destructiveHint": false, "openWorldHint": false}},
         {"name": "list_detached_notes", "description": "Notes whose commit is no longer on any branch (rebased/amended/deleted) or whose branch was deleted. Branch notes of renamed branches are moved to the new name, and commit notes whose change still exists as exactly one rewritten commit (same git patch-id: rebase, cherry-pick, message-only amend) are re-attached to it, automatically first. Ambiguous matches are listed in same_change_in.",
          "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": false, "idempotentHint": true, "openWorldHint": false}},
+        {"name": "undo_reattach", "description": "Undo an automatic re-attachment (id from list_detached_notes.undoable_reattachments): the note returns to the old commit, the destination is restored, and the pair is never auto-applied again.",
+         "inputSchema": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}},
+         "annotations": {"destructiveHint": false, "openWorldHint": false}},
         {"name": "move_note", "description": "Re-attach a note to another target (e.g. a detached commit note to the rewritten commit, or to branch:@). If the destination has a note, the moved text is appended to it.",
          "inputSchema": {"type": "object", "required": ["from", "to"], "properties": {
             "from": {"type": "string", "description": "exact existing target, e.g. commit:<full-sha> or branch:<old-name>"}, "to": target}},

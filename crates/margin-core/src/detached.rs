@@ -57,6 +57,8 @@ pub struct DetachedNote {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Reattached {
+    /// Journal id — pass to `journal::undo`.
+    pub id: String,
     pub from: String,
     pub to: String,
     /// "patch-id"
@@ -172,12 +174,18 @@ pub fn auto_reattach(repo: &Repo, store: &NoteStore, detached: &mut Vec<Detached
         if d.reason != Reason::CommitUnreachable {
             continue; // the old object must exist to compute its patch-id
         }
-        let matches = find_rewrites(repo, old)?;
+        // Never re-apply a move the user undid.
+        let matches: Vec<String> = find_rewrites(repo, old)?
+            .into_iter()
+            .filter(|m| !crate::journal::is_rejected(store, &d.target, &format!("commit:{m}")))
+            .collect();
         match matches.as_slice() {
             [new] => {
                 let to = NoteTarget::Commit(new.clone());
-                store.move_note(&d.note, &to)?;
-                done.push(Reattached { from: d.target.clone(), to: to.to_string(), how: "patch-id" });
+                // Another process (GUI vs MCP) may have moved it already: skip, don't fail the scan.
+                if let Ok(id) = crate::journal::move_recorded(store, &d.note, &to) {
+                    done.push(Reattached { id, from: d.target.clone(), to: to.to_string(), how: "patch-id" });
+                }
             }
             [] => {}
             many => d.candidates = many.to_vec(),
@@ -272,6 +280,20 @@ mod reattach_tests {
         assert_eq!(det.len(), 1);
         assert_eq!(det[0].target, format!("commit:{c2}"));
 
+        // Undo: note goes back to the old commit, destination removed,
+        // and the next scan does not re-apply the same move.
+        let active = crate::journal::active(&store);
+        assert_eq!(active.len(), 1);
+        let out = crate::journal::undo(&store, &moved[0].id).unwrap();
+        assert!(!out.kept_edited_destination);
+        assert_eq!(store.read(&NoteTarget::Commit(c1.clone())).unwrap().unwrap().content, "note on add 2");
+        assert!(store.read(&NoteTarget::Commit(git(&d, &["rev-parse", "HEAD~1"]))).unwrap().is_none());
+        let mut det = find(&repo, &store, &HashSet::new()).unwrap();
+        assert!(auto_reattach(&repo, &store, &mut det).unwrap().is_empty(), "undone pair must not be re-applied");
+        assert!(det.iter().any(|x| x.target == format!("commit:{c1}")));
+        assert!(crate::journal::undo(&store, &moved[0].id).is_err(), "double undo is refused");
+        store.delete(&NoteTarget::Commit(c1.clone())).unwrap();
+
         // Message-only amend keeps the patch-id → re-attached.
         store.write(&NoteTarget::Commit(git(&d, &["rev-parse", "HEAD"])), "tip note", None).unwrap();
         git(&d, &["commit", "-q", "--amend", "-m", "add b (final wording)"]);
@@ -280,6 +302,13 @@ mod reattach_tests {
         let moved = auto_reattach(&repo, &store, &mut det).unwrap();
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0].to, format!("commit:{tip}"));
+        // Undo after the user edited the re-attached note: edits are kept,
+        // the original is restored on the old commit.
+        store.write(&NoteTarget::Commit(tip.clone()), "tip note + my edit", None).unwrap();
+        let out = crate::journal::undo(&store, &moved[0].id).unwrap();
+        assert!(out.kept_edited_destination);
+        assert_eq!(store.read(&NoteTarget::Commit(tip.clone())).unwrap().unwrap().content, "tip note + my edit");
+        assert_eq!(store.read(&NoteTarget::Commit(moved[0].from.trim_start_matches("commit:").into())).unwrap().unwrap().content, "tip note");
 
         // Ambiguous: same change cherry-picked onto two branches → suggestions, no move.
         git(&d, &["switch", "-qc", "solo", "main"]);

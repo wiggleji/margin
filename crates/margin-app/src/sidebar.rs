@@ -14,6 +14,8 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
     let isz = ui.text_style_height(&egui::TextStyle::Small) + 1.0;
     let note_icon = |tint| icons::image(&ctx, Icon::Note, isz, tint);
     egui::ScrollArea::vertical().id_salt("sidebar").auto_shrink([false, false]).show(ui, |ui| {
+        // One line per row: truncate with "…" instead of wrapping.
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         ui.add_space(4.0);
         let n = snap.status.files.len();
         if ui.selectable_label(rv.sel == Sel::Working, format!("Working directory ({n})")).clicked() {
@@ -102,6 +104,37 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                 });
             }
         });
+
+        // ------------------------------------------------- recently re-attached
+        if !rv.reattached.is_empty() {
+            egui::CollapsingHeader::new(RichText::new(format!("RE-ATTACHED ({})", rv.reattached.len())).small().strong())
+                .id_salt("reattached")
+                .default_open(true)
+                .show(ui, |ui| {
+                    for e in &rv.reattached {
+                        let short = |t: &str| t.strip_prefix("commit:").map(|c| c[..7.min(c.len())].to_string()).unwrap_or_else(|| t.to_string());
+                        ui.horizontal(|ui| {
+                            let mut atoms = egui::Atoms::new(note_icon(theme::ACCENT));
+                            atoms.push_right(format!("{} → {}", short(&e.from), short(&e.to)));
+                            let resp = ui.selectable_label(false, atoms).on_hover_text(format!(
+                                "Moved automatically (same change, git patch-id) at {} UTC.\nClick to show the new commit.",
+                                margin_core::format_utc(e.at)
+                            ));
+                            if resp.clicked() {
+                                if let Some(c) = e.to.strip_prefix("commit:") {
+                                    actions.push(Action::JumpTo(c.to_string()));
+                                }
+                            }
+                            if ui.small_button("Undo").clicked() {
+                                actions.push(Action::UndoReattach(e.id.clone()));
+                            }
+                            if ui.small_button("Keep").clicked() {
+                                actions.push(Action::KeepReattach(e.id.clone()));
+                            }
+                        });
+                    }
+                });
+        }
 
         // ------------------------------------------------------- detached notes
         if !rv.detached.is_empty() {

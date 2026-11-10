@@ -81,6 +81,10 @@ pub enum Action {
     /// Move a note; `to` is `commit:<rev>` or `branch:<name>`.
     MoveNote { from: NoteTarget, to: String },
     DeleteNote(NoteTarget),
+    /// Revert an automatic re-attachment (journal id).
+    UndoReattach(String),
+    /// Confirm an automatic re-attachment (stop offering undo).
+    KeepReattach(String),
     ScanDetached,
     OpenUrl(String),
     Copy(String),
@@ -128,6 +132,8 @@ pub struct RepoView {
     pub detached_sig: u64,
     /// Note opened explicitly (detached notes), shown in its own tab.
     pub pinned_note: Option<NoteTarget>,
+    /// Automatic re-attachments that can still be undone (newest first).
+    pub reattached: Vec<margin_core::journal::ReattachEntry>,
     pub notes_stamp: u64,
     /// Set by the watcher thread when the notes dir changes.
     pub notes_watch: Arc<AtomicBool>,
@@ -191,6 +197,8 @@ pub struct MarginApp {
     pub was_focused: bool,
     pub author: String,
     pub pending_copy: Option<String>,
+    /// Journal ids the status-bar "Undo" button reverts (last auto re-attach).
+    pub status_undo: Vec<String>,
     ctx: egui::Context,
 }
 
@@ -214,6 +222,7 @@ impl MarginApp {
             open_path: String::new(),
             was_focused: true,
             pending_copy: None,
+            status_undo: vec![],
             ctx: ctx.clone(),
         };
         if let Some(p) = repo {
@@ -225,10 +234,12 @@ impl MarginApp {
     }
 
     fn err(&mut self, e: impl ToString) {
+        self.status_undo.clear();
         self.status_line = Some((e.to_string(), true));
     }
 
     fn info(&mut self, s: impl ToString) {
+        self.status_undo.clear();
         self.status_line = Some((s.to_string(), false));
     }
 
@@ -334,6 +345,7 @@ impl MarginApp {
     pub fn reload_notes_index(&mut self) {
         if let Some(rv) = &mut self.rv {
             rv.note_index = rv.notes.list().map(|l| l.into_iter().map(|m| (m.target, m.title)).collect()).unwrap_or_default();
+            rv.reattached = margin_core::journal::active(&rv.notes);
             rv.notes_stamp = rv.notes.stamp();
         }
     }
@@ -382,6 +394,7 @@ impl MarginApp {
                         detached: vec![],
                         detached_sig: 0,
                         pinned_note: None,
+                        reattached: vec![],
                         notes_stamp: 0,
                         notes_watch: Arc::new(AtomicBool::new(false)),
                         editor: NoteEditor::default(),
@@ -692,6 +705,31 @@ impl MarginApp {
                     Err(e) => self.err(e),
                 }
             }
+            UndoReattach(id) => {
+                let Some(rv) = &mut self.rv else { return };
+                match margin_core::journal::undo(&rv.notes, &id) {
+                    Ok(out) => {
+                        let back = crate::notes_panel::short_target(&NoteTarget::parse(&out.restored).unwrap_or(NoteTarget::Repo));
+                        let mut msg = format!("Undone: the note is back on {back} (see Detached notes); it won't be re-attached there again");
+                        if out.kept_edited_destination {
+                            msg += ". The re-attached copy was edited afterwards, so it was left in place";
+                        }
+                        rv.detached_sig = 0; // rescan → the note shows up as detached again
+                        rv.editor.on_external_change(&rv.notes);
+                        self.info(msg);
+                        self.reload_notes_index();
+                        self.handle(Action::ScanDetached);
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            KeepReattach(id) => {
+                let Some(rv) = &mut self.rv else { return };
+                match margin_core::journal::keep(&rv.notes, &id) {
+                    Ok(()) => self.reload_notes_index(),
+                    Err(e) => self.err(e),
+                }
+            }
             FetchMyTasks => {
                 let Some(p) = self.tasks.clone() else { return };
                 self.jobs.spawn(move || Msg::MyTasks(p.my_open(30).map_err(|e| e.0)));
@@ -742,6 +780,7 @@ impl MarginApp {
                         if reattached.len() == 1 { "" } else { "s" },
                         list.join(", ")
                     ));
+                    self.status_undo = reattached.iter().map(|r| r.id.clone()).collect();
                     self.reload_notes_index();
                     if let Some(rv) = &mut self.rv {
                         // Follow a pinned note to its new home.
@@ -1056,7 +1095,7 @@ impl MarginApp {
         });
     }
 
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
+    fn status_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         egui::Panel::bottom("statusbar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 match &self.status_line {
@@ -1070,6 +1109,11 @@ impl MarginApp {
                         }
                         if resp.clicked() {
                             self.status_line = None;
+                        }
+                        if !self.status_undo.is_empty() && ui.small_button("Undo").clicked() {
+                            for id in self.status_undo.drain(..) {
+                                actions.push(Action::UndoReattach(id));
+                            }
                         }
                     }
                     None => {
@@ -1130,7 +1174,7 @@ impl eframe::App for MarginApp {
             actions = self.welcome(ui);
         } else {
             self.toolbar(ui, &mut actions);
-            self.status_bar(ui);
+            self.status_bar(ui, &mut actions);
             let tasks_enabled = self.tasks.is_some();
             let rv = self.rv.as_mut().unwrap();
             egui::Panel::left("sidebar").resizable(true).default_size(220.0).show(ui, |ui| {

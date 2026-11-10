@@ -251,6 +251,30 @@ pub fn show(
     });
     ui.separator();
 
+    // ---- "re-attached automatically" banner (Commit / pinned tabs)
+    if let Some(t) = &rv.editor.target {
+        let ts = t.to_string();
+        if let Some(e) = rv.reattached.iter().find(|e| e.to == ts) {
+            let from = e.from.strip_prefix("commit:").unwrap_or(&e.from);
+            let id = e.id.clone();
+            egui::Frame::new().fill(theme::HUNK_BG).inner_margin(6.0).corner_radius(3.0).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!(
+                        "Re-attached automatically from {} (same change, git patch-id) · {} UTC.",
+                        &from[..8.min(from.len())],
+                        margin_core::format_utc(e.at)
+                    )).color(theme::TEXT_DIM));
+                    if ui.small_button("Undo").on_hover_text("Move the note back to the old commit and restore this one").clicked() {
+                        actions.push(Action::UndoReattach(id.clone()));
+                    }
+                    if ui.small_button("Keep").on_hover_text("Looks right — stop offering undo").clicked() {
+                        actions.push(Action::KeepReattach(id.clone()));
+                    }
+                });
+            });
+        }
+    }
+
     // ---- detached-note banner
     if rv.editor.tab == NoteTab::Pinned {
         if let Some(d) = rv.pinned_note.as_ref().and_then(|p| rv.detached.iter().find(|d| &d.note == p)) {
