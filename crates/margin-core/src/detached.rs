@@ -290,7 +290,12 @@ mod reattach_tests {
         store.write(&NoteTarget::Commit(dup.clone()), "dup note", None).unwrap();
         git(&d, &["switch", "-qc", "x1", "main"]);
         git(&d, &["cherry-pick", "-x", &dup]);
+        // Give x2 a different base so its copy is a different commit (two
+        // cherry-picks onto the same parent in the same second are identical).
         git(&d, &["switch", "-qc", "x2", "main"]);
+        w("e.txt", "other\n");
+        git(&d, &["add", "."]);
+        git(&d, &["commit", "-qm", "unrelated"]);
         git(&d, &["cherry-pick", "-x", &dup]);
         git(&d, &["branch", "-D", "solo"]);
         let mut det = find(&repo, &store, &HashSet::new()).unwrap();
