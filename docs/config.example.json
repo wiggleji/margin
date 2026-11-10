@@ -1,0 +1,11 @@
+{
+  "jira": {
+    "base_url": "https://your-company.atlassian.net",
+    "flavor": "cloud",
+    "email": "you@your-company.com",
+    "token_env": "MARGIN_JIRA_TOKEN",
+    "keychain_service": "margin-jira"
+  },
+  "note_author": null,
+  "font_size": 13.0
+}

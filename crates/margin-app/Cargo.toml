@@ -1,0 +1,25 @@
+[package]
+name = "margin-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Margin — a super-light git client with Markdown notes and task tracking"
+
+[[bin]]
+name = "margin"
+path = "src/main.rs"
+
+[dependencies]
+margin-core.workspace = true
+pulldown-cmark.workspace = true
+# glow (OpenGL) instead of wgpu: much smaller binary, faster cold start.
+# No `persistence`/ron, no `links`/webbrowser (we open URLs via `open`).
+eframe = { version = "0.37", default-features = false, features = [
+    "glow", "default_fonts", "system_fonts", "clipboard", "accesskit",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rfd = { version = "0.18", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["x11", "wayland"] }
