@@ -36,6 +36,7 @@ pub enum Msg {
     Detached {
         workdir: PathBuf,
         renamed: Vec<margin_core::detached::Renamed>,
+        reattached: Vec<margin_core::detached::Reattached>,
         result: Result<Vec<margin_core::detached::DetachedNote>, String>,
     },
 }

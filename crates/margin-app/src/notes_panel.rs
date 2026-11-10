@@ -261,6 +261,14 @@ pub fn show(
                     if let Some(sj) = &d.subject {
                         ui.label(RichText::new(format!("Was: “{sj}”")).color(theme::TEXT_DIM));
                     }
+                    if !d.candidates.is_empty() {
+                        ui.label(RichText::new("Same change found in:").color(theme::TEXT_DIM));
+                        for c in &d.candidates {
+                            if ui.small_button(&c[..8.min(c.len())]).on_hover_text("Attach the note to this commit").clicked() {
+                                actions.push(Action::MoveNote { from: from.clone(), to: format!("commit:{c}") });
+                            }
+                        }
+                    }
                     if ui.small_button("Re-attach…").clicked() {
                         actions.push(Action::ReattachDialog(from.clone()));
                     }

@@ -608,10 +608,17 @@ impl MarginApp {
                 // Everything in the loaded log is reachable from a ref: skip those.
                 let known: std::collections::HashSet<String> = snap.commits.iter().map(|c| c.id.clone()).collect();
                 let workdir = repo.workdir.clone();
+                let auto = self.cfg.auto_reattach.unwrap_or(true);
                 self.jobs.spawn(move || {
                     let renamed = margin_core::detached::follow_renames(&repo, &notes).unwrap_or_default();
-                    let result = margin_core::detached::find(&repo, &notes, &known).map_err(|e| e.0);
-                    Msg::Detached { workdir, renamed, result }
+                    let mut reattached = vec![];
+                    let result = margin_core::detached::find(&repo, &notes, &known).and_then(|mut d| {
+                        if auto {
+                            reattached = margin_core::detached::auto_reattach(&repo, &notes, &mut d)?;
+                        }
+                        Ok(d)
+                    });
+                    Msg::Detached { workdir, renamed, reattached, result: result.map_err(|e| e.0) }
                 });
             }
             RenameBranchDialog(old) => self.dialog = Some(Dialog::RenameBranch { new: old.clone(), old }),
@@ -635,10 +642,13 @@ impl MarginApp {
                 let Some(rv) = &self.rv else { return };
                 let (to_commit, value) = match &from {
                     NoteTarget::Commit(_) => {
-                        // Suggest the rewritten commit: same subject on a current branch.
-                        let subject = rv.detached.iter().find(|d| d.note == from).and_then(|d| d.subject.clone());
-                        let guess = subject.and_then(|s| {
-                            rv.snap.as_ref()?.commits.iter().find(|c| c.subject == s).map(|c| c.short_id().to_string())
+                        // Suggest the rewritten commit: a patch-id match first,
+                        // else the same subject on a current branch.
+                        let d = rv.detached.iter().find(|d| d.note == from);
+                        let by_patch = d.and_then(|d| d.candidates.first()).map(|c| c[..10.min(c.len())].to_string());
+                        let subject = d.and_then(|d| d.subject.clone());
+                        let guess = by_patch.or_else(|| {
+                            subject.and_then(|s| rv.snap.as_ref()?.commits.iter().find(|c| c.subject == s).map(|c| c.short_id().to_string()))
                         });
                         (true, guess.unwrap_or_default())
                     }
@@ -717,11 +727,30 @@ impl MarginApp {
                 }
                 self.handle(Action::FetchPrs { force: true });
             }
-            Msg::Detached { workdir, renamed, result } => {
+            Msg::Detached { workdir, renamed, reattached, result } => {
                 let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
                 match result {
                     Ok(d) => rv.detached = d,
                     Err(e) => self.status_line = Some((format!("Detached-notes scan: {e}"), true)),
+                }
+                if !reattached.is_empty() {
+                    let short = |t: &str| t.strip_prefix("commit:").map(|c| c[..7.min(c.len())].to_string()).unwrap_or_else(|| t.to_string());
+                    let list: Vec<String> = reattached.iter().map(|r| format!("{} → {}", short(&r.from), short(&r.to))).collect();
+                    self.info(format!(
+                        "Re-attached {} commit note{} to the rewritten commit (same patch-id): {}",
+                        reattached.len(),
+                        if reattached.len() == 1 { "" } else { "s" },
+                        list.join(", ")
+                    ));
+                    self.reload_notes_index();
+                    if let Some(rv) = &mut self.rv {
+                        // Follow a pinned note to its new home.
+                        if let Some(p) = rv.pinned_note.clone() {
+                            if let Some(r) = reattached.iter().find(|r| r.from == p.to_string()) {
+                                rv.pinned_note = NoteTarget::parse(&r.to).ok();
+                            }
+                        }
+                    }
                 }
                 if !renamed.is_empty() {
                     let list: Vec<String> = renamed.iter().map(|r| format!("{} → {}", r.from, r.to)).collect();

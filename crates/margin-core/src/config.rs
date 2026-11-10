@@ -28,6 +28,10 @@ pub struct Config {
     /// `https://linear.app/acme/issue/{key}` or `https://acme.atlassian.net/browse/{key}`.
     #[serde(default)]
     pub task_url_template: Option<String>,
+    /// Move detached commit notes to their rewritten commit when `git patch-id`
+    /// finds exactly one match (default: true).
+    #[serde(default)]
+    pub auto_reattach: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

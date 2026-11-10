@@ -391,6 +391,52 @@ impl Repo {
         out
     }
 
+    /// `git patch-id --stable` for each commit: a hash of the change itself
+    /// (ignores SHA, message, author, line offsets). Merge commits and empty
+    /// commits have no patch and are absent from the result.
+    pub fn patch_ids(&self, ids: &[String]) -> Result<std::collections::HashMap<String, String>> {
+        if ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let input = ids.iter().map(|i| format!("{i}\n")).collect::<String>();
+        let patches = self.run_stdin(
+            &["log", "--no-walk=unsorted", "--stdin", "-p", "--no-color", "--no-ext-diff", "--format=commit %H"],
+            input.as_bytes(),
+        )?;
+        let out = self.run_stdin(&["patch-id", "--stable"], patches.as_bytes())?;
+        Ok(out
+            .lines()
+            .filter_map(|l| l.split_once(' ').map(|(pid, c)| (c.trim().to_string(), pid.to_string())))
+            .collect())
+    }
+
+    /// (author email, author time) — preserved by rebase, amend and cherry-pick.
+    pub fn author_stamp(&self, id: &str) -> Option<(String, i64)> {
+        let o = self.run(&["log", "-1", "--format=%ae%x1f%at", id, "--"]).ok()?;
+        let (e, t) = o.trim().split_once('\x1f')?;
+        Some((e.to_string(), t.parse().ok()?))
+    }
+
+    /// Non-merge commits on branches/tags/remotes/HEAD that are NOT ancestors
+    /// of `old` — where a rewritten copy of `old` would be. Newest first.
+    pub fn rewrite_candidates(&self, old: &str, limit: usize) -> Result<Vec<(String, String, i64)>> {
+        let max = format!("--max-count={limit}");
+        let not = format!("^{old}");
+        let mut args = vec!["log", "--no-merges", &max, "--format=%H%x1f%ae%x1f%at", "--branches", "--tags", "--remotes"];
+        if self.has_head() {
+            args.push("HEAD");
+        }
+        args.extend_from_slice(&[&not, "--"]);
+        Ok(self
+            .run(&args)?
+            .lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split('\x1f').collect();
+                (f.len() == 3).then(|| (f[0].to_string(), f[1].to_string(), f[2].parse().unwrap_or(0)))
+            })
+            .collect())
+    }
+
     pub fn rename_branch(&self, old: &str, new: &str) -> Result<()> {
         self.run(&["branch", "-m", old, new]).map(drop)
     }

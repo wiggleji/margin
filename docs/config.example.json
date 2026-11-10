@@ -7,6 +7,7 @@
     "keychain_service": "margin-jira"
   },
   "task_url_template": "https://linear.app/your-team/issue/{key}",
+  "auto_reattach": true,
   "github": {
     "enterprise_hosts": ["github.your-company.com"],
     "host_aliases": { "github-work": "github.com" }

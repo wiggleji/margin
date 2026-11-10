@@ -7,6 +7,10 @@
 //!   (in Margin or with `git branch -m` in a terminal) the note moves to the
 //!   new name automatically; renames are read from the reflog. If the branch
 //!   was deleted, the note becomes detached.
+//! * **Auto re-attach**: a detached commit note whose change still exists as
+//!   a *different* commit (rebase, cherry-pick, message-only amend) is moved
+//!   to it when `git patch-id` finds exactly one match. If the change itself
+//!   was edited (amend with new content, squash), it stays detached.
 
 use crate::git::{RefKind, Repo};
 use crate::notes::{NoteMeta, NoteStore, NoteTarget};
@@ -46,6 +50,17 @@ pub struct DetachedNote {
     pub reason: Reason,
     /// Subject of the old commit, when it still exists.
     pub subject: Option<String>,
+    /// Commits with the same patch-id when there was more than one (ambiguous:
+    /// not moved automatically, offered as suggestions).
+    pub candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Reattached {
+    pub from: String,
+    pub to: String,
+    /// "patch-id"
+    pub how: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -125,6 +140,7 @@ pub fn find(repo: &Repo, store: &NoteStore, known_reachable: &HashSet<String>) -
             modified: m.modified,
             reason,
             subject,
+            candidates: vec![],
         })
     };
     for m in &metas {
@@ -141,6 +157,148 @@ pub fn find(repo: &Repo, store: &NoteStore, known_reachable: &HashSet<String>) -
         }
     }
     Ok(out)
+}
+
+/// Candidates scanned by patch-id when no same-author-date commit matched.
+const FALLBACK_SCAN: usize = 200;
+
+/// Move detached commit notes to their rewritten commit when `git patch-id`
+/// identifies exactly one. Re-attached notes are removed from `detached`;
+/// ambiguous ones get `candidates`.
+pub fn auto_reattach(repo: &Repo, store: &NoteStore, detached: &mut Vec<DetachedNote>) -> Result<Vec<Reattached>> {
+    let mut done = Vec::new();
+    for d in detached.iter_mut() {
+        let NoteTarget::Commit(old) = &d.note else { continue };
+        if d.reason != Reason::CommitUnreachable {
+            continue; // the old object must exist to compute its patch-id
+        }
+        let matches = find_rewrites(repo, old)?;
+        match matches.as_slice() {
+            [new] => {
+                let to = NoteTarget::Commit(new.clone());
+                store.move_note(&d.note, &to)?;
+                done.push(Reattached { from: d.target.clone(), to: to.to_string(), how: "patch-id" });
+            }
+            [] => {}
+            many => d.candidates = many.to_vec(),
+        }
+    }
+    let moved: HashSet<&str> = done.iter().map(|r| r.from.as_str()).collect();
+    detached.retain(|d| !moved.contains(d.target.as_str()));
+    Ok(done)
+}
+
+/// Commits on current refs carrying the same change as `old`.
+pub fn find_rewrites(repo: &Repo, old: &str) -> Result<Vec<String>> {
+    let Some(pid) = repo.patch_ids(&[old.to_string()])?.remove(old) else {
+        return Ok(vec![]); // merge or empty commit: no patch-id
+    };
+    let cands = repo.rewrite_candidates(old, 5000)?;
+    let stamp = repo.author_stamp(old);
+    // 1) Rebase/amend/cherry-pick keep author email + date: check those first (usually 1).
+    let (same, rest): (Vec<_>, Vec<_>) = cands.into_iter().partition(|(_, e, t)| stamp.as_ref().is_some_and(|(se, st)| se == e && st == t));
+    let matching = |ids: Vec<String>| -> Result<Vec<String>> {
+        let pids = repo.patch_ids(&ids)?;
+        Ok(ids.into_iter().filter(|i| pids.get(i) == Some(&pid)).collect())
+    };
+    let m = matching(same.into_iter().map(|c| c.0).collect())?;
+    if !m.is_empty() {
+        return Ok(m);
+    }
+    // 2) Author date was reset (e.g. `rebase --reset-author-date`): scan recent commits.
+    matching(rest.into_iter().take(FALLBACK_SCAN).map(|c| c.0).collect())
+}
+
+#[cfg(test)]
+mod reattach_tests {
+    use super::*;
+    use std::process::Command;
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let o = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn patch_id_reattach() {
+        let d = std::env::temp_dir().join(format!("margin-reattach-{}-{}", std::process::id(), crate::time::now_unix()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let w = |f: &str, c: &str| std::fs::write(d.join(f), c).unwrap();
+        git(&d, &["init", "-q"]);
+        w("a.txt", "1\n");
+        git(&d, &["add", "."]);
+        git(&d, &["commit", "-qm", "base"]);
+        git(&d, &["switch", "-qc", "feat"]);
+        w("a.txt", "1\n2\n");
+        git(&d, &["commit", "-qam", "add 2"]);
+        let c1 = git(&d, &["rev-parse", "HEAD"]);
+        w("b.txt", "x\n");
+        git(&d, &["add", "."]);
+        git(&d, &["commit", "-qm", "add b"]);
+        let c2 = git(&d, &["rev-parse", "HEAD"]);
+        git(&d, &["switch", "-q", "main"]);
+        w("c.txt", "main work\n");
+        git(&d, &["add", "."]);
+        git(&d, &["commit", "-qm", "main work"]);
+
+        let repo = Repo::open(&d).unwrap();
+        let store = NoteStore::for_repo(&repo).unwrap();
+        store.write(&NoteTarget::Commit(c1.clone()), "note on add 2", None).unwrap();
+        store.write(&NoteTarget::Commit(c2.clone()), "note on add b", None).unwrap();
+
+        // Rebase feat onto main → both commits rewritten with identical changes.
+        git(&d, &["switch", "-q", "feat"]);
+        git(&d, &["rebase", "-q", "main"]);
+        // Then amend the tip WITH a content change → its patch-id differs.
+        w("b.txt", "x\ny\n");
+        git(&d, &["commit", "-qa", "--amend", "-m", "add b (edited)"]);
+        let new_c1 = git(&d, &["rev-parse", "HEAD~1"]);
+
+        let mut det = find(&repo, &store, &HashSet::new()).unwrap();
+        assert_eq!(det.len(), 2);
+        let moved = auto_reattach(&repo, &store, &mut det).unwrap();
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(moved[0].to, format!("commit:{new_c1}"));
+        assert_eq!(store.read(&NoteTarget::Commit(new_c1)).unwrap().unwrap().content, "note on add 2");
+        // The edited commit's note stays detached for a human to decide.
+        assert_eq!(det.len(), 1);
+        assert_eq!(det[0].target, format!("commit:{c2}"));
+
+        // Message-only amend keeps the patch-id → re-attached.
+        store.write(&NoteTarget::Commit(git(&d, &["rev-parse", "HEAD"])), "tip note", None).unwrap();
+        git(&d, &["commit", "-q", "--amend", "-m", "add b (final wording)"]);
+        let tip = git(&d, &["rev-parse", "HEAD"]);
+        let mut det = find(&repo, &store, &HashSet::new()).unwrap();
+        let moved = auto_reattach(&repo, &store, &mut det).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].to, format!("commit:{tip}"));
+
+        // Ambiguous: same change cherry-picked onto two branches → suggestions, no move.
+        git(&d, &["switch", "-qc", "solo", "main"]);
+        w("d.txt", "dup\n");
+        git(&d, &["add", "."]);
+        git(&d, &["commit", "-qm", "dup change"]);
+        let dup = git(&d, &["rev-parse", "HEAD"]);
+        store.write(&NoteTarget::Commit(dup.clone()), "dup note", None).unwrap();
+        git(&d, &["switch", "-qc", "x1", "main"]);
+        git(&d, &["cherry-pick", "-x", &dup]);
+        git(&d, &["switch", "-qc", "x2", "main"]);
+        git(&d, &["cherry-pick", "-x", &dup]);
+        git(&d, &["branch", "-D", "solo"]);
+        let mut det = find(&repo, &store, &HashSet::new()).unwrap();
+        let moved = auto_reattach(&repo, &store, &mut det).unwrap();
+        assert!(moved.is_empty());
+        let amb = det.iter().find(|x| x.target == format!("commit:{dup}")).unwrap();
+        assert_eq!(amb.candidates.len(), 2);
+    }
 }
 
 fn local_branches(repo: &Repo) -> Result<HashSet<String>> {
@@ -199,6 +357,10 @@ mod tests {
         got.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(got, vec![("branch:gone".into(), Reason::BranchMissing), (format!("commit:{tip}"), Reason::CommitUnreachable)]);
         assert_eq!(det.iter().find(|d| d.reason == Reason::CommitUnreachable).unwrap().subject.as_deref(), Some("work"));
+        // The amend above only changed the message of an empty commit (no patch):
+        // nothing to match, stays detached.
+        let mut det2 = det.clone();
+        assert!(auto_reattach(&repo, &store, &mut det2).unwrap().is_empty());
         // A commit note on a reachable commit is not detached.
         let base = repo.resolve("main").unwrap();
         store.write(&NoteTarget::Commit(base), "fine", None).unwrap();

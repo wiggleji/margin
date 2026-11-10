@@ -227,12 +227,19 @@ impl Server {
             "list_detached_notes" => {
                 // Same maintenance the GUI does: carry notes of renamed branches first.
                 let renamed = margin_core::detached::follow_renames(&self.repo, &self.notes)?;
-                let detached = margin_core::detached::find(&self.repo, &self.notes, &Default::default())?;
+                let mut detached = margin_core::detached::find(&self.repo, &self.notes, &Default::default())?;
+                let reattached = if self.cfg.auto_reattach.unwrap_or(true) {
+                    margin_core::detached::auto_reattach(&self.repo, &self.notes, &mut detached)?
+                } else {
+                    vec![]
+                };
                 Ok(json!({
                     "renamed_branches_followed": renamed,
+                    "reattached_by_patch_id": reattached,
                     "detached": detached.iter().map(|d| json!({
                         "target": d.target, "title": d.title, "reason": d.reason, "why": d.reason.describe(),
                         "old_commit_subject": d.subject, "modified": margin_core::format_utc(d.modified),
+                        "same_change_in": d.candidates,
                     })).collect::<Vec<_>>()
                 }))
             }
@@ -401,7 +408,7 @@ fn tool_defs() -> Value {
          "inputSchema": {"type": "object", "required": ["target", "content"], "properties": {
             "target": target, "content": {"type": "string"}, "author": {"type": "string"}}},
          "annotations": {"destructiveHint": false, "openWorldHint": false}},
-        {"name": "list_detached_notes", "description": "Notes whose commit is no longer on any branch (rebased/amended/deleted) or whose branch was deleted. Branch notes of renamed branches are moved to the new name automatically first.",
+        {"name": "list_detached_notes", "description": "Notes whose commit is no longer on any branch (rebased/amended/deleted) or whose branch was deleted. Branch notes of renamed branches are moved to the new name, and commit notes whose change still exists as exactly one rewritten commit (same git patch-id: rebase, cherry-pick, message-only amend) are re-attached to it, automatically first. Ambiguous matches are listed in same_change_in.",
          "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": false, "idempotentHint": true, "openWorldHint": false}},
         {"name": "move_note", "description": "Re-attach a note to another target (e.g. a detached commit note to the rewritten commit, or to branch:@). If the destination has a note, the moved text is appended to it.",
          "inputSchema": {"type": "object", "required": ["from", "to"], "properties": {
