@@ -1,7 +1,6 @@
-//! Optional tab strip above the toolbar (Settings → Appearance → "Show tab
-//! strip"). Purely a view over `MarginApp::tabs()`; switching/closing go
-//! through the same actions as the directory dropdown, so removing this
-//! module removes nothing else.
+//! Tab strip above the toolbar: one tab per open repository/worktree.
+//! A view over `MarginApp::tabs()`; switching/closing go through the same
+//! actions as the directory dropdown and ⌘P "Change directory".
 
 use crate::app::Action;
 use crate::theme;

@@ -100,7 +100,6 @@ pub enum Action {
     /// Close the tab at a visual index.
     CloseTab(usize),
     ToggleAutoFetch,
-    ToggleTabStrip,
     /// Revert an automatic re-attachment (journal id).
     UndoReattach(String),
     /// Confirm an automatic re-attachment (stop offering undo).
@@ -740,12 +739,6 @@ impl MarginApp {
                 self.op("Fetch", |r| r.fetch())
             }
             OpenSettings => self.show_settings = true,
-            ToggleTabStrip => {
-                self.settings.show_tab_strip = !self.settings.show_tab_strip;
-                if let Err(e) = config::save_settings(&self.settings) {
-                    self.err(e);
-                }
-            }
             ToggleAutoFetch => {
                 self.settings.auto_fetch = !self.settings.auto_fetch;
                 if let Err(e) = config::save_settings(&self.settings) {
@@ -1384,12 +1377,7 @@ impl MarginApp {
             // Directory menu: open tabs (switch / ×), recent, open, reveal, close.
             let mut title = egui::text::LayoutJob::default();
             let body = egui::TextStyle::Body.resolve(left.style());
-            let small = egui::TextStyle::Small.resolve(left.style());
             title.append(&rv.repo.name(), 0.0, egui::TextFormat { font_id: body, color: theme::TEXT, ..Default::default() });
-            if tabs.len() > 1 && !self.settings.show_tab_strip {
-                let pos = tabs.iter().position(|t| t.2).unwrap_or(0) + 1;
-                title.append(&format!("  {pos}/{}", tabs.len()), 0.0, egui::TextFormat::simple(small, theme::TEXT_DIM));
-            }
             let menu = left.menu_button(title, |ui| {
                 ui.set_min_width(260.0);
                 ui.label(egui::RichText::new("OPEN").small().strong().color(theme::TEXT_DIM));
@@ -1688,9 +1676,7 @@ impl eframe::App for MarginApp {
             actions = self.welcome(ui);
         } else {
             // Tab strip first so it sits above the toolbar.
-            if self.settings.show_tab_strip {
-                crate::tab_strip::show(ui, &self.tabs(), &mut actions);
-            }
+            crate::tab_strip::show(ui, &self.tabs(), &mut actions);
             self.toolbar(ui, &mut actions);
             let tasks_enabled = self.tasks.is_some();
             let rv = self.rv.as_mut().unwrap();
@@ -1785,10 +1771,6 @@ impl MarginApp {
             ui.set_width(420.0);
             ui.heading("Settings");
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("APPEARANCE").small().strong().color(theme::TEXT_DIM));
-            ui.separator();
-            changed |= ui.checkbox(&mut self.settings.show_tab_strip, "Show tab strip above the toolbar").changed();
-            ui.add_space(10.0);
             ui.label(egui::RichText::new("FETCH").small().strong().color(theme::TEXT_DIM));
             ui.separator();
             changed |= ui.checkbox(&mut self.settings.auto_fetch, "Fetch automatically in the background").changed();
