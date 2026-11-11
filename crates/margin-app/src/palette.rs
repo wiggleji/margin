@@ -122,6 +122,11 @@ impl Palette {
         Palette { cmds, query: String::new(), sel: 0, active: None, step: 0, values: vec![], focus: true }
     }
 
+    pub fn with_query(mut self, q: String) -> Self {
+        self.query = q;
+        self
+    }
+
     fn enter_step(&mut self) {
         self.sel = 0;
         self.focus = true;

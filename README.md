@@ -30,7 +30,15 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 
 **Git Flow without the extension.** It's implemented with plain git and uses the standard `gitflow.*` config, so it's compatible with repos set up by `git flow init`. Finish is idempotent: after a merge conflict, resolve it, commit, and run Finish again. A hotfix goes into an open release branch if there is one, like git-flow does.
 
-The window has a single top toolbar. Status messages, errors, and Undo appear there; there's no bottom bar.
+**Toolbar** (the only bar, at the top):
+
+```
+[repo ▾] [branch ▾] [‹][›]        [Commands ⌘P] [Search commits…]        status · Undo  [Pull ↓n] [Push ↑n]
+```
+- **repo ▾**: recent repositories, Open, Reveal in Finder, Open in Terminal, Close.
+- **branch ▾**: switch branch, New branch…, more branch commands. A merge or rebase in progress shows as a red badge (click it for continue/abort).
+- **‹ ›**: back and forward through what you selected (commits, working directory), like a browser. ⌘[ / ⌘] or the mouse back/forward buttons also work. Commits that no longer exist (rebased away) are skipped.
+- **Status messages, errors, and Undo** appear just left of Pull/Push. Fetch, Stash, and Refresh are in ⌘P; refresh also happens on window focus and ⌘R.
 
 **Git (Sublime Merge–style)**
 - Commit graph across all branches, remotes, and tags, virtualised for large histories, with a filter box.

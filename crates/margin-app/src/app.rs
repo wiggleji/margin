@@ -89,6 +89,10 @@ pub enum Action {
     /// Resolve a branch/tag/SHA and jump to it.
     GotoRev(String),
     OpenPalette,
+    /// Open the palette with a prefilled search (e.g. "branch").
+    OpenPaletteWith(String),
+    NavBack,
+    NavForward,
     /// Revert an automatic re-attachment (journal id).
     UndoReattach(String),
     /// Confirm an automatic re-attachment (stop offering undo).
@@ -151,6 +155,11 @@ pub struct RepoView {
     pub scroll_to_row: Option<usize>,
     pub loading: bool,
     pub limit: usize,
+    /// Selection history for the toolbar's back/forward (like a browser).
+    pub history: Vec<Sel>,
+    pub hist_pos: usize,
+    /// Set while navigating back/forward so the move isn't recorded again.
+    pub navigating: bool,
 }
 
 impl RepoView {
@@ -413,6 +422,9 @@ impl MarginApp {
                         scroll_to_row: None,
                         loading: true,
                         limit: PAGE,
+                        history: vec![Sel::Working],
+                        hist_pos: 0,
+                        navigating: false,
                     });
                     self.reload_notes_index();
                     self.start_notes_watcher();
@@ -440,6 +452,15 @@ impl MarginApp {
                     return;
                 }
                 rv.sel = sel.clone();
+                if !rv.navigating {
+                    // New selection: drop any "forward" entries, then record it.
+                    rv.history.truncate(rv.hist_pos + 1);
+                    rv.history.push(sel.clone());
+                    if rv.history.len() > 200 {
+                        rv.history.remove(0);
+                    }
+                    rv.hist_pos = rv.history.len() - 1;
+                }
                 rv.focus_task = None;
                 rv.focus_branch = None;
                 match sel {
@@ -744,6 +765,34 @@ impl MarginApp {
                 }
             }
             OpenPalette => self.palette = Some(crate::palette::Palette::new(crate::commands::build(self))),
+            OpenPaletteWith(q) => self.palette = Some(crate::palette::Palette::new(crate::commands::build(self)).with_query(q)),
+            NavBack | NavForward => {
+                let Some(rv) = &mut self.rv else { return };
+                let fwd = matches!(a, NavForward);
+                // Skip entries whose commit no longer exists (e.g. rebased away).
+                let mut pos = rv.hist_pos;
+                let target = loop {
+                    pos = if fwd { pos + 1 } else { match pos.checked_sub(1) { Some(p) => p, None => break None } };
+                    let Some(s) = rv.history.get(pos) else { break None };
+                    match s {
+                        Sel::Commit(id) if !rv.row_of.contains_key(id) && rv.repo.resolve(id).is_err() => continue,
+                        _ => break Some(s.clone()),
+                    }
+                };
+                if let Some(sel) = target {
+                    rv.hist_pos = pos;
+                    if let Sel::Commit(id) = &sel {
+                        if let Some(&row) = rv.row_of.get(id) {
+                            rv.scroll_to_row = Some(row + 1);
+                        }
+                    }
+                    rv.navigating = true;
+                    self.handle(Select(sel));
+                    if let Some(rv) = &mut self.rv {
+                        rv.navigating = false;
+                    }
+                }
+            }
             UndoReattach(id) => {
                 let Some(rv) = &mut self.rv else { return };
                 match margin_core::journal::undo(&rv.notes, &id) {
@@ -1078,83 +1127,167 @@ impl MarginApp {
         actions
     }
 
+    /// Single top toolbar:
+    /// [repo ▾] [branch ▾] [‹][›]      [Commands ⌘P][Search commits]      status … [Pull ↓n][Push ↑n]
     fn toolbar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let Some(rv) = &mut self.rv else { return };
+        let recent: Vec<String> = self.state.recent_repos.iter().filter(|r| **r != rv.repo.workdir.display().to_string()).take(10).cloned().collect();
+        let busy = self.busy.clone();
+        let working = rv.loading || self.jobs.in_flight > 0;
         egui::Panel::top("toolbar").show(ui, |ui| {
-            ui.add_space(3.0);
-            ui.horizontal(|ui| {
-                if ui.button("◀").on_hover_text("Close repository").clicked() {
-                    actions.push(Action::CloseRepo);
+            let h = ui.spacing().interact_size.y + 8.0;
+            let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::hover());
+            let bar = |ui: &mut egui::Ui, layout: egui::Layout, rect: egui::Rect| ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+            let left_to_right = egui::Layout::left_to_right(egui::Align::Center);
+            let right_to_left = egui::Layout::right_to_left(egui::Align::Center);
+
+            // ---- left: repository menu, branch switcher, back/forward
+            let mut left = bar(ui, left_to_right, row);
+            left.menu_button(egui::RichText::new(rv.repo.name()).strong(), |ui| {
+                for r in &recent {
+                    let name = std::path::Path::new(r).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    if ui.button(&name).on_hover_text(r).clicked() {
+                        actions.push(Action::OpenRepo(PathBuf::from(r)));
+                        ui.close();
+                    }
                 }
-                ui.strong(rv.repo.name());
-                if let Some(s) = &rv.snap {
-                    let b = s.status.branch.clone().unwrap_or_else(|| "(detached)".into());
-                    let mut t = format!("  {b}");
-                    if s.status.ahead > 0 {
-                        t += &format!("  ↑{}", s.status.ahead);
+                if !recent.is_empty() {
+                    ui.separator();
+                }
+                #[cfg(target_os = "macos")]
+                if ui.button("Open repository…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                        actions.push(Action::OpenRepo(p));
                     }
-                    if s.status.behind > 0 {
-                        t += &format!("  ↓{}", s.status.behind);
-                    }
-                    ui.label(egui::RichText::new(t).color(theme::ACCENT));
-                    if let Some(op) = s.pending_op {
-                        ui.colored_label(theme::ERROR, format!("  {op} in progress"));
-                    }
+                    ui.close();
+                }
+                #[cfg(not(target_os = "macos"))]
+                if ui.button("Open repository…").clicked() {
+                    actions.push(Action::OpenPaletteWith("open repository".into()));
+                    ui.close();
+                }
+                let wd = rv.repo.workdir.clone();
+                if ui.button("Reveal in Finder").clicked() {
+                    actions.push(Action::OpenPath { path: wd.clone(), terminal: false });
+                    ui.close();
+                }
+                if ui.button("Open in Terminal").clicked() {
+                    actions.push(Action::OpenPath { path: wd, terminal: true });
+                    ui.close();
                 }
                 ui.separator();
-                let idle = self.busy.is_none();
-                ui.add_enabled_ui(idle, |ui| {
-                    if ui.button("Fetch").clicked() {
-                        actions.push(Action::Fetch);
-                    }
-                    if ui.button("Pull").clicked() {
-                        actions.push(Action::Pull);
-                    }
-                    if ui.button("Push").clicked() {
-                        actions.push(Action::Push { force: false });
-                    }
-                    if ui.button("Stash").clicked() {
-                        actions.push(Action::StashPush);
-                    }
-                });
-                if let Some(b) = &self.busy {
-                    ui.spinner();
-                    ui.weak(format!("{b}…"));
-                } else if rv.loading || self.jobs.in_flight > 0 {
-                    ui.spinner();
+                if ui.button("Close repository").clicked() {
+                    actions.push(Action::CloseRepo);
+                    ui.close();
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("⟳").on_hover_text("Refresh (⌘R)").clicked() {
-                        actions.push(Action::Refresh);
-                    }
-                    ui.add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Filter commits…").desired_width(200.0));
-                    let key = if cfg!(target_os = "macos") { "⌘P" } else { "Ctrl+P" };
-                    if ui.button(format!("Commands  {key}")).on_hover_text("Command palette").clicked() {
-                        actions.push(Action::OpenPalette);
-                    }
-                    // Status message (was the bottom bar): newest result, click to dismiss.
-                    if !self.status_undo.is_empty() && ui.small_button("Undo").clicked() {
-                        for id in self.status_undo.drain(..) {
-                            actions.push(Action::UndoReattach(id));
-                        }
-                    }
-                    if let Some((m, err)) = &self.status_line {
-                        let first = m.lines().next().unwrap_or("");
-                        let color = if *err { theme::ERROR } else { theme::TEXT_DIM };
-                        let resp = ui
-                            .add(egui::Label::new(egui::RichText::new(first).color(color)).truncate().sense(egui::Sense::click()))
-                            .on_hover_text(format!("{m}\n\n(click to dismiss)"));
-                        if resp.clicked() {
-                            self.status_line = None;
-                            self.status_undo.clear();
-                        }
-                    }
-                });
             });
-            ui.add_space(2.0);
+            if let Some(snap) = &rv.snap {
+                let branch = snap.status.branch.clone().unwrap_or_else(|| "(detached HEAD)".into());
+                left.menu_button(egui::RichText::new(&branch).color(theme::ACCENT), |ui| {
+                    ui.set_min_width(220.0);
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        for r in snap.refs.iter().filter(|r| r.kind == margin_core::git::RefKind::Local) {
+                            let label = if r.is_head { format!("● {}", r.name) } else { format!("   {}", r.name) };
+                            if ui.add_enabled(!r.is_head, egui::Button::new(label)).clicked() {
+                                actions.push(Action::Checkout(r.name.clone()));
+                                ui.close();
+                            }
+                        }
+                    });
+                    ui.separator();
+                    if ui.button("New branch…").clicked() {
+                        actions.push(Action::NewBranchDialog { start: None, name: String::new() });
+                        ui.close();
+                    }
+                    if ui.button("More branch commands…").clicked() {
+                        actions.push(Action::OpenPaletteWith("branch".into()));
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text("Switch branch");
+                if let Some(op) = snap.pending_op {
+                    let r = left.add(egui::Button::new(egui::RichText::new(format!("{op} in progress")).color(theme::ERROR)).small());
+                    if r.on_hover_text("Continue / skip / abort").clicked() {
+                        actions.push(Action::OpenPaletteWith(op.to_string()));
+                    }
+                }
+            }
+            left.add_space(4.0);
+            let mod_key = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
+            let can_back = rv.hist_pos > 0;
+            let can_fwd = rv.hist_pos + 1 < rv.history.len();
+            if left.add_enabled(can_back, egui::Button::new(egui::RichText::new("‹").size(17.0))).on_hover_text(format!("Back ({mod_key}[)")).clicked() {
+                actions.push(Action::NavBack);
+            }
+            if left.add_enabled(can_fwd, egui::Button::new(egui::RichText::new("›").size(17.0))).on_hover_text(format!("Forward ({mod_key}])")).clicked() {
+                actions.push(Action::NavForward);
+            }
+            let left_end = left.min_rect().right();
+
+            // ---- right: pull / push with counts
+            let mut right = bar(ui, right_to_left, row);
+            let (ahead, behind) = rv.snap.as_ref().map(|s| (s.status.ahead, s.status.behind)).unwrap_or((0, 0));
+            right.add_enabled_ui(busy.is_none(), |ui| {
+                let push = if ahead > 0 { format!("Push ↑{ahead}") } else { "Push".into() };
+                if ui.button(push).on_hover_text("Push the current branch (sets upstream if missing)").clicked() {
+                    actions.push(Action::Push { force: false });
+                }
+                let pull = if behind > 0 { format!("Pull ↓{behind}") } else { "Pull".into() };
+                if ui.button(pull).on_hover_text("Pull (fetch + merge/rebase per your git config)").clicked() {
+                    actions.push(Action::Pull);
+                }
+            });
+            let right_start = right.min_rect().left();
+
+            // ---- center: command palette + commit search, centred in the window
+            let gap = 16.0;
+            let palette_w = 150.0;
+            let avail = (right_start - left_end - 2.0 * gap).max(0.0);
+            let search_w = (avail - palette_w - 8.0).clamp(120.0, 300.0);
+            let center_w = palette_w + 8.0 + search_w;
+            let x0 = (row.center().x - center_w / 2.0).max(left_end + gap).min(right_start - gap - center_w);
+            let center_rect = egui::Rect::from_min_size(egui::pos2(x0, row.top()), egui::vec2(center_w, row.height()));
+            let mut center = bar(ui, left_to_right, center_rect);
+            let key = if cfg!(target_os = "macos") { "⌘P" } else { "Ctrl+P" };
+            if center
+                .add_sized([palette_w, center.spacing().interact_size.y], egui::Button::new(format!("Commands   {key}")))
+                .on_hover_text("Command palette: every git action")
+                .clicked()
+            {
+                actions.push(Action::OpenPalette);
+            }
+            center.add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Search commits…").desired_width(search_w));
+
+            // ---- status (between centre and Pull/Push): spinner, message, Undo
+            let status_rect = egui::Rect::from_min_max(egui::pos2(center_rect.right() + gap, row.top()), egui::pos2(right_start - 8.0, row.bottom()));
+            if status_rect.width() > 24.0 {
+                let mut st = bar(ui, right_to_left, status_rect);
+                if !self.status_undo.is_empty() && st.small_button("Undo").clicked() {
+                    for id in self.status_undo.drain(..) {
+                        actions.push(Action::UndoReattach(id));
+                    }
+                }
+                if let Some((m, err)) = &self.status_line {
+                    let first = m.lines().next().unwrap_or("");
+                    let color = if *err { theme::ERROR } else { theme::TEXT_DIM };
+                    let resp = st
+                        .add(egui::Label::new(egui::RichText::new(first).color(color)).truncate().sense(egui::Sense::click()))
+                        .on_hover_text(format!("{m}\n\n(click to dismiss)"));
+                    if resp.clicked() {
+                        self.status_line = None;
+                        self.status_undo.clear();
+                    }
+                }
+                if let Some(b) = &busy {
+                    st.label(egui::RichText::new(format!("{b}…")).color(theme::TEXT_DIM));
+                    st.spinner();
+                } else if working {
+                    st.spinner();
+                }
+            }
         });
     }
-
 }
 
 impl eframe::App for MarginApp {
@@ -1191,6 +1324,18 @@ impl eframe::App for MarginApp {
                     || i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P),
             )
         });
+        let (back, fwd) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) || i.pointer.button_pressed(egui::PointerButton::Extra1),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) || i.pointer.button_pressed(egui::PointerButton::Extra2),
+            )
+        });
+        if back {
+            self.handle(Action::NavBack);
+        }
+        if fwd {
+            self.handle(Action::NavForward);
+        }
         if palette {
             if self.palette.is_some() {
                 self.palette = None;

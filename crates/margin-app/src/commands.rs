@@ -122,7 +122,7 @@ fn operation(rv: &RepoView, v: &mut Vec<Command>) {
 }
 
 fn remote(remote_items: &[Item], remote_branches: &[Item], v: &mut Vec<Command>) {
-    v.push(c(Group::Remote, "Fetch", "all remotes, prune", "update download", vec![], git("Fetch", |r, _| r.fetch())));
+    v.push(c(Group::Remote, "Fetch", "all remotes, prune", "update download", vec![], act(|_| vec![Action::Fetch])));
     v.push(c(Group::Remote, "Fetch remote…", "", "download", vec![pick("Remote", remote_items.to_vec())], git("Fetch", |r, x| r.fetch_remote(&x[0]))));
     v.push(c(Group::Remote, "Pull", "", "update merge", vec![], git("Pull", |r, _| r.pull())));
     v.push(c(Group::Remote, "Pull with rebase", "", "update", vec![], git("Pull --rebase", |r, _| r.pull_rebase())));
