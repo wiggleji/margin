@@ -132,10 +132,12 @@ pub fn show(
     rv: &mut RepoView,
     task_cache: &HashMap<String, Result<Task, String>>,
     tasks_enabled: bool,
+    license: &margin_core::license::Status,
     task_url: &dyn Fn(&str) -> Option<String>,
     author: &str,
     actions: &mut Vec<Action>,
 ) {
+    let pro = license.is_pro();
     let commit_id = match &rv.sel {
         Sel::Commit(id) => Some(id.clone()),
         Sel::Working => None,
@@ -310,13 +312,20 @@ pub fn show(
             // Own scroll region so a long review never hides the note below.
             let max = (ui.available_height() * 0.5).max(80.0);
             egui::ScrollArea::vertical().id_salt("pr_scroll").max_height(max).auto_shrink([false, true]).show(ui, |ui| {
-                crate::pr_view::card(ui, rv, b, actions);
+                if pro {
+                    crate::pr_view::card(ui, rv, b, actions);
+                } else if rv.looks_github {
+                    crate::pro::lock_hint(ui, "GitHub PR status", license, actions);
+                }
             });
         }
     }
     if rv.editor.tab == NoteTab::Task {
         if let Some(k) = &task {
-            task_card(ui, k, task_cache.get(k), tasks_enabled, task_url(k), &mut rv.editor.requested_tasks, actions);
+            if tasks_enabled && !pro {
+                crate::pro::lock_hint(ui, "Jira ticket details", license, actions);
+            }
+            task_card(ui, k, task_cache.get(k), tasks_enabled && pro, task_url(k), &mut rv.editor.requested_tasks, actions);
         }
     }
 

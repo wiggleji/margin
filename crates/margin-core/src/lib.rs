@@ -7,6 +7,7 @@
 //! * `notes`    – Markdown notes attached to repo / branch / commit / task.
 //! * `detached` – notes whose commit/branch is gone; follows branch renames.
 //! * `journal`  – undo log for automatic re-attachments.
+//! * `license`  – Margin Pro: offline-verified licence keys + 14-day trial.
 //! * `markdown` – the note content policy (no images, no HTML, safe links only).
 //! * `tasks`    – task-tracker integration (Jira Cloud + Data Center).
 //! * `github`   – pull-request status (merge readiness, CI, comments).
@@ -20,6 +21,7 @@ pub mod git;
 pub mod github;
 pub mod gitflow;
 pub mod journal;
+pub mod license;
 mod http;
 pub mod graph;
 pub mod markdown;
@@ -28,6 +30,7 @@ pub mod tasks;
 mod time;
 
 pub use time::format_utc;
+pub use time::now_unix as time_now;
 
 #[derive(Debug, Clone)]
 pub struct Error(pub String);

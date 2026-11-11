@@ -141,6 +141,33 @@ Without a Jira API config, set `task_url_template` (for example `https://linear.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions and the roadmap. Icons: [Primer Octicons](https://github.com/primer/octicons) (MIT), see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+## Margin Pro
+
+The git client, notes, agents (MCP), tabs, and Git Flow are free. **Margin Pro** (one-time purchase, including updates for a year) unlocks:
+
+- **GitHub PR status:** readiness, CI checks, and review comments.
+- **Task trackers:** Jira ticket details, My tasks, and creating a branch from a ticket.
+
+New installs get a **14-day trial**. After that, Pro features show a lock hint (Enter licence key / Buy Margin Pro), and the MCP tools `get_pr`, `get_task`, `search_tasks`, and `my_tasks` are refused. Activate in **Settings → Margin Pro** or with ⌘P → *Enter Margin Pro licence key…*.
+
+Keys are verified **offline** (Ed25519 signature, no licence server, works on locked-down networks). A key covers every version built up to its *updates until* date.
+
+**Issuing keys** (maintainer):
+
+```bash
+cargo run -p margin-license -- keygen ~/secure/margin
+```
+
+```bash
+MARGIN_LICENSE_PUBKEY=<hex from keygen> cargo build --release
+```
+
+```bash
+cargo run -p margin-license -- issue ~/secure/margin/margin-license.private --name "Kim Dev" --email kim@example.com --years 1
+```
+
+Keep `margin-license.private` secret and backed up (`*.private` is git-ignored). Builds without `MARGIN_LICENSE_PUBKEY` accept development keys only (`issue --dev`), and release builds warn about it. Set `PURCHASE_URL` in `crates/margin-app/src/pro.rs` to your store's checkout page.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

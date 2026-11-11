@@ -82,6 +82,9 @@ pub struct State {
     pub open_tabs: Vec<String>,
     #[serde(default)]
     pub active_tab: usize,
+    /// First launch (unix time): start of the Margin Pro trial.
+    #[serde(default)]
+    pub trial_started: Option<i64>,
 }
 
 pub fn config_dir() -> PathBuf {

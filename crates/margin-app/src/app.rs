@@ -94,6 +94,8 @@ pub enum Action {
     NavBack,
     NavForward,
     OpenSettings,
+    InstallLicense(String),
+    RemoveLicense,
     SwitchTab(usize),
     NextTab,
     PrevTab,
@@ -175,11 +177,16 @@ pub struct RepoView {
     pub stale: bool,
     /// Loaded once (GitHub connection, notes watcher) on first activation.
     pub activated: bool,
+    /// GitHub connection attempted (reset when Pro becomes active).
+    pub github_checked: bool,
+    /// `origin` looks like a GitHub remote (computed once; for the Pro hint).
+    pub looks_github: bool,
 }
 
 impl RepoView {
     fn new(repo: Repo, notes: NoteStore) -> RepoView {
-        RepoView {
+        let looks_github = repo.remote_url("origin").is_some_and(|u| u.to_lowercase().contains("github"));
+        let mut rv = RepoView {
             repo,
             notes,
             snap: None,
@@ -223,7 +230,11 @@ impl RepoView {
             auto_fetching: false,
             stale: true,
             activated: false,
-        }
+            github_checked: false,
+            looks_github: false,
+        };
+        rv.looks_github = looks_github;
+        rv
     }
 
     pub fn current_branch(&self) -> Option<&str> {
@@ -266,6 +277,10 @@ pub struct MarginApp {
     pub cfg: Config,
     pub state: State,
     pub settings: margin_core::config::Settings,
+    /// Margin Pro status (licensed / trial / expired); recomputed on focus.
+    pub license: margin_core::license::Status,
+    pub license_input: String,
+    pub license_error: Option<String>,
     pub show_settings: bool,
     pub jobs: Jobs,
     /// The active tab. Other open repositories live in `others`; the visual
@@ -299,6 +314,9 @@ impl MarginApp {
             state: config::load_state(),
             cfg: cfg.clone(),
             settings: config::load_settings(),
+            license: margin_core::license::current(now_unix()),
+            license_input: String::new(),
+            license_error: None,
             show_settings: false,
             jobs: Jobs::new(ctx),
             rv: None,
@@ -430,6 +448,34 @@ impl MarginApp {
         self.jobs.spawn(move || Msg::OpDone { workdir: repo.workdir.clone(), result: f(&repo).map_err(|e| e.0), label, refresh: true });
     }
 
+    pub fn pro(&self) -> bool {
+        self.license.is_pro()
+    }
+
+    /// Recompute the licence status (startup, focus, key changes). Turning
+    /// Pro off drops GitHub data; turning it on reconnects.
+    fn update_license(&mut self) {
+        let was = self.pro();
+        self.license = margin_core::license::current(now_unix());
+        let now = self.pro();
+        if was == now {
+            return;
+        }
+        for t in self.rv.iter_mut().chain(self.others.iter_mut()) {
+            t.github = None;
+            t.prs.clear();
+            t.pr_detail.clear();
+            t.pr_requested.clear();
+            t.github_checked = false;
+        }
+        if !now {
+            self.my_tasks = None;
+            self.task_cache.clear();
+        } else {
+            self.connect_github();
+        }
+    }
+
     pub fn tab_count(&self) -> usize {
         self.others.len() + self.rv.is_some() as usize
     }
@@ -461,12 +507,10 @@ impl MarginApp {
         rv.activated = true;
         let stale = std::mem::replace(&mut rv.stale, false);
         if first {
-            self.reload_notes_index();
             self.start_notes_watcher();
-            self.connect_github();
-        } else {
-            self.reload_notes_index();
         }
+        self.reload_notes_index();
+        self.connect_github(); // no-op without Pro or if already done
         if first || stale {
             self.refresh();
         }
@@ -792,10 +836,16 @@ impl MarginApp {
                 }
             }
             FetchTask(key) => {
+                if !self.pro() {
+                    return;
+                }
                 let Some(p) = self.tasks.clone() else { return };
                 self.jobs.spawn(move || Msg::Task { result: p.get(&key).map_err(|e| e.0), key });
             }
             FetchPrs { force } => {
+                if !self.pro() {
+                    return;
+                }
                 let now = self.ctx.input(|i| i.time);
                 let Some(rv) = &mut self.rv else { return };
                 let Some(gh) = rv.github.clone() else { return };
@@ -822,6 +872,9 @@ impl MarginApp {
                 });
             }
             FetchPrDetail(branch) => {
+                if !self.pro() {
+                    return;
+                }
                 let Some(rv) = &mut self.rv else { return };
                 let Some(gh) = rv.github.clone() else { return };
                 let head = rv
@@ -1023,8 +1076,29 @@ impl MarginApp {
                 }
             }
             FetchMyTasks => {
+                if !self.pro() {
+                    return;
+                }
                 let Some(p) = self.tasks.clone() else { return };
                 self.jobs.spawn(move || Msg::MyTasks(p.my_open(30).map_err(|e| e.0)));
+            }
+            InstallLicense(key) => match margin_core::license::install(&key) {
+                Ok(l) => {
+                    self.license_input.clear();
+                    self.license_error = None;
+                    self.update_license();
+                    self.info(format!("Margin Pro activated — thank you, {}!", l.name));
+                }
+                Err(e) => {
+                    self.license_error = Some(e.0.clone());
+                    self.err(format!("Licence key: {e}"));
+                }
+            },
+            RemoveLicense => {
+                if let Err(e) = margin_core::license::remove() {
+                    self.err(e);
+                }
+                self.update_license();
             }
             OpenUrl(url) => open_url(&url, self),
             Copy(s) => {
@@ -1037,7 +1111,12 @@ impl MarginApp {
     /// Resolve the GitHub remote + token off the UI thread (`gh auth token`
     /// is a subprocess), then load PR status.
     fn connect_github(&mut self) {
-        let Some(rv) = &self.rv else { return };
+        let pro = self.pro();
+        let Some(rv) = &mut self.rv else { return };
+        if !pro || rv.github_checked {
+            return;
+        }
+        rv.github_checked = true;
         let repo = rv.repo.clone();
         let cfg = self.cfg.clone();
         let workdir = repo.workdir.clone();
@@ -1584,6 +1663,17 @@ impl MarginApp {
                         self.status_undo.clear();
                     }
                 }
+                let reminder = match &self.license {
+                    margin_core::license::Status::Trial { days_left } if *days_left <= 3 => Some(format!("Pro trial: {days_left}d left")),
+                    margin_core::license::Status::TrialExpired => Some("Pro trial ended".to_string()),
+                    margin_core::license::Status::NeedsRenewal(_) => Some("Renew Margin Pro".to_string()),
+                    _ => None,
+                };
+                if let Some(r) = reminder {
+                    if st.small_button(egui::RichText::new(r).color(theme::ACCENT)).on_hover_text(self.license.describe()).clicked() {
+                        actions.push(Action::OpenSettings);
+                    }
+                }
                 if let Some(b) = &busy {
                     st.label(egui::RichText::new(format!("{b}…")).color(theme::TEXT_DIM));
                     st.spinner();
@@ -1609,6 +1699,7 @@ impl eframe::App for MarginApp {
         // pick up note edits made by agents (see start_notes_watcher).
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         if focused && !self.was_focused {
+            self.update_license();
             self.refresh();
         }
         self.was_focused = focused;
@@ -1678,7 +1769,10 @@ impl eframe::App for MarginApp {
             // Tab strip first so it sits above the toolbar.
             crate::tab_strip::show(ui, &self.tabs(), &mut actions);
             self.toolbar(ui, &mut actions);
-            let tasks_enabled = self.tasks.is_some();
+            let tasks_configured = self.tasks.is_some();
+            let pro = self.pro();
+            let tasks_enabled = tasks_configured && pro;
+            let license = self.license.clone();
             let rv = self.rv.as_mut().unwrap();
             egui::Panel::left("sidebar").resizable(true).default_size(220.0).show(ui, |ui| {
                 // Fill the panel: otherwise it shrinks to its content when no
@@ -1691,7 +1785,7 @@ impl eframe::App for MarginApp {
                     // Fill the panel so it keeps its size instead of shrinking to content.
                     ui.set_min_height(ui.available_height());
                     let task_url = |k: &str| tasks::task_url(&self.cfg, self.tasks.as_deref(), k);
-                    crate::notes_panel::show(ui, rv, &self.task_cache, tasks_enabled, &task_url, &self.author, &mut actions);
+                    crate::notes_panel::show(ui, rv, &self.task_cache, tasks_configured, &license, &task_url, &self.author, &mut actions);
                 });
                 egui::CentralPanel::default().show(ui, |ui| {
                     crate::details::show(ui, rv, &mut actions);
@@ -1771,6 +1865,33 @@ impl MarginApp {
             ui.set_width(420.0);
             ui.heading("Settings");
             ui.add_space(8.0);
+            ui.label(egui::RichText::new("MARGIN PRO").small().strong().color(theme::TEXT_DIM));
+            ui.separator();
+            let color = if self.license.is_pro() { theme::ADDED } else { theme::ACCENT };
+            ui.label(egui::RichText::new(self.license.describe()).color(color));
+            ui.label(egui::RichText::new("Pro: GitHub PR status, Jira ticket details & My tasks.").small().color(theme::TEXT_DIM));
+            if margin_core::license::is_dev_build() {
+                ui.label(egui::RichText::new("Development build: accepts development keys only.").small().color(theme::TEXT_DIM));
+            }
+            if matches!(self.license, margin_core::license::Status::Pro(_)) {
+                if ui.small_button("Remove licence from this computer").clicked() {
+                    actions.push(Action::RemoveLicense);
+                }
+            } else {
+                ui.add(egui::TextEdit::multiline(&mut self.license_input).hint_text("Paste your licence key (MARGIN1.…)").desired_rows(2).desired_width(f32::INFINITY));
+                if let Some(e) = &self.license_error {
+                    ui.colored_label(theme::ERROR, e);
+                }
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!self.license_input.trim().is_empty(), egui::Button::new("Activate")).clicked() {
+                        actions.push(Action::InstallLicense(self.license_input.clone()));
+                    }
+                    if ui.button("Buy Margin Pro").clicked() {
+                        actions.push(Action::OpenUrl(crate::pro::PURCHASE_URL.into()));
+                    }
+                });
+            }
+            ui.add_space(10.0);
             ui.label(egui::RichText::new("FETCH").small().strong().color(theme::TEXT_DIM));
             ui.separator();
             changed |= ui.checkbox(&mut self.settings.auto_fetch, "Fetch automatically in the background").changed();
@@ -1851,6 +1972,10 @@ fn ago(t: std::time::Instant) -> String {
         60..=3599 => format!("{} min ago", s / 60),
         _ => format!("{} h ago", s / 3600),
     }
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 fn open_path(path: &std::path::Path, terminal: bool, app: &mut MarginApp) {

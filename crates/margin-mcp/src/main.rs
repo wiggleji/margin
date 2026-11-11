@@ -138,6 +138,13 @@ impl Server {
     }
 
     fn call(&mut self, name: &str, a: &Value) -> Result<Value> {
+        // Margin Pro features (same rule as the app: licensed or in trial).
+        if matches!(name, "get_pr" | "get_task" | "search_tasks" | "my_tasks") {
+            let st = margin_core::license::current(margin_core::time_now());
+            if !st.is_pro() {
+                bail!("{name} needs Margin Pro (GitHub PR status / task trackers). {}", st.describe());
+            }
+        }
         let s = |k: &str| a[k].as_str();
         let n = |k: &str, d: u64| a[k].as_u64().unwrap_or(d) as usize;
         match name {

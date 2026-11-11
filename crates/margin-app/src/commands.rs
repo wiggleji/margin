@@ -117,6 +117,10 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
         v.push(c(Group::Repository, "Next tab", key, "directory switch", vec![], act(|_| vec![Action::NextTab])));
         v.push(c(Group::Repository, "Previous tab", &format!("{key}+Shift"), "directory switch", vec![], act(|_| vec![Action::PrevTab])));
     }
+    if !matches!(app.license, margin_core::license::Status::Pro(_)) {
+        v.push(c(Group::Repository, "Enter Margin Pro licence key…", "", "license activate pro upgrade", vec![input("Licence key", "")], act(|x| vec![Action::InstallLicense(x[0].clone())])));
+        v.push(c(Group::Repository, "Buy Margin Pro", "", "license purchase upgrade pro", vec![], act(|_| vec![Action::OpenUrl(crate::pro::PURCHASE_URL.into())])));
+    }
     v.push(c(Group::Repository, "Open repository…", "new tab", "path folder", vec![input("Path to a git repository", "")], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
     let Some(rv) = &app.rv else { return };
     let path = rv.repo.workdir.clone();

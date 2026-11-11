@@ -11,6 +11,7 @@ mod jobs;
 mod markdown_view;
 mod notes_panel;
 mod palette;
+mod pro;
 mod pr_view;
 mod sidebar;
 mod tab_strip;
