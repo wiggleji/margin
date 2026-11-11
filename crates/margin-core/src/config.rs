@@ -128,6 +128,13 @@ pub struct Settings {
     pub auto_fetch: bool,
     #[serde(default = "default_fetch_minutes")]
     pub auto_fetch_minutes: u32,
+    /// Cloud-synced folder for notes (iCloud Drive, Dropbox, Google Drive…).
+    #[serde(default)]
+    pub sync_folder: Option<String>,
+    /// Repo ids (see sync::repo_id) with notes sync on, in the order enabled.
+    /// Without Pro only the first one syncs.
+    #[serde(default)]
+    pub synced_repos: Vec<String>,
 }
 
 fn default_fetch_minutes() -> u32 {
@@ -136,7 +143,7 @@ fn default_fetch_minutes() -> u32 {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes() }
+        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![] }
     }
 }
 

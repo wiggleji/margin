@@ -64,6 +64,9 @@ fn main() {
         cfg,
     };
 
+    // Pull notes edited on other computers before serving.
+    srv.sync();
+
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -137,7 +140,25 @@ impl Server {
         })
     }
 
+    /// Tools that change notes; after them the notes are mirrored to the
+    /// sync folder (if notes sync is active for this repo).
+    const WRITES: [&'static str; 5] = ["write_note", "append_note", "move_note", "link_task", "undo_reattach"];
+
     fn call(&mut self, name: &str, a: &Value) -> Result<Value> {
+        let res = self.call_inner(name, a);
+        if res.is_ok() && Self::WRITES.contains(&name) {
+            self.sync();
+        }
+        res
+    }
+
+    fn sync(&self) {
+        if let Some(Err(e)) = margin_core::sync::sync_repo_now(&self.repo, self.notes.root()) {
+            eprintln!("margin-mcp: notes sync: {e}");
+        }
+    }
+
+    fn call_inner(&mut self, name: &str, a: &Value) -> Result<Value> {
         // Margin Pro features (same rule as the app: licensed or in trial).
         if matches!(name, "get_pr" | "get_task" | "search_tasks" | "my_tasks") {
             let st = margin_core::license::current(margin_core::time_now());

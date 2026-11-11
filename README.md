@@ -141,12 +141,22 @@ Without a Jira API config, set `task_url_template` (for example `https://linear.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions and the roadmap. Icons: [Primer Octicons](https://github.com/primer/octicons) (MIT), see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+## Notes sync (iCloud Drive / Dropbox / Google Drive)
+
+Sync notes between your computers through a folder your cloud provider already syncs. There's no account and no API: **Settings → Notes sync**, pick the folder (iCloud Drive, Dropbox, Google Drive, and OneDrive are detected), and tick **Sync notes for <repo>**.
+
+- **Where notes live:** they stay in `.git/margin/notes` and are mirrored two-way with `<folder>/Margin/<repo-id>/`. The repo id comes from the remote URL (ssh and https forms match), so clones in differently named folders find each other.
+- **Edits:** they sync within a second or two while Margin runs. Agent edits made through MCP are mirrored too, even when the app is closed. If both computers edit the same note, both versions are kept (merged under a marker).
+- **Safety:** pointing sync at a different or empty folder is treated as a first sync, so nothing gets deleted. Deleted notes go to `.trash/` instead of disappearing. A pass that would delete most of your notes is refused. iCloud placeholders that aren't downloaded yet are never mistaken for deletions.
+- **Limit:** **Free syncs 1 repository; Margin Pro syncs unlimited.** Repositories over the limit pause, keep working locally, and catch up when Pro is active.
+
 ## Margin Pro
 
 The git client, notes, agents (MCP), tabs, and Git Flow are free. **Margin Pro** (one-time purchase, including updates for a year) unlocks:
 
 - **GitHub PR status:** readiness, CI checks, and review comments.
 - **Task trackers:** Jira ticket details, My tasks, and creating a branch from a ticket.
+- **Notes sync for more than one repository.**
 
 New installs get a **14-day trial**. After that, Pro features show a lock hint (Enter licence key / Buy Margin Pro), and the MCP tools `get_pr`, `get_task`, `search_tasks`, and `my_tasks` are refused. Activate in **Settings → Margin Pro** or with ⌘P → *Enter Margin Pro licence key…*.
 

@@ -7,6 +7,7 @@
 //! * `notes`    – Markdown notes attached to repo / branch / commit / task.
 //! * `detached` – notes whose commit/branch is gone; follows branch renames.
 //! * `journal`  – undo log for automatic re-attachments.
+//! * `sync`     – two-way notes mirror via a cloud-synced folder (1 repo free).
 //! * `license`  – Margin Pro: offline-verified licence keys + 14-day trial.
 //! * `markdown` – the note content policy (no images, no HTML, safe links only).
 //! * `tasks`    – task-tracker integration (Jira Cloud + Data Center).
@@ -26,6 +27,7 @@ mod http;
 pub mod graph;
 pub mod markdown;
 pub mod notes;
+pub mod sync;
 pub mod tasks;
 mod time;
 

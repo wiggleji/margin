@@ -240,6 +240,26 @@ pub fn show(
                     ed.last_edit = now;
                     ed.preview = false;
                 }
+                // Notes sync indicator (click → Settings)
+                {
+                    use margin_core::sync::RepoSync;
+                    let label = match &rv.sync_state {
+                        RepoSync::Active { .. } => match &rv.sync.lock().unwrap().last {
+                            Some((_, Err(_))) => Some(("sync failed", theme::ERROR)),
+                            _ => Some(("synced", theme::ADDED)),
+                        },
+                        RepoSync::Paused => Some(("sync paused (Pro)", theme::ACCENT)),
+                        RepoSync::NoFolder => Some(("sync: no folder", theme::ACCENT)),
+                        RepoSync::Off => None,
+                    };
+                    if let Some((t, c)) = label {
+                        let tip = crate::app::sync_status_text(rv).0;
+                        if ui.add(egui::Label::new(RichText::new(t).small().color(c)).sense(egui::Sense::click())).on_hover_text(tip).clicked() {
+                            actions.push(Action::OpenSettings);
+                        }
+                    }
+                }
+                let ed = &mut rv.editor;
                 let (txt, color) = if ed.error.is_some() {
                     ("error", theme::ERROR)
                 } else if ed.dirty {

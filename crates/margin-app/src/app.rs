@@ -95,6 +95,10 @@ pub enum Action {
     NavForward,
     OpenSettings,
     InstallLicense(String),
+    /// Enable/disable notes sync for the active repo.
+    SetNotesSync(bool),
+    SetSyncFolder(Option<String>),
+    SyncNow,
     RemoveLicense,
     SwitchTab(usize),
     NextTab,
@@ -181,11 +185,29 @@ pub struct RepoView {
     pub github_checked: bool,
     /// `origin` looks like a GitHub remote (computed once; for the Pro hint).
     pub looks_github: bool,
+    /// Identity of this repo across computers (notes sync).
+    pub repo_id: String,
+    /// Notes sync state for this repo (set by MarginApp::apply_sync).
+    pub sync_state: margin_core::sync::RepoSync,
+    /// Shared with the watcher thread, which does the mirroring.
+    pub sync: Arc<std::sync::Mutex<SyncShared>>,
+}
+
+/// Notes-sync state shared between the UI and a tab's watcher thread.
+#[derive(Default)]
+pub struct SyncShared {
+    /// Cloud-side folder to mirror with, when sync is active.
+    pub remote: Option<PathBuf>,
+    /// Last pass: when and what happened.
+    pub last: Option<(std::time::Instant, Result<margin_core::sync::Report, String>)>,
+    /// Run a pass on the next tick even if nothing changed.
+    pub force: bool,
 }
 
 impl RepoView {
     fn new(repo: Repo, notes: NoteStore) -> RepoView {
         let looks_github = repo.remote_url("origin").is_some_and(|u| u.to_lowercase().contains("github"));
+        let repo_id = margin_core::sync::repo_id(&repo);
         let mut rv = RepoView {
             repo,
             notes,
@@ -232,8 +254,12 @@ impl RepoView {
             activated: false,
             github_checked: false,
             looks_github: false,
+            repo_id: String::new(),
+            sync_state: margin_core::sync::RepoSync::Off,
+            sync: Default::default(),
         };
         rv.looks_github = looks_github;
+        rv.repo_id = repo_id;
         rv
     }
 
@@ -281,6 +307,9 @@ pub struct MarginApp {
     pub license: margin_core::license::Status,
     pub license_input: String,
     pub license_error: Option<String>,
+    /// The free notes-sync limit was hit (shows the Pro hint in Settings).
+    pub sync_limit_hit: bool,
+    pub sync_folder_input: String,
     pub show_settings: bool,
     pub jobs: Jobs,
     /// The active tab. Other open repositories live in `others`; the visual
@@ -317,6 +346,8 @@ impl MarginApp {
             license: margin_core::license::current(now_unix()),
             license_input: String::new(),
             license_error: None,
+            sync_limit_hit: false,
+            sync_folder_input: String::new(),
             show_settings: false,
             jobs: Jobs::new(ctx),
             rv: None,
@@ -461,6 +492,7 @@ impl MarginApp {
         if was == now {
             return;
         }
+        self.apply_sync(); // extra synced repos pause / resume with Pro
         for t in self.rv.iter_mut().chain(self.others.iter_mut()) {
             t.github = None;
             t.prs.clear();
@@ -473,6 +505,25 @@ impl MarginApp {
             self.task_cache.clear();
         } else {
             self.connect_github();
+        }
+    }
+
+    /// Point every open tab's watcher at its cloud folder (or stop syncing).
+    fn apply_sync(&mut self) {
+        let pro = self.pro();
+        for t in self.rv.iter_mut().chain(self.others.iter_mut()) {
+            let st = margin_core::sync::status_for(&t.repo_id, &self.settings, pro);
+            let remote = match &st {
+                margin_core::sync::RepoSync::Active { remote } => Some(remote.clone()),
+                _ => None,
+            };
+            let mut g = t.sync.lock().unwrap();
+            if g.remote != remote {
+                g.force = remote.is_some();
+                g.remote = remote;
+            }
+            drop(g);
+            t.sync_state = st;
         }
     }
 
@@ -511,6 +562,7 @@ impl MarginApp {
         }
         self.reload_notes_index();
         self.connect_github(); // no-op without Pro or if already done
+        self.apply_sync();
         if first || stale {
             self.refresh();
         }
@@ -567,11 +619,33 @@ impl MarginApp {
         let Some(rv) = &self.rv else { return };
         let flag = rv.notes_watch.clone();
         let notes = rv.notes.clone();
+        let shared = rv.sync.clone();
         let ctx = self.ctx.clone();
         let mut last = rv.notes_stamp;
+        let mut last_remote = 0u64;
+        let mut synced_last = last.wrapping_add(1); // force a first pass when sync is on
         std::thread::spawn(move || {
             while Arc::strong_count(&flag) > 1 {
                 std::thread::sleep(std::time::Duration::from_secs(1));
+                // Notes sync: mirror when either side changed (or on request).
+                let (remote, force) = {
+                    let mut g = shared.lock().unwrap();
+                    (g.remote.clone(), std::mem::take(&mut g.force))
+                };
+                if let Some(remote) = remote {
+                    let local_now = notes.stamp();
+                    let remote_now = margin_core::sync::dir_stamp(&remote);
+                    if force || local_now != synced_last || remote_now != last_remote {
+                        let res = margin_core::sync::mirror(notes.root(), &remote).map_err(|e| e.0);
+                        let notify = force || res.as_ref().map(|r| !r.is_empty()).unwrap_or(true);
+                        shared.lock().unwrap().last = Some((std::time::Instant::now(), res));
+                        if notify {
+                            ctx.request_repaint();
+                        }
+                        synced_last = notes.stamp();
+                        last_remote = margin_core::sync::dir_stamp(&remote);
+                    }
+                }
                 let s = notes.stamp();
                 if s != last {
                     last = s;
@@ -1094,6 +1168,39 @@ impl MarginApp {
                     self.err(format!("Licence key: {e}"));
                 }
             },
+            SetNotesSync(on) => {
+                let pro = self.pro();
+                let Some(rv) = &self.rv else { return };
+                let id = rv.repo_id.clone();
+                if on {
+                    if !self.settings.synced_repos.contains(&id) {
+                        if !margin_core::sync::can_enable(&self.settings, pro) {
+                            self.sync_limit_hit = true;
+                            return;
+                        }
+                        self.settings.synced_repos.push(id);
+                    }
+                } else {
+                    self.settings.synced_repos.retain(|r| *r != id);
+                }
+                self.sync_limit_hit = false;
+                if let Err(e) = config::save_settings(&self.settings) {
+                    self.err(e);
+                }
+                self.apply_sync();
+            }
+            SetSyncFolder(f) => {
+                self.settings.sync_folder = f;
+                if let Err(e) = config::save_settings(&self.settings) {
+                    self.err(e);
+                }
+                self.apply_sync();
+            }
+            SyncNow => {
+                if let Some(rv) = &self.rv {
+                    rv.sync.lock().unwrap().force = true;
+                }
+            }
             RemoveLicense => {
                 if let Err(e) = margin_core::license::remove() {
                     self.err(e);
@@ -1892,6 +1999,8 @@ impl MarginApp {
                 });
             }
             ui.add_space(10.0);
+            self.sync_settings(ui, actions);
+            ui.add_space(10.0);
             ui.label(egui::RichText::new("FETCH").small().strong().color(theme::TEXT_DIM));
             ui.separator();
             changed |= ui.checkbox(&mut self.settings.auto_fetch, "Fetch automatically in the background").changed();
@@ -1961,6 +2070,95 @@ fn branch_menu(ui: &mut egui::Ui, nodes: &[crate::branch_tree::Node<&margin_core
                 ui.menu_button(text, |ui| branch_menu(ui, children, actions));
             }
         }
+    }
+}
+
+impl MarginApp {
+    /// Settings → Notes sync.
+    fn sync_settings(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use margin_core::sync::{FREE_REPOS, RepoSync};
+        ui.label(egui::RichText::new("NOTES SYNC").small().strong().color(theme::TEXT_DIM));
+        ui.separator();
+        ui.label(
+            egui::RichText::new(format!(
+                "Mirror notes through a folder iCloud Drive, Dropbox or Google Drive already syncs. Free: {FREE_REPOS} repository · Margin Pro: unlimited."
+            ))
+            .small()
+            .color(theme::TEXT_DIM),
+        );
+        // Folder
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Folder:");
+            match &self.settings.sync_folder {
+                Some(f) => {
+                    ui.label(egui::RichText::new(f).monospace().small());
+                    if ui.small_button("Clear").clicked() {
+                        actions.push(Action::SetSyncFolder(None));
+                    }
+                }
+                None => {
+                    ui.weak("not set");
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            for (label, path) in margin_core::sync::detect_providers() {
+                if ui.small_button(&label).on_hover_text(path.display().to_string()).clicked() {
+                    actions.push(Action::SetSyncFolder(Some(path.display().to_string())));
+                }
+            }
+            #[cfg(target_os = "macos")]
+            if ui.small_button("Choose folder…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                    actions.push(Action::SetSyncFolder(Some(p.display().to_string())));
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                ui.add(egui::TextEdit::singleline(&mut self.sync_folder_input).hint_text("/path/to/synced/folder").desired_width(200.0));
+                if ui.small_button("Use").clicked() && !self.sync_folder_input.trim().is_empty() {
+                    actions.push(Action::SetSyncFolder(Some(self.sync_folder_input.trim().to_string())));
+                }
+            }
+        });
+        // This repository
+        let Some(rv) = &self.rv else { return };
+        let on = self.settings.synced_repos.contains(&rv.repo_id);
+        let mut want = on;
+        if ui.checkbox(&mut want, format!("Sync notes for {}", rv.repo.name())).changed() {
+            actions.push(Action::SetNotesSync(want));
+        }
+        let (text, color) = sync_status_text(rv);
+        if !text.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(text).small().color(color));
+                if matches!(rv.sync_state, RepoSync::Active { .. }) && ui.small_button("Sync now").clicked() {
+                    actions.push(Action::SyncNow);
+                }
+            });
+        }
+        if self.sync_limit_hit || matches!(rv.sync_state, RepoSync::Paused) {
+            crate::pro::lock_hint(ui, &format!("Syncing more than {FREE_REPOS} repository"), &self.license, actions);
+        }
+        let n = self.settings.synced_repos.len();
+        if n > 0 {
+            ui.label(egui::RichText::new(format!("{n} repositor{} with sync on", if n == 1 { "y" } else { "ies" })).small().color(theme::TEXT_DIM));
+        }
+    }
+}
+
+/// Human status for a tab's notes sync: ("synced 2 min ago", colour).
+pub fn sync_status_text(rv: &RepoView) -> (String, egui::Color32) {
+    use margin_core::sync::RepoSync;
+    match &rv.sync_state {
+        RepoSync::Off => (String::new(), theme::TEXT_DIM),
+        RepoSync::NoFolder => ("Sync is on, but no sync folder is set (or it's not available)".into(), theme::ACCENT),
+        RepoSync::Paused => ("Sync paused — this repository is over the free limit".into(), theme::ACCENT),
+        RepoSync::Active { remote } => match &rv.sync.lock().unwrap().last {
+            None => (format!("Syncing with {}", remote.display()), theme::TEXT_DIM),
+            Some((t, Ok(_))) => (format!("Synced {} · {}", ago(*t), remote.display()), theme::ADDED),
+            Some((_, Err(e))) => (format!("Sync failed: {e}"), theme::ERROR),
+        },
     }
 }
 

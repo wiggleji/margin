@@ -121,6 +121,10 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
         v.push(c(Group::Repository, "Enter Margin Pro licence key…", "", "license activate pro upgrade", vec![input("Licence key", "")], act(|x| vec![Action::InstallLicense(x[0].clone())])));
         v.push(c(Group::Repository, "Buy Margin Pro", "", "license purchase upgrade pro", vec![], act(|_| vec![Action::OpenUrl(crate::pro::PURCHASE_URL.into())])));
     }
+    v.push(c(Group::Notes, "Notes sync settings…", "iCloud · Dropbox · Drive", "cloud sync icloud dropbox google drive", vec![], act(|_| vec![Action::OpenSettings])));
+    if app.rv.as_ref().is_some_and(|rv| matches!(rv.sync_state, margin_core::sync::RepoSync::Active { .. })) {
+        v.push(c(Group::Notes, "Sync notes now", "", "cloud sync", vec![], act(|_| vec![Action::SyncNow])));
+    }
     v.push(c(Group::Repository, "Open repository…", "new tab", "path folder", vec![input("Path to a git repository", "")], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
     let Some(rv) = &app.rv else { return };
     let path = rv.repo.workdir.clone();
