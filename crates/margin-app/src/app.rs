@@ -1684,6 +1684,9 @@ impl eframe::App for MarginApp {
             let tasks_enabled = self.tasks.is_some();
             let rv = self.rv.as_mut().unwrap();
             egui::Panel::left("sidebar").resizable(true).default_size(220.0).show(ui, |ui| {
+                // Fill the panel: otherwise it shrinks to its content when no
+                // row has a right-aligned badge (e.g. a repo without upstreams).
+                ui.set_min_width(ui.available_width());
                 crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &mut actions);
             });
             egui::Panel::right("details").resizable(true).default_size(560.0).min_size(360.0).show(ui, |ui| {
