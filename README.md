@@ -92,11 +92,18 @@ cargo build --release
 
 ## Connect an agent
 
-```bash
-claude mcp add margin -- /path/to/margin/target/release/margin-mcp --repo /path/to/repo
-```
+Add Margin as a stdio MCP server in your agent's MCP configuration:
 
-Any MCP client works the same way (stdio transport): command `margin-mcp`, args `["--repo", "<path>"]`.
+```json
+{
+  "mcpServers": {
+    "margin": {
+      "command": "/path/to/margin/target/release/margin-mcp",
+      "args": ["--repo", "/path/to/repo"]
+    }
+  }
+}
+```
 Agent notes are signed with the client's name, or with `MARGIN_AGENT_NAME` if set.
 
 ## Configure Jira

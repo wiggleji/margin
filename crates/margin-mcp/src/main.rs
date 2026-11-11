@@ -1,13 +1,14 @@
 //! margin-mcp — Model Context Protocol server over stdio.
 //!
-//! Lets agents (Claude Code, Cursor, Copilot, …) read git context and
+//! Lets any MCP-capable agent read git context and
 //! read/write the same Markdown notes the Margin GUI shows. The GUI watches
 //! the notes dir, so an agent's edits appear live.
 //!
 //! Git access here is deliberately READ-ONLY. Agents may write notes and
 //! task links, never commits/refs.
 //!
-//!   claude mcp add margin -- margin-mcp --repo /path/to/repo
+//! Client config (stdio):
+//!   { "command": "margin-mcp", "args": ["--repo", "/path/to/repo"] }
 //!
 //! Hand-rolled JSON-RPC (newline-delimited) — no async runtime, ~1 MB binary.
 

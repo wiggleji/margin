@@ -448,9 +448,9 @@ mod tests {
         let n = s.write(&t, "# Login\n", Some("")).unwrap();
         assert!(s.write(&t, "x", Some("")).is_err(), "must not exist check");
         assert!(s.write(&t, "x", Some("bogus")).is_err());
-        s.append(&t, "agent finding", "claude").unwrap();
+        s.append(&t, "agent finding", "agent-1").unwrap();
         let r = s.read(&t).unwrap().unwrap();
-        assert!(r.content.starts_with("# Login\n\n### ") && r.content.contains("· claude\n\nagent finding"));
+        assert!(r.content.starts_with("# Login\n\n### ") && r.content.contains("· agent-1\n\nagent finding"));
         assert_ne!(r.version, n.version);
         let list = s.list().unwrap();
         assert_eq!(list[0].target, t);
