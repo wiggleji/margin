@@ -3,6 +3,7 @@ name = "margin-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "Margin — a super-light git client with Markdown notes and task tracking"
 
 [[bin]]

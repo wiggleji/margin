@@ -3,6 +3,7 @@ name = "margin-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "MCP (stdio) server exposing Margin notes, git context and tasks to AI agents"
 
 [dependencies]
