@@ -12,6 +12,10 @@
 //! A prefix becomes a group only when 2+ branches share it, recursively at
 //! every level. A group whose only child is another group is merged into it
 //! ("projectA/feature/"), like compact folders in an editor.
+//!
+//! Order: the top level is alphabetical; inside a group, entries keep the
+//! input order — callers pass branches most-recently-committed first, so
+//! groups list recent work first (a sub-group sits where its newest branch is).
 
 pub enum Node<T> {
     Leaf {
@@ -30,34 +34,38 @@ pub enum Node<T> {
     },
 }
 
+/// `items` in recency order (newest first).
 pub fn build<T>(items: Vec<(String, T)>) -> Vec<Node<T>> {
-    build_level(items, "")
+    let ranked = items.into_iter().enumerate().map(|(i, (n, t))| (n, t, i)).collect();
+    build_level(ranked, "").into_iter().map(|(n, _)| n).collect()
 }
 
-fn build_level<T>(items: Vec<(String, T)>, parent: &str) -> Vec<Node<T>> {
+/// Returns nodes with their rank (input position of their newest member).
+fn build_level<T>(items: Vec<(String, T, usize)>, parent: &str) -> Vec<(Node<T>, usize)> {
     // Bucket by first path segment (only names that have a '/').
-    let mut buckets: Vec<(String, Vec<(String, T)>)> = Vec::new();
-    let mut leaves: Vec<(String, T)> = Vec::new();
-    for (name, item) in items {
+    let mut buckets: Vec<(String, Vec<(String, T, usize)>)> = Vec::new();
+    let mut leaves: Vec<(String, T, usize)> = Vec::new();
+    for (name, item, rank) in items {
         match name.split_once('/') {
             Some((seg, _)) if !seg.is_empty() => match buckets.iter_mut().find(|(s, _)| s == seg) {
-                Some((_, v)) => v.push((name, item)),
-                None => buckets.push((seg.to_string(), vec![(name, item)])),
+                Some((_, v)) => v.push((name, item, rank)),
+                None => buckets.push((seg.to_string(), vec![(name, item, rank)])),
             },
-            _ => leaves.push((name, item)),
+            _ => leaves.push((name, item, rank)),
         }
     }
-    let mut out: Vec<Node<T>> = leaves.into_iter().map(|(label, item)| Node::Leaf { label, item }).collect();
+    let mut out: Vec<(Node<T>, usize)> = leaves.into_iter().map(|(label, item, r)| (Node::Leaf { label, item }, r)).collect();
     for (seg, group) in buckets {
         if group.len() < 2 {
             // Single branch with this prefix: keep its full name, flat.
-            out.extend(group.into_iter().map(|(label, item)| Node::Leaf { label, item }));
+            out.extend(group.into_iter().map(|(label, item, r)| (Node::Leaf { label, item }, r)));
             continue;
         }
         let path = format!("{parent}{seg}/");
         let count = group.len();
-        let rest: Vec<(String, T)> = group.into_iter().map(|(n, i)| (n[seg.len() + 1..].to_string(), i)).collect();
-        let mut children = build_level(rest, &path);
+        let rank = group.iter().map(|g| g.2).min().unwrap_or(0);
+        let rest: Vec<(String, T, usize)> = group.into_iter().map(|(n, i, r)| (n[seg.len() + 1..].to_string(), i, r)).collect();
+        let mut children: Vec<Node<T>> = build_level(rest, &path).into_iter().map(|(n, _)| n).collect();
         let mut label = format!("{seg}/");
         let mut path = path;
         // Compact a chain of single sub-groups: "projectA/" › "feature/" → "projectA/feature/".
@@ -68,12 +76,17 @@ fn build_level<T>(items: Vec<(String, T)>, parent: &str) -> Vec<Node<T>> {
                 children = c;
             }
         }
-        out.push(Node::Group { label, path, children, count });
+        out.push((Node::Group { label, path, children, count }, rank));
     }
-    // Alphabetical, case-insensitive; groups and branches interleaved like a file tree.
-    out.sort_by_key(|n| match n {
-        Node::Leaf { label, .. } | Node::Group { label, .. } => label.to_lowercase(),
-    });
+    if parent.is_empty() {
+        // Top level: alphabetical, case-insensitive (groups and branches interleaved).
+        out.sort_by_key(|(n, _)| match n {
+            Node::Leaf { label, .. } | Node::Group { label, .. } => label.to_lowercase(),
+        });
+    } else {
+        // Inside a group: most recent first.
+        out.sort_by_key(|(_, r)| *r);
+    }
     out
 }
 
@@ -115,8 +128,9 @@ mod tests {
             vec![
                 "develop [develop]",
                 "feature/ (2)",
-                "  Billing [feature/Billing]",
+                // inside a group: input (recency) order, not alphabetical
                 "  login [feature/login]",
+                "  Billing [feature/Billing]",
                 "hotfix/1.0.1 [hotfix/1.0.1]",
                 "main [main]",
                 "projectA/x [projectA/x]",
@@ -124,6 +138,15 @@ mod tests {
                 "  2.0 [release/2.0]",
                 "  2.1 [release/2.1]",
             ]
+        );
+    }
+
+    #[test]
+    fn subgroup_sits_at_its_newest_member() {
+        // newest first: a leaf, then the sub-group's newest member, then older leaf
+        assert_eq!(
+            tree(&["proj/z-new", "proj/sub/b", "proj/old", "proj/sub/a"]),
+            vec!["proj/ (4)", "  z-new [proj/z-new]", "  sub/ (2)", "    b [proj/sub/b]", "    a [proj/sub/a]", "  old [proj/old]"]
         );
     }
 

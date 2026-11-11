@@ -34,21 +34,20 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
 
         // ---------------------------------------------------------------- local
         // Grouped by prefix (feature/, hotfix/, projectA/…) when 2+ branches share one.
-        egui::CollapsingHeader::new(RichText::new("BRANCHES").small().strong()).default_open(true).show(ui, |ui| {
+        let n_local = snap.refs.iter().filter(|r| r.kind == RefKind::Local).count();
+        section(ui, &format!("BRANCHES ({n_local})"), "branches", true, |ui| {
+            // refs arrive newest-first (for-each-ref --sort=-committerdate)
             let tree = branch_tree::build(
                 snap.refs.iter().filter(|r| r.kind == RefKind::Local).map(|r| (r.name.clone(), r)).collect(),
             );
             let focus = rv.focus_branch.clone();
             let open_if = |r: &&RefInfo| r.is_head || focus.as_deref() == Some(r.name.as_str());
-            render_tree(ui, &tree, "local", &open_if, &mut |ui, label, r| local_row(ui, rv, r, label, isz, actions));
+            render_tree(ui, &tree, "local", 0, &open_if, &mut |ui, label, depth, r| local_row(ui, rv, r, label, depth, isz, actions));
         });
 
         // ------------------------------------------------- recently re-attached
         if !rv.reattached.is_empty() {
-            egui::CollapsingHeader::new(RichText::new(format!("RE-ATTACHED ({})", rv.reattached.len())).small().strong())
-                .id_salt("reattached")
-                .default_open(true)
-                .show(ui, |ui| {
+            list_section(ui, &format!("RE-ATTACHED ({})", rv.reattached.len()), "reattached", true, |ui| {
                     for e in &rv.reattached {
                         let short = |t: &str| t.strip_prefix("commit:").map(|c| c[..7.min(c.len())].to_string()).unwrap_or_else(|| t.to_string());
                         ui.horizontal(|ui| {
@@ -76,10 +75,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
 
         // ------------------------------------------------------- detached notes
         if !rv.detached.is_empty() {
-            egui::CollapsingHeader::new(RichText::new(format!("DETACHED NOTES ({})", rv.detached.len())).small().strong())
-                .id_salt("detached")
-                .default_open(true)
-                .show(ui, |ui| {
+            list_section(ui, &format!("DETACHED NOTES ({})", rv.detached.len()), "detached", true, |ui| {
                     for d in &rv.detached {
                         let mut atoms = egui::Atoms::new(note_icon(theme::TEXT_DIM));
                         atoms.push_right(crate::notes_panel::short_target(&d.note));
@@ -121,15 +117,23 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
             let remote = r.name.split('/').next().unwrap_or("");
             remotes.entry(remote).or_default().push(r);
         }
-        egui::CollapsingHeader::new(RichText::new("REMOTES").small().strong()).default_open(false).show(ui, |ui| {
+        let n_remotes = remotes.len();
+        section(ui, &format!("REMOTES ({n_remotes})"), "remotes", false, |ui| {
             for (remote, refs) in remotes {
-                egui::CollapsingHeader::new(remote).id_salt(("remote", remote)).show(ui, |ui| {
+                // Each remote is a group row like "feature/", one level deep.
+                if !group_row(ui, ("remote", remote), remote, refs.len(), 0, false) {
+                    continue;
+                }
+                {
                     // Same prefix grouping as local branches, on the part after "origin/".
                     let tree = branch_tree::build(
                         refs.into_iter().map(|r| (r.name.split_once('/').map_or(r.name.clone(), |(_, b)| b.to_string()), r)).collect(),
                     );
-                    render_tree(ui, &tree, remote, &|_| false, &mut |ui, label, r| {
-                        let resp = ui.selectable_label(false, label);
+                    render_tree(ui, &tree, remote, 1, &|_| false, &mut |ui, label, depth, r| {
+                        let resp = ui.horizontal(|ui| {
+                            gutter(ui, depth, None);
+                            ui.selectable_label(false, label)
+                        }).inner;
                         if resp.clicked() {
                             actions.push(Action::JumpTo(r.target.clone()));
                         }
@@ -145,12 +149,13 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                             }
                         });
                     });
-                });
+                }
             }
         });
 
         // ----------------------------------------------------------------- tags
-        egui::CollapsingHeader::new(RichText::new("TAGS").small().strong()).default_open(false).show(ui, |ui| {
+        let n_tags = snap.refs.iter().filter(|r| r.kind == RefKind::Tag).count();
+        list_section(ui, &format!("TAGS ({n_tags})"), "tags", false, |ui| {
             for r in snap.refs.iter().filter(|r| r.kind == RefKind::Tag) {
                 if ui.selectable_label(false, &r.name).clicked() {
                     actions.push(Action::JumpTo(r.target.clone()));
@@ -159,10 +164,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         });
 
         // -------------------------------------------------------------- stashes
-        egui::CollapsingHeader::new(RichText::new(format!("STASHES ({})", snap.stashes.len())).small().strong())
-            .id_salt("stashes")
-            .default_open(false)
-            .show(ui, |ui| {
+        list_section(ui, &format!("STASHES ({})", snap.stashes.len()), "stashes", false, |ui| {
                 for s in &snap.stashes {
                     let resp = ui.selectable_label(false, &s.message);
                     if resp.clicked() {
@@ -189,7 +191,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
 
         // ---------------------------------------------------------------- tasks
         if tasks_enabled {
-            let resp = egui::CollapsingHeader::new(RichText::new("MY TASKS").small().strong()).id_salt("mytasks").default_open(false).show(ui, |ui| {
+            let open = list_section(ui, "MY TASKS", "mytasks", false, |ui| {
                 match my_tasks {
                     None => {
                         ui.spinner();
@@ -227,7 +229,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                     }
                 }
             });
-            if resp.fully_open() && my_tasks.is_none() && !rv.loading {
+            if open && my_tasks.is_none() && !rv.loading {
                 // first open: fetch lazily
                 if ui.memory(|m| m.data.get_temp::<bool>(egui::Id::unique("mytasks_req")).is_none()) {
                     ui.memory_mut(|m| m.data.insert_temp(egui::Id::unique("mytasks_req"), true));
@@ -249,42 +251,127 @@ fn slug(s: &str) -> String {
     out
 }
 
-/// Render a prefix tree: groups as collapsible "feature/  3" headers, leaves via `leaf`.
+/// Indent step per tree level (points) — shallow, like Sublime Merge.
+const STEP: f32 = 12.0;
+/// Width of the triangle / current-branch-dot column.
+const SLOT: f32 = 12.0;
+
+/// Leading space for a row at `depth` plus the triangle column. Leaves use the
+/// column for the ● current-branch marker, so names align with group names.
+fn gutter(ui: &mut Ui, depth: usize, dot: Option<egui::Color32>) {
+    ui.spacing_mut().item_spacing.x = 4.0;
+    if depth > 0 {
+        ui.add_space(depth as f32 * STEP);
+    }
+    let h = ui.text_style_height(&egui::TextStyle::Body);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(SLOT, h), egui::Sense::hover());
+    if let Some(c) = dot {
+        ui.painter().circle_filled(rect.center(), 3.0, c);
+    }
+}
+
+/// A collapsible row: triangle in the gutter, then `contents`. Returns whether
+/// it is open; the state is remembered for the session.
+fn toggle_row(ui: &mut Ui, id: egui::Id, depth: usize, default_open: bool, contents: impl FnOnce(&mut Ui)) -> bool {
+    let mut open = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(id, || default_open));
+    let resp = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            // Labels are text-selectable by default and would swallow the click.
+            ui.style_mut().interaction.selectable_labels = false;
+            if depth > 0 {
+                ui.add_space(depth as f32 * STEP);
+            }
+            let h = ui.text_style_height(&egui::TextStyle::Body);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(SLOT, h), egui::Sense::hover());
+            let c = rect.center();
+            let pts = if open {
+                vec![egui::pos2(c.x - 4.0, c.y - 2.0), egui::pos2(c.x + 4.0, c.y - 2.0), egui::pos2(c.x, c.y + 3.0)]
+            } else {
+                vec![egui::pos2(c.x - 2.0, c.y - 4.0), egui::pos2(c.x + 3.0, c.y), egui::pos2(c.x - 2.0, c.y + 4.0)]
+            };
+            ui.painter().add(egui::Shape::convex_polygon(pts, theme::TEXT_DIM, egui::Stroke::NONE));
+            // Match the inner padding of the selectable branch labels so group
+            // names, headings and branch names share one left edge.
+            ui.add_space((ui.spacing().button_padding.x - ui.spacing().item_spacing.x).max(0.0) + 3.0);
+            contents(ui);
+        })
+        .response
+        .interact(egui::Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if resp.clicked() {
+        open = !open;
+        ui.data_mut(|d| d.insert_temp(id, open));
+    }
+    open
+}
+
+/// A prefix group ("feature/  12").
+fn group_row(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, label: &str, count: usize, depth: usize, default_open: bool) -> bool {
+    toggle_row(ui, egui::Id::unique(("tree-group", id)), depth, default_open, |ui| {
+        ui.label(label);
+        ui.label(RichText::new(count.to_string()).small().color(theme::TEXT_DIM));
+    })
+}
+
+/// Section heading ("BRANCHES (34)"). Its rows use depth 0, so top-level
+/// branch names line up under the heading text.
+fn section(ui: &mut Ui, title: &str, id: &str, default_open: bool, body: impl FnOnce(&mut Ui)) -> bool {
+    let open = toggle_row(ui, egui::Id::unique(("section", id)), 0, default_open, |ui| {
+        ui.label(RichText::new(title).small().strong());
+    });
+    if open {
+        body(ui);
+    }
+    open
+}
+
+/// A section whose rows are plain widgets: pad them past the triangle column
+/// so they line up with the heading text (tree rows draw their own gutter).
+fn list_section(ui: &mut Ui, title: &str, id: &str, default_open: bool, body: impl FnOnce(&mut Ui)) -> bool {
+    section(ui, title, id, default_open, |ui| {
+        ui.horizontal(|ui| {
+            ui.add_space(SLOT + 4.0);
+            ui.vertical(|ui| body(ui));
+        });
+    })
+}
+
+/// Render a prefix tree; groups are compact collapsible rows.
 /// A group starts open if it contains an item matching `open_if`.
 pub fn render_tree<'a>(
     ui: &mut Ui,
     nodes: &[Node<&'a RefInfo>],
     ns: &str,
+    depth: usize,
     open_if: &dyn Fn(&&'a RefInfo) -> bool,
-    leaf: &mut dyn FnMut(&mut Ui, &str, &'a RefInfo),
+    leaf: &mut dyn FnMut(&mut Ui, &str, usize, &'a RefInfo),
 ) {
     for n in nodes {
         match n {
-            Node::Leaf { label, item } => leaf(ui, label, item),
+            Node::Leaf { label, item } => leaf(ui, label, depth, item),
             Node::Group { label, path, children, count } => {
-                let mut job = egui::text::LayoutJob::default();
-                let body = egui::TextStyle::Body.resolve(ui.style());
-                let small = egui::TextStyle::Small.resolve(ui.style());
-                job.append(label, 0.0, egui::TextFormat::simple(body, theme::TEXT));
-                job.append(&format!("  {count}"), 0.0, egui::TextFormat::simple(small, theme::TEXT_DIM));
-                egui::CollapsingHeader::new(job)
-                    .id_salt(("branch-group", ns, path.as_str()))
-                    .default_open(branch_tree::any(children, open_if))
-                    .show(ui, |ui| render_tree(ui, children, ns, open_if, leaf));
+                if group_row(ui, (ns, path.as_str()), label, *count, depth, branch_tree::any(children, open_if)) {
+                    render_tree(ui, children, ns, depth + 1, open_if, leaf);
+                }
             }
         }
     }
 }
 
 /// One local branch row: name (relative to its group), tracking, task, note, PR.
-fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, isz: f32, actions: &mut Vec<Action>) {
+fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize, isz: f32, actions: &mut Vec<Action>) {
     let ctx = ui.ctx().clone();
     let task = rv.notes.task_for_branch(&r.name);
     let note = rv.has_note(&NoteTarget::Branch(r.name.clone()));
-    let text = format!("{}{label}", if r.is_head { "● " } else { "   " });
+    let text = label.to_string();
     let track = r.track.replace("ahead ", "↑").replace("behind ", "↓").replace(", ", " ");
     let resp = ui
         .horizontal(|ui| {
+            // ● for the current branch sits in the triangle column
+            gutter(ui, depth, r.is_head.then_some(theme::ACCENT));
             let mut rt = RichText::new(text);
             if r.is_head {
                 rt = rt.strong();
