@@ -28,6 +28,9 @@ pub enum Msg {
     OpDone { label: String, result: Result<String, String>, refresh: bool },
     Task { key: String, result: Result<Task, String> },
     MyTasks(Result<Vec<Task>, String>),
+    /// Background auto-fetch finished (kept separate from `OpDone` so it never
+    /// touches the busy state of a user-started operation).
+    AutoFetched { workdir: PathBuf, result: Result<String, String> },
     // GitHub messages carry the repo path so late replies for a closed repo are dropped.
     GithubReady { workdir: PathBuf, result: Result<Option<Arc<GitHub>>, String> },
     Prs { workdir: PathBuf, result: Result<HashMap<String, PrSummary>, String> },

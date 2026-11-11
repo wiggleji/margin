@@ -33,12 +33,14 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 **Toolbar** (the only bar, at the top):
 
 ```
-[repo ▾] [branch ▾] [‹][›]        [Commands ⌘P] [Search commits…]        status · Undo  [Pull ↓n] [Push ↑n]
+[repo ▾] [branch ▾] [‹][›]        [Commands ⌘P] [Search commits…]        status · Undo  [Fetch][▾] [Pull ↓n] [Push ↑n]
 ```
 - **repo ▾**: recent repositories, Open, Reveal in Finder, Open in Terminal, Close.
 - **branch ▾**: switch branch, New branch…, more branch commands. A merge or rebase in progress shows as a red badge (click it for continue/abort).
 - **‹ ›**: back and forward through what you selected (commits, working directory), like a browser. ⌘[ / ⌘] or the mouse back/forward buttons also work. Commits that no longer exist (rebased away) are skipped.
-- **Status messages, errors, and Undo** appear just left of Pull/Push. Fetch, Stash, and Refresh are in ⌘P; refresh also happens on window focus and ⌘R.
+- **[Fetch][▾]** fetches all remotes (with prune). **▾** opens a menu: Fetch now, Fetch a remote…, an auto-fetch toggle, **Fetch settings…**, and the last fetch time. The button reads *Fetch ⟳* while auto-fetch is on.
+- **Auto-fetch** (Settings → Fetch): enable/disable and set the interval in minutes (1–1440; presets 5/15/30/60). It's off by default. It runs in the background without blocking your own git operations, and waits if one is running. It's quiet on success (the graph and PR status just update) and shows a message only on failure. There's no polling: the app wakes once when the next fetch is due. Settings are saved in `settings.json` next to `config.json`.
+- **Status messages, errors, and Undo** appear just left of the Fetch/Pull/Push buttons. Stash and Refresh are in ⌘P; refresh also happens on window focus and ⌘R.
 
 **Git (Sublime Merge–style)**
 - Commit graph across all branches, remotes, and tags, virtualised for large histories, with a filter box.

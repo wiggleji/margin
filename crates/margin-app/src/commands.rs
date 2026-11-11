@@ -100,6 +100,8 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
     v.push(c(Group::Repository, "Open repository…", "", "path folder", vec![input("Path to a git repository", "")], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
     let Some(rv) = &app.rv else { return };
     let path = rv.repo.workdir.clone();
+    v.push(c(Group::Repository, "Settings…", "", "preferences options auto fetch", vec![], act(|_| vec![Action::OpenSettings])));
+    v.push(c(Group::Remote, "Toggle auto-fetch", "", "background fetch interval", vec![], act(|_| vec![Action::ToggleAutoFetch])));
     v.push(c(Group::Repository, "Refresh", &format!("{CMD}R"), "reload status", vec![], act(|_| vec![Action::Refresh])));
     let p = path.clone();
     v.push(c(Group::Repository, "Reveal in Finder", "", "open folder explorer", vec![], act(move |_| vec![Action::OpenPath { path: p.clone(), terminal: false }])));

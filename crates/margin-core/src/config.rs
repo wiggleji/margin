@@ -111,6 +111,41 @@ pub fn load_state() -> State {
         .unwrap_or_default()
 }
 
+/// Preferences edited in the Settings window (app-managed `settings.json`;
+/// `config.json` stays hand-edited).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Settings {
+    /// Fetch all remotes in the background (off by default: no surprise network traffic).
+    #[serde(default)]
+    pub auto_fetch: bool,
+    #[serde(default = "default_fetch_minutes")]
+    pub auto_fetch_minutes: u32,
+}
+
+fn default_fetch_minutes() -> u32 {
+    10
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes() }
+    }
+}
+
+pub fn load_settings() -> Settings {
+    std::fs::read_to_string(config_dir().join("settings.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_settings(s: &Settings) -> Result<()> {
+    let d = config_dir();
+    std::fs::create_dir_all(&d)?;
+    std::fs::write(d.join("settings.json"), serde_json::to_string_pretty(s)?)?;
+    Ok(())
+}
+
 pub fn save_state(s: &State) -> Result<()> {
     let d = config_dir();
     std::fs::create_dir_all(&d)?;

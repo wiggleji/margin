@@ -93,6 +93,8 @@ pub enum Action {
     OpenPaletteWith(String),
     NavBack,
     NavForward,
+    OpenSettings,
+    ToggleAutoFetch,
     /// Revert an automatic re-attachment (journal id).
     UndoReattach(String),
     /// Confirm an automatic re-attachment (stop offering undo).
@@ -160,6 +162,10 @@ pub struct RepoView {
     pub hist_pos: usize,
     /// Set while navigating back/forward so the move isn't recorded again.
     pub navigating: bool,
+    pub opened_at: std::time::Instant,
+    /// Last successful fetch (manual, pull, or automatic).
+    pub last_fetch: Option<std::time::Instant>,
+    pub auto_fetching: bool,
 }
 
 impl RepoView {
@@ -202,6 +208,8 @@ impl RepoView {
 pub struct MarginApp {
     pub cfg: Config,
     pub state: State,
+    pub settings: margin_core::config::Settings,
+    pub show_settings: bool,
     pub jobs: Jobs,
     pub rv: Option<RepoView>,
     pub tasks: Option<Arc<dyn TaskProvider>>,
@@ -229,6 +237,8 @@ impl MarginApp {
             author: cfg.note_author.clone().unwrap_or_default(),
             state: config::load_state(),
             cfg: cfg.clone(),
+            settings: config::load_settings(),
+            show_settings: false,
             jobs: Jobs::new(ctx),
             rv: None,
             tasks,
@@ -425,6 +435,9 @@ impl MarginApp {
                         history: vec![Sel::Working],
                         hist_pos: 0,
                         navigating: false,
+                        opened_at: std::time::Instant::now(),
+                        last_fetch: None,
+                        auto_fetching: false,
                     });
                     self.reload_notes_index();
                     self.start_notes_watcher();
@@ -542,7 +555,21 @@ impl MarginApp {
             CherryPick(id) => self.op("Cherry-pick", move |r| r.cherry_pick(&id)),
             Revert(id) => self.op("Revert", move |r| r.revert(&id)),
             Reset(id, mode) => self.op("Reset", move |r| r.reset(&id, mode).map(|_| String::new())),
-            Fetch => self.op("Fetch", |r| r.fetch()),
+            Fetch => {
+                if self.rv.as_ref().is_some_and(|rv| rv.auto_fetching) {
+                    return self.info("Already fetching in the background…");
+                }
+                self.op("Fetch", |r| r.fetch())
+            }
+            OpenSettings => self.show_settings = true,
+            ToggleAutoFetch => {
+                self.settings.auto_fetch = !self.settings.auto_fetch;
+                if let Err(e) = config::save_settings(&self.settings) {
+                    self.err(e);
+                }
+                let m = self.settings.auto_fetch_minutes;
+                self.info(if self.settings.auto_fetch { format!("Auto-fetch on: every {m} min") } else { "Auto-fetch off".into() });
+            }
             Pull => self.op("Pull", |r| r.pull()),
             Push { force } => {
                 let Some(rv) = &self.rv else { return };
@@ -890,6 +917,20 @@ impl MarginApp {
                     self.handle(Action::FetchPrs { force: true });
                 }
             }
+            Msg::AutoFetched { workdir, result } => {
+                let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
+                rv.auto_fetching = false;
+                // Count failures too, so a broken remote retries once per interval, not every frame.
+                rv.last_fetch = Some(std::time::Instant::now());
+                match result {
+                    // Quiet on success: just show the new remote state.
+                    Ok(_) => {
+                        rv.prs_fetched_at = None;
+                        self.refresh();
+                    }
+                    Err(e) => self.err(format!("Auto-fetch failed: {e}")),
+                }
+            }
             Msg::Prs { workdir, result } => {
                 let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
                 match result {
@@ -959,6 +1000,7 @@ impl MarginApp {
             }
             Msg::OpDone { label, result, refresh } => {
                 self.busy = None;
+                let succeeded = result.is_ok();
                 match result {
                     Ok(out) => {
                         if label == "Commit" {
@@ -978,6 +1020,9 @@ impl MarginApp {
                 if matches!(label.as_str(), "Push" | "Fetch" | "Pull") {
                     if let Some(rv) = &mut self.rv {
                         rv.prs_fetched_at = None; // reload PR status after the refresh
+                        if label != "Push" && succeeded {
+                            rv.last_fetch = Some(std::time::Instant::now());
+                        }
                     }
                 }
             }
@@ -1237,6 +1282,47 @@ impl MarginApp {
                 if ui.button(pull).on_hover_text("Pull (fetch + merge/rebase per your git config)").clicked() {
                     actions.push(Action::Pull);
                 }
+                // Split button: [Fetch][▾]
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.x = 1.0;
+                    let auto = self.settings.auto_fetch;
+                    let mins = self.settings.auto_fetch_minutes;
+                    let last = rv.last_fetch.map(ago).unwrap_or_else(|| "never".into());
+                    ui.menu_button("▾", |ui| {
+                        ui.set_min_width(230.0);
+                        if ui.button("Fetch now").clicked() {
+                            actions.push(Action::Fetch);
+                            ui.close();
+                        }
+                        if ui.button("Fetch a remote…").clicked() {
+                            actions.push(Action::OpenPaletteWith("fetch remote".into()));
+                            ui.close();
+                        }
+                        ui.separator();
+                        let mut on = auto;
+                        if ui.checkbox(&mut on, format!("Auto-fetch every {mins} min")).clicked() {
+                            actions.push(Action::ToggleAutoFetch);
+                            ui.close();
+                        }
+                        if ui.button("Fetch settings…").clicked() {
+                            actions.push(Action::OpenSettings);
+                            ui.close();
+                        }
+                        ui.separator();
+                        ui.weak(format!("Last fetched: {last}"));
+                    })
+                    .response
+                    .on_hover_text("Fetch options");
+                    let tip = if auto {
+                        format!("Fetch all remotes (prune)\nLast fetched: {last} · auto every {mins} min")
+                    } else {
+                        format!("Fetch all remotes (prune)\nLast fetched: {last} · auto-fetch off")
+                    };
+                    let label = if auto { "Fetch ⟳" } else { "Fetch" };
+                    if ui.button(label).on_hover_text(tip).clicked() {
+                        actions.push(Action::Fetch);
+                    }
+                });
             });
             let right_start = right.min_rect().left();
 
@@ -1378,7 +1464,9 @@ impl eframe::App for MarginApp {
                 crate::commit_list::show(ui, rv, &mut actions);
             });
         }
+        self.auto_fetch_tick(&ctx);
         self.dialogs(&ctx);
+        self.settings_window(&ctx, &mut actions);
         if let Some(p) = &mut self.palette {
             match p.show(&ctx) {
                 crate::palette::Outcome::Open => {}
@@ -1398,6 +1486,110 @@ impl eframe::App for MarginApp {
         if let Some(rv) = &mut self.rv {
             rv.editor.save_if_dirty(&rv.notes);
         }
+    }
+}
+
+impl MarginApp {
+    /// Start a background fetch when due; otherwise ask egui to wake us at the
+    /// due time (no polling thread, no repaints in between).
+    fn auto_fetch_tick(&mut self, ctx: &egui::Context) {
+        if !self.settings.auto_fetch {
+            return;
+        }
+        let Some(rv) = &mut self.rv else { return };
+        if rv.snap.is_none() || rv.auto_fetching {
+            return;
+        }
+        let interval = std::time::Duration::from_secs(self.settings.auto_fetch_minutes.max(1) as u64 * 60);
+        // First run shortly after opening the repo, then every `interval`.
+        let due = rv.last_fetch.map(|t| t + interval).unwrap_or(rv.opened_at + std::time::Duration::from_secs(3));
+        let now = std::time::Instant::now();
+        if now < due {
+            ctx.request_repaint_after(due - now);
+            return;
+        }
+        if self.busy.is_some() {
+            // A user operation is running: try again shortly.
+            ctx.request_repaint_after(std::time::Duration::from_secs(5));
+            return;
+        }
+        rv.auto_fetching = true;
+        let repo = rv.repo.clone();
+        let workdir = repo.workdir.clone();
+        self.jobs.spawn(move || Msg::AutoFetched { workdir, result: repo.fetch().map_err(|e| e.0) });
+    }
+
+    fn settings_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if !self.show_settings {
+            return;
+        }
+        let mut changed = false;
+        let mut close = false;
+        let last = self.rv.as_ref().and_then(|rv| rv.last_fetch).map(ago);
+        let modal = egui::Modal::new(egui::Id::unique("settings")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.heading("Settings");
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("FETCH").small().strong().color(theme::TEXT_DIM));
+            ui.separator();
+            changed |= ui.checkbox(&mut self.settings.auto_fetch, "Fetch automatically in the background").changed();
+            ui.add_enabled_ui(self.settings.auto_fetch, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(24.0);
+                    ui.label("Every");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut self.settings.auto_fetch_minutes).range(1..=1440).speed(0.2).suffix(" min"))
+                        .changed();
+                    for m in [5, 15, 30, 60] {
+                        if ui.selectable_label(self.settings.auto_fetch_minutes == m, format!("{m}")).clicked() {
+                            self.settings.auto_fetch_minutes = m;
+                            changed = true;
+                        }
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "Fetches all remotes (with prune) for the open repository. Uses your git credential \
+                     helper / SSH agent and never prompts; failures are shown in the toolbar.",
+                )
+                .small()
+                .color(theme::TEXT_DIM),
+            );
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("Last fetched: {}", last.clone().unwrap_or_else(|| "never".into()))).small());
+                if self.rv.is_some() && ui.small_button("Fetch now").clicked() {
+                    actions.push(Action::Fetch);
+                }
+            });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+                ui.weak("Changes are saved automatically").on_hover_text(config::config_dir().join("settings.json").display().to_string());
+            });
+        });
+        if changed {
+            self.settings.auto_fetch_minutes = self.settings.auto_fetch_minutes.clamp(1, 1440);
+            if let Err(e) = config::save_settings(&self.settings) {
+                self.err(e);
+            }
+        }
+        if close || modal.should_close() {
+            self.show_settings = false;
+        }
+    }
+}
+
+/// "just now", "4 min ago", "2 h ago"
+fn ago(t: std::time::Instant) -> String {
+    let s = t.elapsed().as_secs();
+    match s {
+        0..=59 => "just now".into(),
+        60..=3599 => format!("{} min ago", s / 60),
+        _ => format!("{} h ago", s / 3600),
     }
 }
 
