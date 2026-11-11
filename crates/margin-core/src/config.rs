@@ -77,6 +77,11 @@ pub enum JiraFlavor {
 pub struct State {
     #[serde(default)]
     pub recent_repos: Vec<String>,
+    /// Repositories open as tabs (restored on start), and the active one.
+    #[serde(default)]
+    pub open_tabs: Vec<String>,
+    #[serde(default)]
+    pub active_tab: usize,
 }
 
 pub fn config_dir() -> PathBuf {

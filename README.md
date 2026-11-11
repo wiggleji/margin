@@ -35,7 +35,7 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 ```
 [repo ▾] [branch ▾] [‹][›]        [Commands ⌘P] [Search commits…]        status · Undo  [Fetch][▾] [Pull ↓n] [Push ↑n]
 ```
-- **repo ▾**: recent repositories, Open, Reveal in Finder, Open in Terminal, Close.
+- **repo ▾ (directory tabs)**: each opened repository or worktree is its own tab, and the name shows its position (`demo 1/3`). The dropdown lists open tabs (click to switch, × to close), then recent repositories, Open repository…, Reveal in Finder, Open in Terminal, and Close tab. ⌘P → **Change directory…** picks from open tabs, this repo's worktrees, and recent repos. Ctrl+Tab / Ctrl+Shift+Tab (or ⌘⇧] / ⌘⇧[) cycle tabs. Each tab keeps its own selection, history, notes editor, and PR status, and open tabs are restored on restart. A tab only loads when you first switch to it. Results of background work for a hidden tab never touch the visible one: the tab is refreshed when you come back to it.
 - **branch ▾**: switch branch, New branch…, more branch commands. A merge or rebase in progress shows as a red badge (click it for continue/abort).
 - **‹ ›**: back and forward through what you selected (commits, working directory), like a browser. ⌘[ / ⌘] or the mouse back/forward buttons also work. Commits that no longer exist (rebased away) are skipped.
 - **[Fetch][▾]** fetches all remotes (with prune). **▾** opens a menu: Fetch now, Fetch a remote…, an auto-fetch toggle, **Fetch settings…**, and the last fetch time. The button reads *Fetch ⟳* while auto-fetch is on.

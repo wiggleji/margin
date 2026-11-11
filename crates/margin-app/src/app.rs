@@ -94,6 +94,11 @@ pub enum Action {
     NavBack,
     NavForward,
     OpenSettings,
+    SwitchTab(usize),
+    NextTab,
+    PrevTab,
+    /// Close the tab at a visual index.
+    CloseTab(usize),
     ToggleAutoFetch,
     /// Revert an automatic re-attachment (journal id).
     UndoReattach(String),
@@ -166,9 +171,61 @@ pub struct RepoView {
     /// Last successful fetch (manual, pull, or automatic).
     pub last_fetch: Option<std::time::Instant>,
     pub auto_fetching: bool,
+    /// Background work finished for this tab while it was hidden: refresh on activation.
+    pub stale: bool,
+    /// Loaded once (GitHub connection, notes watcher) on first activation.
+    pub activated: bool,
 }
 
 impl RepoView {
+    fn new(repo: Repo, notes: NoteStore) -> RepoView {
+        RepoView {
+            repo,
+            notes,
+            snap: None,
+            graph: vec![],
+            row_of: HashMap::new(),
+            sel: Sel::Working,
+            selected_file: None,
+            work_diff: DiffView::default(),
+            commit_detail: None,
+            commit_diff: DiffView::default(),
+            generation: 0,
+            commit_msg: String::new(),
+            amend: false,
+            filter: String::new(),
+            filtered: None,
+            note_index: HashMap::new(),
+            tips: HashMap::new(),
+            github: None,
+            github_error: None,
+            prs: HashMap::new(),
+            pr_detail: HashMap::new(),
+            pr_requested: Default::default(),
+            prs_fetched_at: None,
+            detached: vec![],
+            detached_sig: 0,
+            pinned_note: None,
+            reattached: vec![],
+            notes_stamp: 0,
+            notes_watch: Arc::new(AtomicBool::new(false)),
+            editor: NoteEditor::default(),
+            focus_branch: None,
+            focus_task: None,
+            scroll_to_row: None,
+            loading: true,
+            limit: PAGE,
+            history: vec![Sel::Working],
+            hist_pos: 0,
+            navigating: false,
+            opened_at: std::time::Instant::now(),
+            last_fetch: None,
+            auto_fetching: false,
+            stale: true,
+            activated: false,
+        }
+    }
+
     pub fn current_branch(&self) -> Option<&str> {
         self.snap.as_ref()?.status.branch.as_deref()
     }
@@ -211,7 +268,11 @@ pub struct MarginApp {
     pub settings: margin_core::config::Settings,
     pub show_settings: bool,
     pub jobs: Jobs,
+    /// The active tab. Other open repositories live in `others`; the visual
+    /// order is others[..active_pos] + rv + others[active_pos..].
     pub rv: Option<RepoView>,
+    pub others: Vec<RepoView>,
+    pub active_pos: usize,
     pub tasks: Option<Arc<dyn TaskProvider>>,
     pub task_cache: HashMap<String, Result<Task, String>>,
     pub my_tasks: Option<Result<Vec<Task>, String>>,
@@ -241,6 +302,8 @@ impl MarginApp {
             show_settings: false,
             jobs: Jobs::new(ctx),
             rv: None,
+            others: vec![],
+            active_pos: 0,
             tasks,
             task_cache: HashMap::new(),
             my_tasks: None,
@@ -254,10 +317,27 @@ impl MarginApp {
             palette: None,
             ctx: ctx.clone(),
         };
-        if let Some(p) = repo {
-            if Repo::open(&p).is_ok() {
-                app.handle(Action::OpenRepo(p));
+        // Restore open tabs without loading them; only the active one loads.
+        let saved = app.state.open_tabs.clone();
+        let want = app.state.active_tab;
+        for p in &saved {
+            if let Ok(r) = Repo::open(p) {
+                if app.tab_index_of(&r.workdir).is_none() {
+                    if let Ok(n) = NoteStore::for_repo(&r) {
+                        app.others.push(RepoView::new(r, n));
+                    }
+                }
             }
+        }
+        if !app.others.is_empty() {
+            let i = want.min(app.others.len() - 1);
+            app.rv = Some(app.others.remove(i));
+            app.active_pos = i;
+        }
+        if let Some(p) = repo.filter(|p| Repo::open(p).is_ok()) {
+            app.handle(Action::OpenRepo(p)); // switches if it's already a tab
+        } else {
+            app.activate();
         }
         app
     }
@@ -295,7 +375,7 @@ impl MarginApp {
                     limit,
                 }))
             });
-            Msg::Refreshed(r.map_err(|e| e.0))
+            Msg::Refreshed { workdir: repo.workdir.clone(), result: r.map_err(|e| e.0) }
         });
     }
 
@@ -315,6 +395,7 @@ impl MarginApp {
         let generation = rv.generation;
         let repo = rv.repo.clone();
         self.jobs.spawn(move || Msg::WorkDiff {
+            workdir: repo.workdir.clone(),
             generation,
             result: repo.file_diff(&change, staged).map(|t| diff::parse(&t)).map_err(|e| e.0),
         });
@@ -333,7 +414,7 @@ impl MarginApp {
                 let (files, trunc) = diff::parse(&repo.commit_diff(&id)?);
                 Ok::<_, margin_core::Error>((d, files, trunc))
             })();
-            Msg::CommitLoaded { generation, result: r.map_err(|e| e.0) }
+            Msg::CommitLoaded { workdir: repo.workdir.clone(), generation, result: r.map_err(|e| e.0) }
         });
     }
 
@@ -346,7 +427,93 @@ impl MarginApp {
         self.busy = Some(label.to_string());
         let repo = rv.repo.clone();
         let label = label.to_string();
-        self.jobs.spawn(move || Msg::OpDone { result: f(&repo).map_err(|e| e.0), label, refresh: true });
+        self.jobs.spawn(move || Msg::OpDone { workdir: repo.workdir.clone(), result: f(&repo).map_err(|e| e.0), label, refresh: true });
+    }
+
+    pub fn tab_count(&self) -> usize {
+        self.others.len() + self.rv.is_some() as usize
+    }
+
+    /// Open tabs in visual order: (workdir, name, active).
+    pub fn tabs(&self) -> Vec<(PathBuf, String, bool)> {
+        let mut v: Vec<(PathBuf, String, bool)> = self.others.iter().map(|t| (t.repo.workdir.clone(), t.repo.name(), false)).collect();
+        if let Some(rv) = &self.rv {
+            v.insert(self.active_pos.min(v.len()), (rv.repo.workdir.clone(), rv.repo.name(), true));
+        }
+        v
+    }
+
+    fn tab_index_of(&self, workdir: &std::path::Path) -> Option<usize> {
+        self.tabs().iter().position(|(p, _, _)| p == workdir)
+    }
+
+    fn save_tabs(&mut self) {
+        self.state.open_tabs = self.tabs().into_iter().map(|(p, _, _)| p.display().to_string()).collect();
+        self.state.active_tab = self.active_pos;
+        let _ = config::save_state(&self.state);
+    }
+
+    /// Make the active tab live: first-time setup (notes watcher, GitHub),
+    /// then refresh if it was never loaded or changed while hidden.
+    fn activate(&mut self) {
+        let Some(rv) = &mut self.rv else { return };
+        let first = !rv.activated;
+        rv.activated = true;
+        let stale = std::mem::replace(&mut rv.stale, false);
+        if first {
+            self.reload_notes_index();
+            self.start_notes_watcher();
+            self.connect_github();
+        } else {
+            self.reload_notes_index();
+        }
+        if first || stale {
+            self.refresh();
+        }
+        self.save_tabs();
+    }
+
+    /// A result for a tab that isn't visible: update that tab only.
+    fn background_msg(&mut self, wd: PathBuf, m: Msg) {
+        let idx = self.others.iter().position(|t| t.repo.workdir == wd);
+        if let Msg::OpDone { label, result, .. } = &m {
+            // Busy is app-wide (one git operation at a time).
+            self.busy = None;
+            let name = wd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            match result {
+                Ok(_) => self.info(format!("{name}: {label} done")),
+                Err(e) => self.err(format!("{name}: {label} failed: {e}")),
+            }
+        }
+        let tab = idx.map(|i| &mut self.others[i]);
+        match m {
+            Msg::OpDone { .. } => {
+                if let Some(t) = tab {
+                    t.stale = true;
+                }
+            }
+            Msg::GithubReady { result, .. } => {
+                if let Some(t) = tab {
+                    match result {
+                        Ok(gh) => t.github = gh,
+                        Err(e) => t.github_error = Some(e),
+                    }
+                }
+            }
+            Msg::AutoFetched { .. } => {
+                if let Some(t) = tab {
+                    t.auto_fetching = false;
+                    t.last_fetch = Some(std::time::Instant::now());
+                    t.stale = true;
+                }
+            }
+            _ => {
+                if let Some(t) = tab {
+                    t.loading = false;
+                    t.stale = true;
+                }
+            }
+        }
     }
 
     /// Poll the notes dir off the UI thread (1 Hz, a few stat calls) and wake
@@ -384,6 +551,10 @@ impl MarginApp {
         match a {
             OpenRepo(p) => match Repo::open(&p) {
                 Ok(repo) => {
+                    // Already open in a tab? Just switch to it.
+                    if let Some(i) = self.tab_index_of(&repo.workdir) {
+                        return self.handle(SwitchTab(i));
+                    }
                     let notes = match NoteStore::for_repo(&repo) {
                         Ok(n) => n,
                         Err(e) => return self.err(e),
@@ -395,62 +566,68 @@ impl MarginApp {
                     self.state.recent_repos.retain(|r| r != &path);
                     self.state.recent_repos.insert(0, path);
                     self.state.recent_repos.truncate(15);
-                    let _ = config::save_state(&self.state);
-                    self.rv = Some(RepoView {
-                        repo,
-                        notes,
-                        snap: None,
-                        graph: vec![],
-                        row_of: HashMap::new(),
-                        sel: Sel::Working,
-                        selected_file: None,
-                        work_diff: DiffView::default(),
-                        commit_detail: None,
-                        commit_diff: DiffView::default(),
-                        generation: 0,
-                        commit_msg: String::new(),
-                        amend: false,
-                        filter: String::new(),
-                        filtered: None,
-                        note_index: HashMap::new(),
-                        tips: HashMap::new(),
-                        github: None,
-                        github_error: None,
-                        prs: HashMap::new(),
-                        pr_detail: HashMap::new(),
-                        pr_requested: Default::default(),
-                        prs_fetched_at: None,
-                        detached: vec![],
-                        detached_sig: 0,
-                        pinned_note: None,
-                        reattached: vec![],
-                        notes_stamp: 0,
-                        notes_watch: Arc::new(AtomicBool::new(false)),
-                        editor: NoteEditor::default(),
-                        focus_branch: None,
-                        focus_task: None,
-                        scroll_to_row: None,
-                        loading: true,
-                        limit: PAGE,
-                        history: vec![Sel::Working],
-                        hist_pos: 0,
-                        navigating: false,
-                        opened_at: std::time::Instant::now(),
-                        last_fetch: None,
-                        auto_fetching: false,
-                    });
-                    self.reload_notes_index();
-                    self.start_notes_watcher();
-                    self.refresh();
-                    self.connect_github();
+                    // New tab right after the current one.
+                    if let Some(cur) = self.rv.take() {
+                        self.others.insert(self.active_pos, cur);
+                        self.active_pos += 1;
+                    }
+                    self.rv = Some(RepoView::new(repo, notes));
+                    self.activate();
                 }
                 Err(e) => self.err(format!("{}: {e}", p.display())),
             },
+            SwitchTab(i) => {
+                if i == self.active_pos || i >= self.tab_count() {
+                    return;
+                }
+                if let Some(mut cur) = self.rv.take() {
+                    cur.editor.save_if_dirty(&cur.notes);
+                    self.others.insert(self.active_pos, cur);
+                }
+                self.rv = Some(self.others.remove(i));
+                self.active_pos = i;
+                self.status_line = None;
+                self.status_undo.clear();
+                self.palette = None;
+                self.activate();
+            }
+            NextTab | PrevTab => {
+                let n = self.tab_count();
+                if n > 1 {
+                    let i = if matches!(a, NextTab) { (self.active_pos + 1) % n } else { (self.active_pos + n - 1) % n };
+                    self.handle(SwitchTab(i));
+                }
+            }
+            CloseTab(i) => {
+                if i == self.active_pos {
+                    return self.handle(CloseRepo);
+                }
+                // others index: tabs before the active one keep their index, later ones shift by one
+                let oi = if i < self.active_pos { i } else { i - 1 };
+                if oi < self.others.len() {
+                    let mut t = self.others.remove(oi);
+                    t.editor.save_if_dirty(&t.notes);
+                    if i < self.active_pos {
+                        self.active_pos -= 1;
+                    }
+                    self.save_tabs();
+                }
+            }
             CloseRepo => {
+                // Close the active tab and activate its neighbour (if any).
                 if let Some(rv) = &mut self.rv {
                     rv.editor.save_if_dirty(&rv.notes);
                 }
                 self.rv = None;
+                if !self.others.is_empty() {
+                    let i = self.active_pos.min(self.others.len() - 1);
+                    self.rv = Some(self.others.remove(i));
+                    self.active_pos = i;
+                    self.activate();
+                } else {
+                    self.active_pos = 0;
+                    self.save_tabs();
+                }
             }
             Refresh => self.refresh(),
             LoadMore => {
@@ -871,6 +1048,12 @@ impl MarginApp {
     }
 
     fn on_msg(&mut self, m: Msg) {
+        if let Some(wd) = m.workdir() {
+            if self.rv.as_ref().map(|r| &r.repo.workdir) != Some(wd) {
+                let wd = wd.clone();
+                return self.background_msg(wd, m);
+            }
+        }
         match m {
             Msg::GithubReady { workdir, result } => {
                 let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
@@ -948,7 +1131,7 @@ impl MarginApp {
                 let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
                 rv.pr_detail.insert(branch, result.and_then(|d| d.ok_or_else(|| "No pull request for this branch".to_string())));
             }
-            Msg::Refreshed(r) => {
+            Msg::Refreshed { result: r, .. } => {
                 let Some(rv) = &mut self.rv else { return };
                 rv.loading = false;
                 match r {
@@ -975,7 +1158,7 @@ impl MarginApp {
                     Err(e) => self.err(e),
                 }
             }
-            Msg::WorkDiff { generation, result } => {
+            Msg::WorkDiff { generation, result, .. } => {
                 let Some(rv) = &mut self.rv else { return };
                 if generation != rv.generation {
                     return;
@@ -985,7 +1168,7 @@ impl MarginApp {
                     Err(e) => rv.work_diff.set_error(e),
                 }
             }
-            Msg::CommitLoaded { generation, result } => {
+            Msg::CommitLoaded { generation, result, .. } => {
                 let Some(rv) = &mut self.rv else { return };
                 if generation != rv.generation {
                     return;
@@ -998,7 +1181,7 @@ impl MarginApp {
                     Err(e) => rv.commit_diff.set_error(e),
                 }
             }
-            Msg::OpDone { label, result, refresh } => {
+            Msg::OpDone { label, result, refresh, .. } => {
                 self.busy = None;
                 let succeeded = result.is_ok();
                 match result {
@@ -1175,8 +1358,11 @@ impl MarginApp {
     /// Single top toolbar:
     /// [repo ▾] [branch ▾] [‹][›]      [Commands ⌘P][Search commits]      status … [Pull ↓n][Push ↑n]
     fn toolbar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let tabs = self.tabs();
+        let open: Vec<String> = tabs.iter().map(|(p, _, _)| p.display().to_string()).collect();
         let Some(rv) = &mut self.rv else { return };
-        let recent: Vec<String> = self.state.recent_repos.iter().filter(|r| **r != rv.repo.workdir.display().to_string()).take(10).cloned().collect();
+        // Recent = not already open as a tab.
+        let recent: Vec<String> = self.state.recent_repos.iter().filter(|r| !open.contains(r)).take(10).cloned().collect();
         let busy = self.busy.clone();
         let working = rv.loading || self.jobs.in_flight > 0;
         egui::Panel::top("toolbar").show(ui, |ui| {
@@ -1188,17 +1374,56 @@ impl MarginApp {
 
             // ---- left: repository menu, branch switcher, back/forward
             let mut left = bar(ui, left_to_right, row);
-            left.menu_button(egui::RichText::new(rv.repo.name()).strong(), |ui| {
-                for r in &recent {
-                    let name = std::path::Path::new(r).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    if ui.button(&name).on_hover_text(r).clicked() {
-                        actions.push(Action::OpenRepo(PathBuf::from(r)));
-                        ui.close();
+            // Directory menu: open tabs (switch / ×), recent, open, reveal, close.
+            let mut title = egui::text::LayoutJob::default();
+            let body = egui::TextStyle::Body.resolve(left.style());
+            let small = egui::TextStyle::Small.resolve(left.style());
+            title.append(&rv.repo.name(), 0.0, egui::TextFormat { font_id: body, color: theme::TEXT, ..Default::default() });
+            if tabs.len() > 1 {
+                let pos = tabs.iter().position(|t| t.2).unwrap_or(0) + 1;
+                title.append(&format!("  {pos}/{}", tabs.len()), 0.0, egui::TextFormat::simple(small, theme::TEXT_DIM));
+            }
+            let menu = left.menu_button(title, |ui| {
+                ui.set_min_width(260.0);
+                ui.label(egui::RichText::new("OPEN").small().strong().color(theme::TEXT_DIM));
+                for (i, (path, name, active)) in tabs.iter().enumerate() {
+                    let (mut switch, mut close) = (false, false);
+                    egui::Sides::new().show(
+                        ui,
+                        |ui| {
+                            let mut rt = egui::RichText::new(format!("{}{name}", if *active { "● " } else { "   " }));
+                            if *active {
+                                rt = rt.strong();
+                            }
+                            let r = ui.add(egui::Button::new(rt).frame(false));
+                            if r.on_hover_text(path.display().to_string()).clicked() {
+                                switch = true;
+                                ui.close();
+                            }
+                        },
+                        |ui| {
+                            close = ui.small_button("×").on_hover_text("Close tab").clicked();
+                        },
+                    );
+                    if switch {
+                        actions.push(Action::SwitchTab(i));
+                    }
+                    if close {
+                        actions.push(Action::CloseTab(i));
                     }
                 }
                 if !recent.is_empty() {
                     ui.separator();
+                    ui.label(egui::RichText::new("RECENT").small().strong().color(theme::TEXT_DIM));
                 }
+                for r in &recent {
+                    let name = std::path::Path::new(r).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    if ui.button(format!("   {name}")).on_hover_text(r).clicked() {
+                        actions.push(Action::OpenRepo(PathBuf::from(r)));
+                        ui.close();
+                    }
+                }
+                ui.separator();
                 #[cfg(target_os = "macos")]
                 if ui.button("Open repository…").clicked() {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
@@ -1221,11 +1446,12 @@ impl MarginApp {
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Close repository").clicked() {
+                if ui.button("Close tab").clicked() {
                     actions.push(Action::CloseRepo);
                     ui.close();
                 }
             });
+            menu.response.on_hover_text("Switch directory (Ctrl+Tab, or ⌘P → Change directory)");
             if let Some(snap) = &rv.snap {
                 let branch = snap.status.branch.clone().unwrap_or_else(|| "(detached HEAD)".into());
                 left.menu_button(egui::RichText::new(&branch).color(theme::ACCENT), |ui| {
@@ -1414,6 +1640,19 @@ impl eframe::App for MarginApp {
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) || i.pointer.button_pressed(egui::PointerButton::Extra2),
             )
         });
+        let (next_tab, prev_tab) = ctx.input_mut(|i| {
+            let shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+            (
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab) || i.consume_key(shift, egui::Key::CloseBracket),
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab) || i.consume_key(shift, egui::Key::OpenBracket),
+            )
+        });
+        if next_tab {
+            self.handle(Action::NextTab);
+        }
+        if prev_tab {
+            self.handle(Action::PrevTab);
+        }
         if back {
             self.handle(Action::NavBack);
         }
@@ -1484,6 +1723,10 @@ impl eframe::App for MarginApp {
         if let Some(rv) = &mut self.rv {
             rv.editor.save_if_dirty(&rv.notes);
         }
+        for t in &mut self.others {
+            t.editor.save_if_dirty(&t.notes);
+        }
+        self.save_tabs();
     }
 }
 

@@ -21,11 +21,13 @@ pub struct Snapshot {
 }
 
 pub enum Msg {
-    Refreshed(Result<Box<Snapshot>, String>),
-    WorkDiff { generation: u64, result: Result<(Vec<FileDiff>, bool), String> },
-    CommitLoaded { generation: u64, result: Result<(CommitDetail, Vec<FileDiff>, bool), String> },
+    // Repo-scoped messages carry `workdir` so a result never lands in the
+    // wrong tab (see MarginApp::on_msg).
+    Refreshed { workdir: PathBuf, result: Result<Box<Snapshot>, String> },
+    WorkDiff { workdir: PathBuf, generation: u64, result: Result<(Vec<FileDiff>, bool), String> },
+    CommitLoaded { workdir: PathBuf, generation: u64, result: Result<(CommitDetail, Vec<FileDiff>, bool), String> },
     /// A git operation finished. `refresh`: reload repo state afterwards.
-    OpDone { label: String, result: Result<String, String>, refresh: bool },
+    OpDone { workdir: PathBuf, label: String, result: Result<String, String>, refresh: bool },
     Task { key: String, result: Result<Task, String> },
     MyTasks(Result<Vec<Task>, String>),
     /// Background auto-fetch finished (kept separate from `OpDone` so it never
@@ -42,6 +44,24 @@ pub enum Msg {
         reattached: Vec<margin_core::detached::Reattached>,
         result: Result<Vec<margin_core::detached::DetachedNote>, String>,
     },
+}
+
+impl Msg {
+    /// The repository a message belongs to (None: app-wide, e.g. task lookups).
+    pub fn workdir(&self) -> Option<&PathBuf> {
+        match self {
+            Msg::Refreshed { workdir, .. }
+            | Msg::WorkDiff { workdir, .. }
+            | Msg::CommitLoaded { workdir, .. }
+            | Msg::OpDone { workdir, .. }
+            | Msg::AutoFetched { workdir, .. }
+            | Msg::GithubReady { workdir, .. }
+            | Msg::Prs { workdir, .. }
+            | Msg::PrDetail { workdir, .. }
+            | Msg::Detached { workdir, .. } => Some(workdir),
+            Msg::Task { .. } | Msg::MyTasks(_) => None,
+        }
+    }
 }
 
 pub struct Jobs {
