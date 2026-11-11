@@ -4,14 +4,33 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 
 ![screenshot](docs/screenshot.png)
 
+![command palette](docs/screenshot-palette.png)
+
 | | |
 |---|---|
-| GUI binary (release, stripped) | ~12.9 MB |
+| GUI binary (release, stripped) | ~13.2 MB |
 | MCP server binary | ~2.8 MB |
 | Idle CPU | ~0 (repaints only on input or when a note changes) |
 | Private memory, small repo | ~40 MB |
 
 ## What it does
+
+**Command palette (⌘P)**: every action, fuzzy-searchable and grouped with icons. The groups are *In progress* (continue/abort), Repository, Remote, Commit, Branch, Tag, Stash, Worktree, Git Flow, Submodule, GitHub, Notes, and Go to. Commands that need input ask for it inside the palette: pick a branch, type a name, or confirm. ↑/↓ move, ↵ runs, and Esc steps back.
+
+| Group | Commands |
+|---|---|
+| Remote | fetch (all or one remote), pull, pull with rebase, push, force push (with lease), add, rename, remove, or set-URL a remote, delete a remote branch |
+| Commit | commit, amend, stage/unstage all, discard all, revert, cherry-pick, reset (soft/mixed/hard) |
+| Branch | new, checkout (local or remote), merge, rebase onto, rename (note follows), delete, force delete, set upstream, push to remote, link task |
+| Tag | create (lightweight or annotated), checkout, delete, push one or all, delete on remote |
+| Stash | stash, stash with message, pop latest, apply, pop, drop |
+| Worktree | open, add for an existing branch, add with a new branch (folder defaults to `../<repo>-<branch>`), remove, force remove, prune |
+| Git Flow | initialize; Feature, Bugfix, Release, Hotfix, Support: start, finish (release and hotfix are tagged), publish |
+| Other | submodule update/sync; continue/skip/abort a merge, rebase, cherry-pick, or revert; open or create a PR, open the repo on GitHub; open notes; go to a branch, tag, or commit |
+
+**Git Flow without the extension.** It's implemented with plain git and uses the standard `gitflow.*` config, so it's compatible with repos set up by `git flow init`. Finish is idempotent: after a merge conflict, resolve it, commit, and run Finish again. A hotfix goes into an open release branch if there is one, like git-flow does.
+
+The window has a single top toolbar. Status messages, errors, and Undo appear there; there's no bottom bar.
 
 **Git (Sublime Merge–style)**
 - Commit graph across all branches, remotes, and tags, virtualised for large histories, with a filter box.
@@ -27,8 +46,8 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
   - **Branch note:** bound to the branch name. It's shown on the branch's **top commit** (a chip in the graph, and the default tab when you select the tip). It follows the branch through rebase, amend, and new commits. Use it for ongoing work.
   - **Commit note:** bound to one exact SHA. After a rebase or amend it stays with the old commit. Use it for facts about that exact snapshot (benchmarks, review of that revision).
 - **Branch renames are followed.** Renaming in Margin (right-click → Rename…) or in a terminal (`git branch -m`, read from the reflog, including chains) moves the branch note and task link to the new name.
-- **Automatic re-attach (git patch-id).** When a commit note's commit is rewritten without changing its diff (rebase, cherry-pick, message-only amend), the note moves to the new commit automatically, and the status bar says so. It only moves on a unique match. If the change itself was edited (amend with new content, squash), the note stays detached for you to decide. Turn it off with `"auto_reattach": false`.
-- **Undo for automatic re-attach.** Every automatic move can be reverted from the status bar ("Undo"), the sidebar's **Re-attached** list, or the banner on the note itself. Undo puts the note back on the old commit and restores the destination exactly, including a note that was there before a merge. If you edited the re-attached note afterwards, your edits are kept. An undone move is never applied automatically again. **Keep** confirms a move and clears it from the list.
+- **Automatic re-attach (git patch-id).** When a commit note's commit is rewritten without changing its diff (rebase, cherry-pick, message-only amend), the note moves to the new commit automatically, and the toolbar message says so. It only moves on a unique match. If the change itself was edited (amend with new content, squash), the note stays detached for you to decide. Turn it off with `"auto_reattach": false`.
+- **Undo for automatic re-attach.** Every automatic move can be reverted from the toolbar message ("Undo"), the sidebar's **Re-attached** list, or the banner on the note itself. Undo puts the note back on the old commit and restores the destination exactly, including a note that was there before a merge. If you edited the re-attached note afterwards, your edits are kept. An undone move is never applied automatically again. **Keep** confirms a move and clears it from the list.
 - **Detached notes.** Commit notes whose commit is no longer on any branch, tag, or remote, and branch notes whose branch was deleted, are listed in the sidebar. Open one to see why it's detached. If the same change exists in several commits, each one is a one-click target. **Re-attach…** suggests the rewritten commit (patch-id match, else same subject), or you can delete it. Moving onto an existing note appends instead of overwriting.
 - Markdown with tables, task lists, and links. **Images, raw HTML, and unsafe link schemes are rejected** on every write, from both the GUI and MCP.
 - Edit and preview modes, autosave, and clickable task checkboxes. Internal links like `margin:commit:abc123` and `margin:task:PROJ-42` navigate inside the app.

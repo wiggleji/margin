@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod commands;
 mod commit_list;
 mod icons;
 mod details;
@@ -8,6 +9,7 @@ mod diff_view;
 mod jobs;
 mod markdown_view;
 mod notes_panel;
+mod palette;
 mod pr_view;
 mod sidebar;
 mod theme;

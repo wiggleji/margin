@@ -81,6 +81,14 @@ pub enum Action {
     /// Move a note; `to` is `commit:<rev>` or `branch:<name>`.
     MoveNote { from: NoteTarget, to: String },
     DeleteNote(NoteTarget),
+    /// Any git operation, run in the background (palette commands).
+    RunGit { label: String, f: Arc<dyn Fn(&Repo) -> margin_core::Result<String> + Send + Sync> },
+    OpenPath { path: PathBuf, terminal: bool },
+    CommitWithMessage(String),
+    StartAmend,
+    /// Resolve a branch/tag/SHA and jump to it.
+    GotoRev(String),
+    OpenPalette,
     /// Revert an automatic re-attachment (journal id).
     UndoReattach(String),
     /// Confirm an automatic re-attachment (stop offering undo).
@@ -197,8 +205,9 @@ pub struct MarginApp {
     pub was_focused: bool,
     pub author: String,
     pub pending_copy: Option<String>,
-    /// Journal ids the status-bar "Undo" button reverts (last auto re-attach).
+    /// Journal ids the toolbar "Undo" button reverts (last auto re-attach).
     pub status_undo: Vec<String>,
+    pub palette: Option<crate::palette::Palette>,
     ctx: egui::Context,
 }
 
@@ -223,6 +232,7 @@ impl MarginApp {
             was_focused: true,
             pending_copy: None,
             status_undo: vec![],
+            palette: None,
             ctx: ctx.clone(),
         };
         if let Some(p) = repo {
@@ -705,6 +715,35 @@ impl MarginApp {
                     Err(e) => self.err(e),
                 }
             }
+            RunGit { label, f } => self.op(&label, move |r| f(r)),
+            OpenPath { path, terminal } => open_path(&path, terminal, self),
+            CommitWithMessage(msg) => {
+                if let Some(rv) = &mut self.rv {
+                    rv.commit_msg = msg;
+                }
+                self.handle(Commit);
+            }
+            StartAmend => {
+                let Some(rv) = &mut self.rv else { return };
+                rv.amend = true;
+                rv.commit_msg = rv.repo.last_commit_message().unwrap_or_default();
+                self.handle(Select(Sel::Working));
+                self.info("Amending: edit the message (and stage changes), then Amend commit");
+            }
+            GotoRev(rev) => {
+                let Some(rv) = &self.rv else { return };
+                let is_local = rv.snap.as_ref().is_some_and(|s| s.refs.iter().any(|r| r.kind == margin_core::git::RefKind::Local && r.name == rev));
+                match rv.repo.resolve(&rev) {
+                    Ok(id) => {
+                        self.handle(JumpTo(id));
+                        if is_local {
+                            self.handle(FocusBranch(rev));
+                        }
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            OpenPalette => self.palette = Some(crate::palette::Palette::new(crate::commands::build(self))),
             UndoReattach(id) => {
                 let Some(rv) = &mut self.rv else { return };
                 match margin_core::journal::undo(&rv.notes, &id) {
@@ -1088,46 +1127,34 @@ impl MarginApp {
                     if ui.button("⟳").on_hover_text("Refresh (⌘R)").clicked() {
                         actions.push(Action::Refresh);
                     }
-                    ui.add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Filter commits…").desired_width(220.0));
+                    ui.add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Filter commits…").desired_width(200.0));
+                    let key = if cfg!(target_os = "macos") { "⌘P" } else { "Ctrl+P" };
+                    if ui.button(format!("Commands  {key}")).on_hover_text("Command palette").clicked() {
+                        actions.push(Action::OpenPalette);
+                    }
+                    // Status message (was the bottom bar): newest result, click to dismiss.
+                    if !self.status_undo.is_empty() && ui.small_button("Undo").clicked() {
+                        for id in self.status_undo.drain(..) {
+                            actions.push(Action::UndoReattach(id));
+                        }
+                    }
+                    if let Some((m, err)) = &self.status_line {
+                        let first = m.lines().next().unwrap_or("");
+                        let color = if *err { theme::ERROR } else { theme::TEXT_DIM };
+                        let resp = ui
+                            .add(egui::Label::new(egui::RichText::new(first).color(color)).truncate().sense(egui::Sense::click()))
+                            .on_hover_text(format!("{m}\n\n(click to dismiss)"));
+                        if resp.clicked() {
+                            self.status_line = None;
+                            self.status_undo.clear();
+                        }
+                    }
                 });
             });
             ui.add_space(2.0);
         });
     }
 
-    fn status_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        egui::Panel::bottom("statusbar").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                match &self.status_line {
-                    Some((m, err)) => {
-                        let m = m.lines().next().unwrap_or("").to_string();
-                        let resp = ui.add(egui::Label::new(egui::RichText::new(&m).color(if *err { theme::ERROR } else { theme::TEXT_DIM })).sense(egui::Sense::click()));
-                        if let Some((full, _)) = &self.status_line {
-                            if full.lines().count() > 1 {
-                                resp.clone().on_hover_text(full);
-                            }
-                        }
-                        if resp.clicked() {
-                            self.status_line = None;
-                        }
-                        if !self.status_undo.is_empty() && ui.small_button("Undo").clicked() {
-                            for id in self.status_undo.drain(..) {
-                                actions.push(Action::UndoReattach(id));
-                            }
-                        }
-                    }
-                    None => {
-                        ui.weak("Ready");
-                    }
-                }
-                if let Some(rv) = &self.rv {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.weak(format!("{} notes", rv.note_index.len()));
-                    });
-                }
-            });
-        });
-    }
 }
 
 impl eframe::App for MarginApp {
@@ -1156,9 +1183,21 @@ impl eframe::App for MarginApp {
         }
 
         // Global shortcuts
-        let (refresh, save) = ctx.input_mut(|i| {
-            (i.consume_key(egui::Modifiers::COMMAND, egui::Key::R), i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
+        let (refresh, save, palette) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::R),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::S),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::P)
+                    || i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P),
+            )
         });
+        if palette {
+            if self.palette.is_some() {
+                self.palette = None;
+            } else {
+                self.handle(Action::OpenPalette);
+            }
+        }
         if refresh {
             self.refresh();
         }
@@ -1174,7 +1213,6 @@ impl eframe::App for MarginApp {
             actions = self.welcome(ui);
         } else {
             self.toolbar(ui, &mut actions);
-            self.status_bar(ui, &mut actions);
             let tasks_enabled = self.tasks.is_some();
             let rv = self.rv.as_mut().unwrap();
             egui::Panel::left("sidebar").resizable(true).default_size(220.0).show(ui, |ui| {
@@ -1196,6 +1234,16 @@ impl eframe::App for MarginApp {
             });
         }
         self.dialogs(&ctx);
+        if let Some(p) = &mut self.palette {
+            match p.show(&ctx) {
+                crate::palette::Outcome::Open => {}
+                crate::palette::Outcome::Close => self.palette = None,
+                crate::palette::Outcome::Run(a) => {
+                    self.palette = None;
+                    actions.extend(a);
+                }
+            }
+        }
         for a in actions {
             self.handle(a);
         }
@@ -1205,6 +1253,24 @@ impl eframe::App for MarginApp {
         if let Some(rv) = &mut self.rv {
             rv.editor.save_if_dirty(&rv.notes);
         }
+    }
+}
+
+fn open_path(path: &std::path::Path, terminal: bool, app: &mut MarginApp) {
+    #[cfg(target_os = "macos")]
+    let r = if terminal {
+        std::process::Command::new("/usr/bin/open").args(["-a", "Terminal"]).arg(path).spawn()
+    } else {
+        std::process::Command::new("/usr/bin/open").arg(path).spawn()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let r = if terminal {
+        std::process::Command::new("x-terminal-emulator").current_dir(path).spawn()
+    } else {
+        std::process::Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(path).spawn()
+    };
+    if let Err(e) = r {
+        app.err(format!("open {}: {e}", path.display()));
     }
 }
 

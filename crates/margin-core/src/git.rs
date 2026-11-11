@@ -104,6 +104,19 @@ pub struct RefInfo {
     pub is_head: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    pub path: PathBuf,
+    pub head: Option<String>,
+    /// Short branch name; `None` when detached.
+    pub branch: Option<String>,
+    pub bare: bool,
+    pub locked: bool,
+    pub prunable: bool,
+    /// The main worktree (first in `git worktree list`).
+    pub main: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Stash {
     pub name: String, // stash@{0}
@@ -588,6 +601,166 @@ impl Repo {
         self.run(&["reset", "-q", m, rev]).map(drop)
     }
 
+    // ------------------------------------------------------------- tags
+
+    /// Annotated tag (signed automatically if `tag.gpgSign` is configured).
+    pub fn create_annotated_tag(&self, name: &str, rev: &str, message: &str) -> Result<()> {
+        self.run(&["tag", "-a", name, "-m", message, rev]).map(drop)
+    }
+
+    pub fn delete_tag(&self, name: &str) -> Result<()> {
+        self.run(&["tag", "-d", name]).map(drop)
+    }
+
+    pub fn push_tag(&self, remote: &str, name: &str) -> Result<String> {
+        let r = format!("refs/tags/{name}");
+        self.run(&["push", remote, &r])
+    }
+
+    pub fn push_all_tags(&self, remote: &str) -> Result<String> {
+        self.run(&["push", remote, "--tags"])
+    }
+
+    pub fn delete_remote_tag(&self, remote: &str, name: &str) -> Result<String> {
+        let r = format!("refs/tags/{name}");
+        self.run(&["push", remote, "--delete", &r])
+    }
+
+    // ---------------------------------------------------------- branches
+
+    pub fn rebase_onto(&self, upstream: &str) -> Result<String> {
+        self.run(&["rebase", upstream])
+    }
+
+    pub fn set_upstream(&self, branch: &str, upstream: &str) -> Result<()> {
+        self.run(&["branch", "--set-upstream-to", upstream, branch]).map(drop)
+    }
+
+    pub fn push_branch(&self, remote: &str, branch: &str) -> Result<String> {
+        self.run(&["push", "-u", remote, branch])
+    }
+
+    pub fn delete_remote_branch(&self, remote: &str, branch: &str) -> Result<String> {
+        self.run(&["push", remote, "--delete", branch])
+    }
+
+    pub fn pull_rebase(&self) -> Result<String> {
+        self.run(&["pull", "--rebase"])
+    }
+
+    pub fn fetch_remote(&self, remote: &str) -> Result<String> {
+        self.run(&["fetch", "--prune", remote])
+    }
+
+    // ----------------------------------------------------------- remotes
+
+    pub fn add_remote(&self, name: &str, url: &str) -> Result<()> {
+        self.run(&["remote", "add", name, url]).map(drop)
+    }
+
+    pub fn rename_remote(&self, old: &str, new: &str) -> Result<()> {
+        self.run(&["remote", "rename", old, new]).map(drop)
+    }
+
+    pub fn remove_remote(&self, name: &str) -> Result<()> {
+        self.run(&["remote", "remove", name]).map(drop)
+    }
+
+    pub fn set_remote_url(&self, name: &str, url: &str) -> Result<()> {
+        self.run(&["remote", "set-url", name, url]).map(drop)
+    }
+
+    // --------------------------------------------------------- worktrees
+
+    pub fn worktrees(&self) -> Result<Vec<Worktree>> {
+        let out = self.run(&["worktree", "list", "--porcelain"])?;
+        let mut v = Vec::new();
+        for block in out.split("\n\n") {
+            let mut w: Option<Worktree> = None;
+            for line in block.lines() {
+                if let Some(p) = line.strip_prefix("worktree ") {
+                    w = Some(Worktree {
+                        path: PathBuf::from(p),
+                        head: None,
+                        branch: None,
+                        bare: false,
+                        locked: false,
+                        prunable: false,
+                        main: v.is_empty(),
+                    });
+                } else if let Some(w) = w.as_mut() {
+                    if let Some(h) = line.strip_prefix("HEAD ") {
+                        w.head = Some(h.to_string());
+                    } else if let Some(b) = line.strip_prefix("branch ") {
+                        w.branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
+                    } else if line == "bare" {
+                        w.bare = true;
+                    } else if line.starts_with("locked") {
+                        w.locked = true;
+                    } else if line.starts_with("prunable") {
+                        w.prunable = true;
+                    }
+                }
+            }
+            v.extend(w);
+        }
+        Ok(v)
+    }
+
+    /// Add a worktree at `path` for an existing branch, or for a new branch
+    /// `new_branch` created from `start`.
+    pub fn add_worktree(&self, path: &str, branch: &str, new_branch: bool, start: Option<&str>) -> Result<String> {
+        let mut a = vec!["worktree", "add"];
+        if new_branch {
+            a.extend_from_slice(&["-b", branch, path]);
+            if let Some(s) = start {
+                a.push(s);
+            }
+        } else {
+            a.extend_from_slice(&[path, branch]);
+        }
+        self.run(&a)
+    }
+
+    pub fn remove_worktree(&self, path: &str, force: bool) -> Result<()> {
+        let mut a = vec!["worktree", "remove"];
+        if force {
+            a.push("--force");
+        }
+        a.push(path);
+        self.run(&a).map(drop)
+    }
+
+    pub fn prune_worktrees(&self) -> Result<String> {
+        self.run(&["worktree", "prune", "-v"])
+    }
+
+    // -------------------------------------------------------- submodules
+
+    pub fn submodule_update(&self) -> Result<String> {
+        self.run(&["submodule", "update", "--init", "--recursive"])
+    }
+
+    pub fn submodule_sync(&self) -> Result<String> {
+        self.run(&["submodule", "sync", "--recursive"])
+    }
+
+    // -------------------------------------- operation in progress (merge…)
+
+    /// `continue`/`abort`/`skip` the in-progress merge, rebase, cherry-pick or revert.
+    pub fn operation(&self, op: &str, verb: &str) -> Result<String> {
+        match (op, verb) {
+            // a merge is "continued" by committing (default message)
+            ("merge", "continue") => self.run(&["commit", "--no-edit"]),
+            ("merge", "abort") => self.run(&["merge", "--abort"]),
+            ("rebase" | "cherry-pick" | "revert", "continue" | "abort" | "skip") => {
+                let flag = format!("--{verb}");
+                self.run(&[op, &flag])
+            }
+            _ => bail!("cannot {verb} {op}"),
+        }
+    }
+
     pub fn create_tag(&self, name: &str, rev: &str) -> Result<()> {
         self.run(&["tag", name, rev]).map(drop)
     }
@@ -649,6 +822,9 @@ fn base_cmd(dir: &Path) -> Command {
         .env("GIT_OPTIONAL_LOCKS", "0")
         // Stable, parseable output.
         .env("LC_ALL", "C")
+        // No terminal to edit in: accept git's default message wherever it
+        // would open an editor (rebase --continue, merge --continue, …).
+        .env("GIT_EDITOR", "true")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -795,5 +971,38 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         assert!(s.files[2].conflicted);
         assert!(s.files[3].is_untracked());
         assert_eq!(s.files[3].path, "new file.txt");
+    }
+}
+
+#[cfg(test)]
+mod worktree_tests {
+    use super::*;
+
+    #[test]
+    fn worktree_add_list_remove() {
+        let d = std::env::temp_dir().join(format!("margin-wt-{}-{}", std::process::id(), crate::time::now_unix()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("repo")).unwrap();
+        let r = d.join("repo");
+        let g = |args: &[&str]| {
+            assert!(std::process::Command::new("git").arg("-C").arg(&r)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"])
+                .args(args).status().unwrap().success());
+        };
+        g(&["init", "-q"]);
+        g(&["commit", "-q", "--allow-empty", "-m", "x"]);
+        let repo = Repo::open(&r).unwrap();
+        let wt = d.join("wt-feature");
+        repo.add_worktree(wt.to_str().unwrap(), "feature/x", true, Some("main")).unwrap();
+        let list = repo.worktrees().unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list[0].main && list[0].branch.as_deref() == Some("main"));
+        assert_eq!(list[1].branch.as_deref(), Some("feature/x"));
+        // The worktree is its own Repo sharing the same common dir (and notes).
+        let other = Repo::open(&wt).unwrap();
+        assert_eq!(other.common_dir, repo.common_dir);
+        repo.remove_worktree(wt.to_str().unwrap(), false).unwrap();
+        assert_eq!(repo.worktrees().unwrap().len(), 1);
+        assert!(repo.operation("merge", "frobnicate").is_err());
     }
 }
