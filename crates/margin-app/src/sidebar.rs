@@ -3,7 +3,8 @@ use crate::icons::{self, Icon};
 use crate::notes_panel::NoteTab;
 use crate::theme;
 use eframe::egui::{self, RichText, Ui};
-use margin_core::git::RefKind;
+use crate::branch_tree::{self, Node};
+use margin_core::git::{RefInfo, RefKind};
 use margin_core::notes::NoteTarget;
 use margin_core::tasks::Task;
 use std::collections::BTreeMap;
@@ -32,77 +33,14 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         ui.add_space(6.0);
 
         // ---------------------------------------------------------------- local
+        // Grouped by prefix (feature/, hotfix/, projectA/…) when 2+ branches share one.
         egui::CollapsingHeader::new(RichText::new("BRANCHES").small().strong()).default_open(true).show(ui, |ui| {
-            for r in snap.refs.iter().filter(|r| r.kind == RefKind::Local) {
-                let task = rv.notes.task_for_branch(&r.name);
-                let note = rv.has_note(&NoteTarget::Branch(r.name.clone()));
-                let mut text = String::new();
-                text += if r.is_head { "● " } else { "   " };
-                text += &r.name;
-                let track = r.track.replace("ahead ", "↑").replace("behind ", "↓").replace(", ", " ");
-                let resp = ui
-                    .horizontal(|ui| {
-                        let mut rt = RichText::new(text);
-                        if r.is_head {
-                            rt = rt.strong();
-                        }
-                        let resp = ui.selectable_label(rv.focus_branch.as_deref() == Some(r.name.as_str()), rt);
-                        if !track.is_empty() {
-                            ui.label(RichText::new(track).small().color(theme::TEXT_DIM));
-                        }
-                        if let Some(t) = &task {
-                            ui.label(RichText::new(t).small().color(theme::ACCENT));
-                        }
-                        if note {
-                            ui.add(note_icon(theme::ACCENT)).on_hover_text("has a branch note");
-                        }
-                        if let Some(pr) = rv.prs.get(&r.name) {
-                            let tone = crate::pr_view::tone_color(pr.readiness().1);
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            ui.add(icons::image(&ctx, Icon::Github, isz, tone)).on_hover_text(crate::pr_view::hover_summary(pr));
-                            ui.label(RichText::new(format!("#{}", pr.number)).small().color(tone))
-                                .on_hover_text(crate::pr_view::hover_summary(pr));
-                        }
-                        resp
-                    })
-                    .inner;
-                if resp.clicked() {
-                    // Select the tip first (selection resets focus), then focus the branch.
-                    actions.push(Action::JumpTo(r.target.clone()));
-                    actions.push(Action::FocusBranch(r.name.clone()));
-                }
-                if resp.double_clicked() && !r.is_head {
-                    actions.push(Action::Checkout(r.name.clone()));
-                }
-                let name = r.name.clone();
-                let is_head = r.is_head;
-                let task = task.clone();
-                resp.context_menu(|ui| {
-                    let mut item = |ui: &mut Ui, label: &str, a: Action| {
-                        if ui.button(label).clicked() {
-                            actions.push(a);
-                            ui.close();
-                        }
-                    };
-                    if !is_head {
-                        item(ui, "Checkout", Action::Checkout(name.clone()));
-                        item(ui, "Merge into current branch", Action::Confirm { msg: format!("Merge {name} into the current branch?"), action: Box::new(Action::Merge(name.clone())) });
-                    }
-                    item(ui, "New branch from here…", Action::NewBranchDialog { start: Some(name.clone()), name: String::new() });
-                    item(ui, "Branch notes", Action::FocusBranch(name.clone()));
-                    item(ui, "Link task…", Action::LinkTaskDialog { branch: name.clone() });
-                    if let Some(t) = &task {
-                        item(ui, &format!("Open {t}"), Action::FocusTask(t.clone()));
-                    }
-                    item(ui, "Rename…", Action::RenameBranchDialog(name.clone()));
-                    item(ui, "Copy name", Action::Copy(name.clone()));
-                    if !is_head {
-                        ui.separator();
-                        item(ui, "Delete…", Action::Confirm { msg: format!("Delete branch {name}? Its branch note is kept under Detached notes."), action: Box::new(Action::DeleteBranch { name: name.clone(), force: false }) });
-                        item(ui, "Force delete…", Action::Confirm { msg: format!("Force-delete {name}? Unmerged commits will be lost."), action: Box::new(Action::DeleteBranch { name: name.clone(), force: true }) });
-                    }
-                });
-            }
+            let tree = branch_tree::build(
+                snap.refs.iter().filter(|r| r.kind == RefKind::Local).map(|r| (r.name.clone(), r)).collect(),
+            );
+            let focus = rv.focus_branch.clone();
+            let open_if = |r: &&RefInfo| r.is_head || focus.as_deref() == Some(r.name.as_str());
+            render_tree(ui, &tree, "local", &open_if, &mut |ui, label, r| local_row(ui, rv, r, label, isz, actions));
         });
 
         // ------------------------------------------------- recently re-attached
@@ -178,7 +116,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         }
 
         // -------------------------------------------------------------- remotes
-        let mut remotes: BTreeMap<&str, Vec<&margin_core::git::RefInfo>> = BTreeMap::new();
+        let mut remotes: BTreeMap<&str, Vec<&RefInfo>> = BTreeMap::new();
         for r in snap.refs.iter().filter(|r| r.kind == RefKind::Remote) {
             let remote = r.name.split('/').next().unwrap_or("");
             remotes.entry(remote).or_default().push(r);
@@ -186,14 +124,17 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         egui::CollapsingHeader::new(RichText::new("REMOTES").small().strong()).default_open(false).show(ui, |ui| {
             for (remote, refs) in remotes {
                 egui::CollapsingHeader::new(remote).id_salt(("remote", remote)).show(ui, |ui| {
-                    for r in refs {
-                        let short = r.name.split_once('/').map_or(r.name.as_str(), |(_, b)| b);
-                        let resp = ui.selectable_label(false, short);
+                    // Same prefix grouping as local branches, on the part after "origin/".
+                    let tree = branch_tree::build(
+                        refs.into_iter().map(|r| (r.name.split_once('/').map_or(r.name.clone(), |(_, b)| b.to_string()), r)).collect(),
+                    );
+                    render_tree(ui, &tree, remote, &|_| false, &mut |ui, label, r| {
+                        let resp = ui.selectable_label(false, label);
                         if resp.clicked() {
                             actions.push(Action::JumpTo(r.target.clone()));
                         }
                         let name = r.name.clone();
-                        resp.context_menu(|ui| {
+                        resp.on_hover_text(&name).context_menu(|ui| {
                             if ui.button("Checkout as tracking branch").clicked() {
                                 actions.push(Action::CheckoutRemote(name.clone()));
                                 ui.close();
@@ -203,7 +144,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                                 ui.close();
                             }
                         });
-                    }
+                    });
                 });
             }
         });
@@ -306,4 +247,100 @@ fn slug(s: &str) -> String {
         out.push_str(&w.to_ascii_lowercase());
     }
     out
+}
+
+/// Render a prefix tree: groups as collapsible "feature/  3" headers, leaves via `leaf`.
+/// A group starts open if it contains an item matching `open_if`.
+pub fn render_tree<'a>(
+    ui: &mut Ui,
+    nodes: &[Node<&'a RefInfo>],
+    ns: &str,
+    open_if: &dyn Fn(&&'a RefInfo) -> bool,
+    leaf: &mut dyn FnMut(&mut Ui, &str, &'a RefInfo),
+) {
+    for n in nodes {
+        match n {
+            Node::Leaf { label, item } => leaf(ui, label, item),
+            Node::Group { label, path, children, count } => {
+                let mut job = egui::text::LayoutJob::default();
+                let body = egui::TextStyle::Body.resolve(ui.style());
+                let small = egui::TextStyle::Small.resolve(ui.style());
+                job.append(label, 0.0, egui::TextFormat::simple(body, theme::TEXT));
+                job.append(&format!("  {count}"), 0.0, egui::TextFormat::simple(small, theme::TEXT_DIM));
+                egui::CollapsingHeader::new(job)
+                    .id_salt(("branch-group", ns, path.as_str()))
+                    .default_open(branch_tree::any(children, open_if))
+                    .show(ui, |ui| render_tree(ui, children, ns, open_if, leaf));
+            }
+        }
+    }
+}
+
+/// One local branch row: name (relative to its group), tracking, task, note, PR.
+fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, isz: f32, actions: &mut Vec<Action>) {
+    let ctx = ui.ctx().clone();
+    let task = rv.notes.task_for_branch(&r.name);
+    let note = rv.has_note(&NoteTarget::Branch(r.name.clone()));
+    let text = format!("{}{label}", if r.is_head { "● " } else { "   " });
+    let track = r.track.replace("ahead ", "↑").replace("behind ", "↓").replace(", ", " ");
+    let resp = ui
+        .horizontal(|ui| {
+            let mut rt = RichText::new(text);
+            if r.is_head {
+                rt = rt.strong();
+            }
+            let resp = ui.selectable_label(rv.focus_branch.as_deref() == Some(r.name.as_str()), rt).on_hover_text(&r.name);
+            if !track.is_empty() {
+                ui.label(RichText::new(track).small().color(theme::TEXT_DIM));
+            }
+            if let Some(t) = &task {
+                ui.label(RichText::new(t).small().color(theme::ACCENT));
+            }
+            if note {
+                ui.add(icons::image(&ctx, Icon::Note, isz, theme::ACCENT)).on_hover_text("has a branch note");
+            }
+            if let Some(pr) = rv.prs.get(&r.name) {
+                let tone = crate::pr_view::tone_color(pr.readiness().1);
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.add(icons::image(&ctx, Icon::Github, isz, tone)).on_hover_text(crate::pr_view::hover_summary(pr));
+                ui.label(RichText::new(format!("#{}", pr.number)).small().color(tone)).on_hover_text(crate::pr_view::hover_summary(pr));
+            }
+            resp
+        })
+        .inner;
+    if resp.clicked() {
+        // Select the tip first (selection resets focus), then focus the branch.
+        actions.push(Action::JumpTo(r.target.clone()));
+        actions.push(Action::FocusBranch(r.name.clone()));
+    }
+    if resp.double_clicked() && !r.is_head {
+        actions.push(Action::Checkout(r.name.clone()));
+    }
+    let name = r.name.clone();
+    let is_head = r.is_head;
+    resp.context_menu(|ui| {
+        let mut item = |ui: &mut Ui, label: &str, a: Action| {
+            if ui.button(label).clicked() {
+                actions.push(a);
+                ui.close();
+            }
+        };
+        if !is_head {
+            item(ui, "Checkout", Action::Checkout(name.clone()));
+            item(ui, "Merge into current branch", Action::Confirm { msg: format!("Merge {name} into the current branch?"), action: Box::new(Action::Merge(name.clone())) });
+        }
+        item(ui, "New branch from here…", Action::NewBranchDialog { start: Some(name.clone()), name: String::new() });
+        item(ui, "Branch notes", Action::FocusBranch(name.clone()));
+        item(ui, "Link task…", Action::LinkTaskDialog { branch: name.clone() });
+        if let Some(t) = &task {
+            item(ui, &format!("Open {t}"), Action::FocusTask(t.clone()));
+        }
+        item(ui, "Rename…", Action::RenameBranchDialog(name.clone()));
+        item(ui, "Copy name", Action::Copy(name.clone()));
+        if !is_head {
+            ui.separator();
+            item(ui, "Delete…", Action::Confirm { msg: format!("Delete branch {name}? Its branch note is kept under Detached notes."), action: Box::new(Action::DeleteBranch { name: name.clone(), force: false }) });
+            item(ui, "Force delete…", Action::Confirm { msg: format!("Force-delete {name}? Unmerged commits will be lost."), action: Box::new(Action::DeleteBranch { name: name.clone(), force: true }) });
+        }
+    });
 }

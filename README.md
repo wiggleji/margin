@@ -47,6 +47,7 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 - Working directory: stage or unstage files, **per-hunk** stage, unstage, and discard, and commit or amend (⌘↵).
 - Commit details: message, parents, and a full diff (large diffs are virtualised and capped at 8 MB).
 - Branches: checkout, create, delete, merge. Remotes: tracking checkout. Tags, stashes (apply, pop, drop).
+- **Branch groups:** branches that share a prefix (`feature/`, `hotfix/`, `release/`, or any custom one like `projectA/`) are grouped once 2 or more share it. A prefix with a single branch stays flat (`projectA/login-page`). This applies at every level, and single-child chains are compacted (`projectB/feature/`). Groups are sorted alphabetically, show a count, and start open only if they contain the current or focused branch. The same grouping applies under each remote and in the toolbar's branch switcher (as submenus).
 - Commit menu: new branch here, detached checkout, cherry-pick, revert, reset (soft, mixed, hard).
 - Fetch, pull, and push run in the background. The UI refreshes when the window regains focus.
 

@@ -1231,13 +1231,11 @@ impl MarginApp {
                 left.menu_button(egui::RichText::new(&branch).color(theme::ACCENT), |ui| {
                     ui.set_min_width(220.0);
                     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                        for r in snap.refs.iter().filter(|r| r.kind == margin_core::git::RefKind::Local) {
-                            let label = if r.is_head { format!("● {}", r.name) } else { format!("   {}", r.name) };
-                            if ui.add_enabled(!r.is_head, egui::Button::new(label)).clicked() {
-                                actions.push(Action::Checkout(r.name.clone()));
-                                ui.close();
-                            }
-                        }
+                        // Same prefix groups as the sidebar; groups are submenus.
+                        let tree = crate::branch_tree::build(
+                            snap.refs.iter().filter(|r| r.kind == margin_core::git::RefKind::Local).map(|r| (r.name.clone(), r)).collect(),
+                        );
+                        branch_menu(ui, &tree, actions);
                     });
                     ui.separator();
                     if ui.button("New branch…").clicked() {
@@ -1579,6 +1577,25 @@ impl MarginApp {
         }
         if close || modal.should_close() {
             self.show_settings = false;
+        }
+    }
+}
+
+fn branch_menu(ui: &mut egui::Ui, nodes: &[crate::branch_tree::Node<&margin_core::git::RefInfo>], actions: &mut Vec<Action>) {
+    for n in nodes {
+        match n {
+            crate::branch_tree::Node::Leaf { label, item: r } => {
+                let text = if r.is_head { format!("● {label}") } else { format!("   {label}") };
+                if ui.add_enabled(!r.is_head, egui::Button::new(text)).on_hover_text(&r.name).clicked() {
+                    actions.push(Action::Checkout(r.name.clone()));
+                    ui.close();
+                }
+            }
+            crate::branch_tree::Node::Group { label, children, count, .. } => {
+                let has_head = crate::branch_tree::any(children, &|r: &&margin_core::git::RefInfo| r.is_head);
+                let text = format!("{}{label}  ({count})", if has_head { "● " } else { "   " });
+                ui.menu_button(text, |ui| branch_menu(ui, children, actions));
+            }
         }
     }
 }
