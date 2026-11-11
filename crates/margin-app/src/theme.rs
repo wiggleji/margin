@@ -4,6 +4,8 @@ pub const BG: Color32 = Color32::from_rgb(0x22, 0x25, 0x2c);
 pub const BG_DARK: Color32 = Color32::from_rgb(0x1a, 0x1c, 0x21);
 pub const BG_ROW_ALT: Color32 = Color32::from_rgb(0x25, 0x28, 0x30);
 pub const SELECTED: Color32 = Color32::from_rgb(0x2c, 0x4a, 0x78);
+/// Ahead/behind pill background.
+pub const BADGE: Color32 = Color32::from_rgb(0x3a, 0x3f, 0x4b);
 pub const HOVER: Color32 = Color32::from_rgb(0x2d, 0x31, 0x3b);
 pub const TEXT: Color32 = Color32::from_rgb(0xd4, 0xd7, 0xdd);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(0x8a, 0x90, 0x9c);

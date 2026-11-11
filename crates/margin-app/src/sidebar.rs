@@ -361,36 +361,133 @@ pub fn render_tree<'a>(
     }
 }
 
-/// One local branch row: name (relative to its group), tracking, task, note, PR.
-fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize, isz: f32, actions: &mut Vec<Action>) {
+/// Task key, note icon and PR badge shown after a branch name.
+fn branch_extras(ui: &mut Ui, rv: &RepoView, r: &RefInfo, task: &Option<String>, note: bool, isz: f32) {
     let ctx = ui.ctx().clone();
+    if let Some(t) = task {
+        ui.label(RichText::new(t).small().color(theme::ACCENT));
+    }
+    if note {
+        ui.add(icons::image(&ctx, Icon::Note, isz, theme::ACCENT)).on_hover_text("has a branch note");
+    }
+    if let Some(pr) = rv.prs.get(&r.name) {
+        let tone = crate::pr_view::tone_color(pr.readiness().1);
+        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.add(icons::image(&ctx, Icon::Github, isz, tone)).on_hover_text(crate::pr_view::hover_summary(pr));
+        ui.label(RichText::new(format!("#{}", pr.number)).small().color(tone)).on_hover_text(crate::pr_view::hover_summary(pr));
+    }
+}
+
+/// Width `branch_extras` will take (so the name can be truncated first).
+fn extras_width(ui: &Ui, rv: &RepoView, r: &RefInfo, task: &Option<String>, note: bool, isz: f32) -> f32 {
+    let gap = ui.spacing().item_spacing.x;
+    let small = egui::TextStyle::Small.resolve(ui.style());
+    let text_w = |t: String| ui.painter().layout_no_wrap(t, small.clone(), theme::TEXT).size().x;
+    let mut w = 0.0;
+    if let Some(t) = task {
+        w += text_w(t.clone()) + gap;
+    }
+    if note {
+        w += isz + gap;
+    }
+    if let Some(pr) = rv.prs.get(&r.name) {
+        w += isz + 2.0 + text_w(format!("#{}", pr.number)) + gap;
+    }
+    w
+}
+
+/// Sublime Merge-style ahead/behind pill: "1849↓ │ 1↑" (behind first), or
+/// "gone" when the upstream branch was deleted. Width 0 when nothing to show.
+struct Badge {
+    galleys: Vec<std::sync::Arc<egui::Galley>>,
+    gone: bool,
+    tip: String,
+}
+
+impl Badge {
+    const PAD: f32 = 5.0;
+
+    fn new(ui: &Ui, r: &RefInfo) -> Badge {
+        let (ahead, behind) = r.ahead_behind();
+        let gone = r.upstream_gone();
+        let segs: Vec<String> = if gone {
+            vec!["gone".into()]
+        } else {
+            [(behind > 0).then(|| format!("{behind}↓")), (ahead > 0).then(|| format!("{ahead}↑"))].into_iter().flatten().collect()
+        };
+        let small = egui::TextStyle::Small.resolve(ui.style());
+        let color = if gone { theme::TEXT_DIM } else { theme::TEXT };
+        let galleys = segs.into_iter().map(|t| ui.painter().layout_no_wrap(t, small.clone(), color)).collect();
+        let up = r.upstream.clone().unwrap_or_default();
+        let tip = if gone {
+            format!("Upstream {up} no longer exists on the remote")
+        } else {
+            format!("{behind} behind, {ahead} ahead of {up}\n(as of the last fetch)")
+        };
+        Badge { galleys, gone, tip }
+    }
+
+    fn width(&self) -> f32 {
+        self.galleys.iter().map(|g| g.size().x + 2.0 * Self::PAD).sum()
+    }
+
+    fn show(self, ui: &mut Ui) {
+        if self.galleys.is_empty() {
+            return;
+        }
+        let h = self.galleys[0].size().y + 4.0;
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(self.width(), h), egui::Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(rect, 3.0, if self.gone { theme::BADGE.gamma_multiply(0.6) } else { theme::BADGE });
+        let mut x = rect.left();
+        for (i, g) in self.galleys.into_iter().enumerate() {
+            if i > 0 {
+                p.line_segment([egui::pos2(x, rect.top() + 3.0), egui::pos2(x, rect.bottom() - 3.0)], egui::Stroke::new(1.0, theme::BG));
+            }
+            let w = g.size().x + 2.0 * Self::PAD;
+            p.galley(egui::pos2(x + Self::PAD, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
+            x += w;
+        }
+        resp.on_hover_text(self.tip);
+    }
+}
+
+/// One local branch row: [● gutter] name  task note PR …… [behind↓│ahead↑]
+fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize, isz: f32, actions: &mut Vec<Action>) {
     let task = rv.notes.task_for_branch(&r.name);
     let note = rv.has_note(&NoteTarget::Branch(r.name.clone()));
-    let text = label.to_string();
-    let track = r.track.replace("ahead ", "↑").replace("behind ", "↓").replace(", ", " ");
     let resp = ui
         .horizontal(|ui| {
             // ● for the current branch sits in the triangle column
             gutter(ui, depth, r.is_head.then_some(theme::ACCENT));
-            let mut rt = RichText::new(text);
-            if r.is_head {
-                rt = rt.strong();
-            }
-            let resp = ui.selectable_label(rv.focus_branch.as_deref() == Some(r.name.as_str()), rt).on_hover_text(&r.name);
-            if !track.is_empty() {
-                ui.label(RichText::new(track).small().color(theme::TEXT_DIM));
-            }
-            if let Some(t) = &task {
-                ui.label(RichText::new(t).small().color(theme::ACCENT));
-            }
-            if note {
-                ui.add(icons::image(&ctx, Icon::Note, isz, theme::ACCENT)).on_hover_text("has a branch note");
-            }
-            if let Some(pr) = rv.prs.get(&r.name) {
-                let tone = crate::pr_view::tone_color(pr.readiness().1);
-                ui.spacing_mut().item_spacing.x = 2.0;
-                ui.add(icons::image(&ctx, Icon::Github, isz, tone)).on_hover_text(crate::pr_view::hover_summary(pr));
-                ui.label(RichText::new(format!("#{}", pr.number)).small().color(tone)).on_hover_text(crate::pr_view::hover_summary(pr));
+            let badge = Badge::new(ui, r);
+            let bw = badge.width();
+            // Left part gets what the badge leaves, so long names truncate before it.
+            let left_w = (ui.available_width() - if bw > 0.0 { bw + 8.0 } else { 0.0 }).max(40.0);
+            let h = ui.spacing().interact_size.y;
+            // Reserve room for task / note / PR so only the *name* truncates.
+            let extras_w = extras_width(ui, rv, r, &task, note, isz);
+            let name_w = (left_w - extras_w).max(40.0);
+            let resp = ui
+                .allocate_ui_with_layout(egui::vec2(left_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let mut rt = RichText::new(label);
+                    if r.is_head {
+                        rt = rt.strong();
+                    }
+                    let resp = ui
+                        .allocate_ui_with_layout(egui::vec2(name_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.selectable_label(rv.focus_branch.as_deref() == Some(r.name.as_str()), rt).on_hover_text(&r.name)
+                        })
+                        .inner;
+                    branch_extras(ui, rv, r, &task, note, isz);
+                    resp
+                })
+                .inner;
+            if bw > 0.0 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(4.0);
+                    badge.show(ui);
+                });
             }
             resp
         })

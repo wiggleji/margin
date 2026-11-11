@@ -104,6 +104,27 @@ pub struct RefInfo {
     pub is_head: bool,
 }
 
+impl RefInfo {
+    /// `(ahead, behind)` vs the upstream, parsed from `%(upstream:track,nobracket)`
+    /// ("ahead 1, behind 2" / "ahead 1" / "behind 2" / "gone" / "").
+    pub fn ahead_behind(&self) -> (u32, u32) {
+        let (mut a, mut b) = (0, 0);
+        for part in self.track.split(", ") {
+            if let Some(n) = part.strip_prefix("ahead ") {
+                a = n.trim().parse().unwrap_or(0);
+            } else if let Some(n) = part.strip_prefix("behind ") {
+                b = n.trim().parse().unwrap_or(0);
+            }
+        }
+        (a, b)
+    }
+
+    /// The configured upstream branch no longer exists on the remote.
+    pub fn upstream_gone(&self) -> bool {
+        self.track.trim() == "gone"
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
     pub path: PathBuf,
@@ -953,6 +974,25 @@ fn parse_log(out: &str) -> Vec<Commit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn track_parsing() {
+        let r = |t: &str| RefInfo {
+            kind: RefKind::Local,
+            name: "x".into(),
+            target: String::new(),
+            upstream: Some("origin/x".into()),
+            upstream_remote: None,
+            upstream_branch: None,
+            track: t.into(),
+            is_head: false,
+        };
+        assert_eq!(r("ahead 1, behind 1849").ahead_behind(), (1, 1849));
+        assert_eq!(r("ahead 3").ahead_behind(), (3, 0));
+        assert_eq!(r("behind 7").ahead_behind(), (0, 7));
+        assert_eq!(r("").ahead_behind(), (0, 0));
+        assert!(r("gone").upstream_gone() && r("gone").ahead_behind() == (0, 0));
+    }
 
     #[test]
     fn status_v2() {
