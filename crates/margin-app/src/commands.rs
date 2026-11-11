@@ -117,6 +117,7 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
         v.push(c(Group::Repository, "Next tab", key, "directory switch", vec![], act(|_| vec![Action::NextTab])));
         v.push(c(Group::Repository, "Previous tab", &format!("{key}+Shift"), "directory switch", vec![], act(|_| vec![Action::PrevTab])));
     }
+    v.push(c(Group::Repository, "Toggle tab strip", "", "tabs bar appearance show hide", vec![], act(|_| vec![Action::ToggleTabStrip])));
     v.push(c(Group::Repository, "Open repository…", "new tab", "path folder", vec![input("Path to a git repository", "")], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
     let Some(rv) = &app.rv else { return };
     let path = rv.repo.workdir.clone();

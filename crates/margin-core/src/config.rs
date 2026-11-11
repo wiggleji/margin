@@ -125,6 +125,13 @@ pub struct Settings {
     pub auto_fetch: bool,
     #[serde(default = "default_fetch_minutes")]
     pub auto_fetch_minutes: u32,
+    /// Tab strip above the toolbar (design trial; the dropdown/⌘P still work without it).
+    #[serde(default = "yes")]
+    pub show_tab_strip: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn default_fetch_minutes() -> u32 {
@@ -133,7 +140,7 @@ fn default_fetch_minutes() -> u32 {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes() }
+        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), show_tab_strip: true }
     }
 }
 

@@ -13,6 +13,7 @@ mod notes_panel;
 mod palette;
 mod pr_view;
 mod sidebar;
+mod tab_strip;
 mod theme;
 
 use std::path::PathBuf;
