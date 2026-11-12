@@ -156,7 +156,7 @@ Sync notes between your computers through a folder your cloud provider already s
 
 ## Margin Pro
 
-The git client, notes, agents (MCP), tabs, and Git Flow are free. **Margin Pro** (one-time purchase, including updates for a year) unlocks:
+The git client, notes, agents (MCP), tabs, and Git Flow are free. **Margin Pro** ($29 one-time, **$19 launch price**, including a year of updates) unlocks:
 
 - **GitHub PR status:** readiness, CI checks, and review comments.
 - **Task trackers:** Jira ticket details, My tasks, and creating a branch from a ticket.
@@ -180,7 +180,7 @@ MARGIN_LICENSE_PUBKEY=<hex from keygen> cargo build --release
 cargo run -p margin-license -- issue ~/secure/margin/margin-license.private --name "Kim Dev" --email kim@example.com --years 1
 ```
 
-Keep `margin-license.private` secret and backed up (`*.private` is git-ignored). Builds without `MARGIN_LICENSE_PUBKEY` accept development keys only (`issue --dev`), and release builds warn about it. Set `PURCHASE_URL` in `crates/margin-app/src/pro.rs` to your store's checkout page.
+Keep `margin-license.private` secret and backed up (`*.private` is git-ignored). Builds without `MARGIN_LICENSE_PUBKEY` accept development keys only (`issue --dev`), and release builds warn about it. Set `PURCHASE_URL` in `crates/margin-app/src/pro.rs` to your store's checkout page. Store and pricing plan: [docs/SELLING.md](docs/SELLING.md).
 
 ## License
 
