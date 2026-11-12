@@ -1,0 +1,6 @@
+# rustup installs this toolchain automatically on the first cargo command.
+# egui 0.37 needs Rust 1.95+.
+[toolchain]
+channel = "1.97.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
