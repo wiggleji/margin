@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements (required for notarization).
+
+  Margin needs no exceptions: no JIT, no unsigned libraries, no dyld env vars.
+  It is deliberately NOT sandboxed — a git client must run the user's `git`,
+  hooks, credential helpers and ssh, and open any repository folder, which
+  the App Sandbox forbids. (That's why it ships via Developer ID + DMG, not
+  the Mac App Store.)
+-->
+<plist version="1.0">
+<dict/>
+</plist>

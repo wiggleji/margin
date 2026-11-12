@@ -1,0 +1,96 @@
+# Build a signed + notarized Margin.dmg on a macOS runner.
+#
+#   push a tag v0.1.0  → builds and creates a DRAFT GitHub release with the DMG
+#   Actions → "Release macOS" → Run workflow → builds and uploads the DMG as an artifact
+#
+# One-time setup (docs/RELEASING.md):
+#   secrets:   MACOS_CERTIFICATE_P12, MACOS_CERTIFICATE_PASSWORD, MACOS_SIGN_IDENTITY,
+#              NOTARY_API_KEY_P8, NOTARY_API_KEY_ID, NOTARY_API_ISSUER_ID
+#   variables: MARGIN_LICENSE_PUBKEY
+name: Release macOS
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the draft release
+
+concurrency:
+  group: release-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: macos-14 # Apple Silicon; also cross-builds the Intel half
+    timeout-minutes: 60
+    env:
+      MARGIN_LICENSE_PUBKEY: ${{ vars.MARGIN_LICENSE_PUBKEY }}
+      MARGIN_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      MARGIN_NOTARY_PROFILE: margin-notary
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # build number = commit count; build date = last commit
+
+      - name: Check tag matches Cargo version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          [ "${GITHUB_REF_NAME#v}" = "$version" ] || { echo "tag $GITHUB_REF_NAME != Cargo version $version"; exit 1; }
+
+      - name: Import signing certificate and notary credentials
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_API_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/margin-build.keychain-db"
+          echo "MARGIN_NOTARY_KEYCHAIN=$KC" >> "$GITHUB_ENV" # used by the script and cleanup
+          KC_PW="$(uuidgen)"
+          security create-keychain -p "$KC_PW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PW" "$KC"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PW" "$KC" >/dev/null
+          # Put the build keychain first in the search list so codesign finds the identity.
+          existing=()
+          while IFS= read -r k; do
+            k="${k//\"/}"; k="${k#"${k%%[![:space:]]*}"}"
+            [ -n "$k" ] && existing+=("$k")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KC" ${existing[@]+"${existing[@]}"}
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          xcrun notarytool store-credentials "$MARGIN_NOTARY_PROFILE" \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --keychain "$KC"
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8"
+          security find-identity -v -p codesigning "$KC"
+
+      - name: Build, sign, notarize, package
+        run: scripts/package-macos.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Margin-macOS
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+          if-no-files-found: error
+
+      - name: Create draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.sha256 \
+            --draft --title "Margin ${GITHUB_REF_NAME#v}" --generate-notes
+
+      - name: Remove build keychain
+        if: always()
+        run: '[ -n "${MARGIN_NOTARY_KEYCHAIN:-}" ] && security delete-keychain "$MARGIN_NOTARY_KEYCHAIN" || true'

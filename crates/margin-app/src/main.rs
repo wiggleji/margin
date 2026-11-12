@@ -19,7 +19,26 @@ mod theme;
 
 use std::path::PathBuf;
 
+/// Apps opened from Finder/Dock get a minimal PATH (/usr/bin:/bin:…), so
+/// Homebrew's git (often newer than Apple's), gh and credential helpers would
+/// be missed. Prepend the standard Homebrew locations, like a login shell.
+fn extend_path_for_gui_launch() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let current = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<String> = current.split(':').filter(|p| !p.is_empty()).map(String::from).collect();
+    for dir in ["/usr/local/bin", "/opt/homebrew/bin"] {
+        if !parts.iter().any(|p| p == dir) && std::path::Path::new(dir).is_dir() {
+            parts.insert(0, dir.to_string());
+        }
+    }
+    // SAFETY: called first thing in main, before any other thread exists.
+    unsafe { std::env::set_var("PATH", parts.join(":")) };
+}
+
 fn main() -> eframe::Result {
+    extend_path_for_gui_launch();
     let mut repo: Option<PathBuf> = None;
     for a in std::env::args().skip(1) {
         match a.as_str() {
