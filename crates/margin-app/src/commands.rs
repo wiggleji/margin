@@ -91,28 +91,18 @@ pub fn build(app: &MarginApp) -> Vec<Command> {
 
 fn repository(app: &MarginApp, v: &mut Vec<Command>) {
     let name_of = |p: &str| PathBuf::from(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    // Change directory: open tabs first, then this repo's worktrees, then recent.
+    // Change directory: open tabs first, then recent. (Worktrees have their
+    // own commands and sidebar section.)
     let tabs = app.tabs();
-    let open: Vec<String> = tabs.iter().map(|(p, _, _)| p.display().to_string()).collect();
     let mut items: Vec<Item> = tabs
         .iter()
         .map(|(p, n, active)| Item::new(n.clone(), if *active { "current tab".to_string() } else { format!("open tab · {}", p.display()) }, p.display().to_string()))
         .collect();
-    if let Some(rv) = &app.rv {
-        for w in rv.repo.worktrees().unwrap_or_default() {
-            let p = w.path.display().to_string();
-            if !open.contains(&p) && !w.bare {
-                items.push(Item::new(name_of(&p), format!("worktree · {}", w.branch.unwrap_or_else(|| "detached".into())), p));
-            }
-        }
-    }
-    for p in &app.state.recent_repos {
-        if !items.iter().any(|i| &i.value == p) {
-            items.push(Item::new(name_of(p), format!("recent · {p}"), p.clone()));
-        }
+    for p in app.recent_closed(&tabs) {
+        items.push(Item::new(name_of(&p), format!("recent · {}", crate::app::tilde(std::path::Path::new(&p))), p.clone()));
     }
     let key = if cfg!(target_os = "macos") { "⌃Tab" } else { "Ctrl+Tab" };
-    v.push(c(Group::Repository, "Change directory…", key, "switch tab repository project worktree open", vec![pick("Directory", items)], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
+    v.push(c(Group::Repository, "Change directory…", key, "switch tab repository project open recent", vec![pick("Directory", items)], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
     if tabs.len() > 1 {
         v.push(c(Group::Repository, "Next tab", key, "directory switch", vec![], act(|_| vec![Action::NextTab])));
         v.push(c(Group::Repository, "Previous tab", &format!("{key}+Shift"), "directory switch", vec![], act(|_| vec![Action::PrevTab])));
@@ -125,7 +115,10 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
     if app.rv.as_ref().is_some_and(|rv| matches!(rv.sync_state, margin_core::sync::RepoSync::Active { .. })) {
         v.push(c(Group::Notes, "Sync notes now", "", "cloud sync", vec![], act(|_| vec![Action::SyncNow])));
     }
-    v.push(c(Group::Repository, "Open repository…", "new tab", "path folder", vec![input("Path to a git repository", "")], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
+    if cfg!(target_os = "macos") {
+        v.push(c(Group::Repository, "Open folder…", &format!("{CMD}O"), "repository directory new tab browse", vec![], act(|_| vec![Action::OpenFolderDialog])));
+    }
+    v.push(c(Group::Repository, "Open repository by path…", "new tab", "path folder directory", vec![input("Path to a git repository", "")], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
     let Some(rv) = &app.rv else { return };
     let path = rv.repo.workdir.clone();
     v.push(c(Group::Repository, "Settings…", "", "preferences options auto fetch", vec![], act(|_| vec![Action::OpenSettings])));

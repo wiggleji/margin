@@ -9,6 +9,7 @@ mod details;
 mod diff_view;
 mod jobs;
 mod markdown_view;
+mod menu_bar;
 mod notes_panel;
 mod palette;
 mod pro;

@@ -66,6 +66,9 @@ fn working(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 .desired_width(f32::INFINITY)
                 .id_salt("commit_msg"),
         );
+        if std::mem::take(&mut rv.focus_commit_msg) {
+            edit.request_focus();
+        }
         if edit.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)) {
             actions.push(Action::Commit);
         }

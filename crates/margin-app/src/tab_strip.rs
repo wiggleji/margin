@@ -1,6 +1,8 @@
-//! Tab strip above the toolbar: one tab per open repository/worktree.
+//! Tab strip above the toolbar: one tab per open directory.
 //! A view over `MarginApp::tabs()`; switching/closing go through the same
 //! actions as the directory dropdown and ⌘P "Change directory".
+//! "+" opens another directory: a folder picker, or one of the recent ones.
+//! (Worktrees are listed in the sidebar, next to branches.)
 
 use crate::app::Action;
 use crate::theme;
@@ -11,7 +13,7 @@ const H: f32 = 28.0;
 const MIN_W: f32 = 110.0;
 const MAX_W: f32 = 220.0;
 
-pub fn show(ui: &mut Ui, tabs: &[(PathBuf, String, bool)], actions: &mut Vec<Action>) {
+pub fn show(ui: &mut Ui, tabs: &[(PathBuf, String, bool)], recent: &[String], actions: &mut Vec<Action>) {
     egui::Panel::top("tab_strip")
         .exact_size(H)
         .frame(egui::Frame::new().fill(theme::BG_DARK))
@@ -67,15 +69,42 @@ pub fn show(ui: &mut Ui, tabs: &[(PathBuf, String, bool)], actions: &mut Vec<Act
                 resp.on_hover_text(path.display().to_string());
                 x += w + 2.0;
             }
-            // "+" → Change directory (open tabs, worktrees, recent)
+            // "+" → Open folder… / recent directories
             let plus = Rect::from_min_size(pos2(x + 4.0, full.top() + 5.0), vec2(22.0, H - 9.0));
             let r = ui.interact(plus, ui.scope_id().with("tab_plus"), Sense::click());
-            if r.hovered() {
+            let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&r));
+            if r.hovered() || open {
                 ui.painter().rect_filled(plus, 4.0, theme::HOVER);
             }
             ui.painter().text(plus.center(), Align2::CENTER_CENTER, "+", egui::FontId::proportional(17.0), theme::TEXT_DIM);
-            if r.on_hover_text("Open or switch directory").clicked() {
-                actions.push(Action::OpenPaletteWith("change directory".into()));
-            }
+            let r = if open { r } else { r.on_hover_text("Open a directory") };
+            egui::Popup::menu(&r).show(|ui| {
+                ui.set_min_width(240.0);
+                if ui.button("Open folder…").clicked() {
+                    actions.push(Action::OpenFolderDialog);
+                    ui.close();
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("RECENT").small().strong().color(theme::TEXT_DIM));
+                if recent.is_empty() {
+                    ui.weak("No recent directories");
+                }
+                for p in recent {
+                    let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone());
+                    let parent = std::path::Path::new(p).parent().map(crate::app::tilde).unwrap_or_default();
+                    // Keep the menu narrow: "…/src/work" for long parent paths.
+                    let parent = match parent.char_indices().rev().nth(32) {
+                        Some((i, _)) => format!("…{}", &parent[i + parent[i..].chars().next().map_or(0, char::len_utf8)..]),
+                        None => parent,
+                    };
+                    let mut atoms = egui::Atoms::new(name);
+                    atoms.push_right(egui::Atom::grow());
+                    atoms.push_right(egui::RichText::new(parent).small().color(theme::TEXT_DIM));
+                    if ui.add(egui::Button::new(atoms).frame(false)).on_hover_text(p).clicked() {
+                        actions.push(Action::OpenRepo(PathBuf::from(p)));
+                        ui.close();
+                    }
+                }
+            });
         });
 }

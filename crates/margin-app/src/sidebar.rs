@@ -45,6 +45,17 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
             render_tree(ui, &tree, "local", 0, &open_if, &mut |ui, label, depth, r| local_row(ui, rv, r, label, depth, isz, actions));
         });
 
+        // ------------------------------------------------------------ worktrees
+        // Listed like branches (by the branch they have checked out); only
+        // when the repository has more than one.
+        if snap.worktrees.len() > 1 {
+            section(ui, &format!("WORKTREES ({})", snap.worktrees.len()), "worktrees", true, |ui| {
+                for w in &snap.worktrees {
+                    worktree_row(ui, rv, w, isz, actions);
+                }
+            });
+        }
+
         // ------------------------------------------------- recently re-attached
         if !rv.reattached.is_empty() {
             list_section(ui, &format!("RE-ATTACHED ({})", rv.reattached.len()), "reattached", true, |ui| {
@@ -456,6 +467,8 @@ impl Badge {
 fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize, isz: f32, actions: &mut Vec<Action>) {
     let task = rv.notes.task_for_branch(&r.name);
     let note = rv.has_note(&NoteTarget::Branch(r.name.clone()));
+    // Checked out in another worktree: git refuses to check it out here.
+    let elsewhere = rv.snap.as_ref().and_then(|s| s.worktree_for(&r.name)).map(|w| w.wt.path.clone());
     let resp = ui
         .horizontal(|ui| {
             // ● for the current branch sits in the triangle column
@@ -466,7 +479,7 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
             let left_w = (ui.available_width() - if bw > 0.0 { bw + 8.0 } else { 0.0 }).max(40.0);
             let h = ui.spacing().interact_size.y;
             // Reserve room for task / note / PR so only the *name* truncates.
-            let extras_w = extras_width(ui, rv, r, &task, note, isz);
+            let extras_w = extras_width(ui, rv, r, &task, note, isz) + if elsewhere.is_some() { isz + ui.spacing().item_spacing.x } else { 0.0 };
             let name_w = (left_w - extras_w).max(40.0);
             let resp = ui
                 .allocate_ui_with_layout(egui::vec2(left_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -479,6 +492,10 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
                             ui.selectable_label(rv.focus_branch.as_deref() == Some(r.name.as_str()), rt).on_hover_text(&r.name)
                         })
                         .inner;
+                    if let Some(p) = &elsewhere {
+                        ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, theme::TEXT_DIM))
+                            .on_hover_text(format!("Checked out in worktree {}\nDouble-click to open it", p.display()));
+                    }
                     branch_extras(ui, rv, r, &task, note, isz);
                     resp
                 })
@@ -498,7 +515,10 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
         actions.push(Action::FocusBranch(r.name.clone()));
     }
     if resp.double_clicked() && !r.is_head {
-        actions.push(Action::Checkout(r.name.clone()));
+        match &elsewhere {
+            Some(p) => actions.push(Action::OpenRepo(p.clone())),
+            None => actions.push(Action::Checkout(r.name.clone())),
+        }
     }
     let name = r.name.clone();
     let is_head = r.is_head;
@@ -509,8 +529,12 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
                 ui.close();
             }
         };
-        if !is_head {
+        if let Some(p) = &elsewhere {
+            item(ui, "Open worktree", Action::OpenRepo(p.clone()));
+        } else if !is_head {
             item(ui, "Checkout", Action::Checkout(name.clone()));
+        }
+        if !is_head {
             item(ui, "Merge into current branch", Action::Confirm { msg: format!("Merge {name} into the current branch?"), action: Box::new(Action::Merge(name.clone())) });
         }
         item(ui, "New branch from here…", Action::NewBranchDialog { start: Some(name.clone()), name: String::new() });
@@ -525,6 +549,96 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
             ui.separator();
             item(ui, "Delete…", Action::Confirm { msg: format!("Delete branch {name}? Its branch note is kept under Detached notes."), action: Box::new(Action::DeleteBranch { name: name.clone(), force: false }) });
             item(ui, "Force delete…", Action::Confirm { msg: format!("Force-delete {name}? Unmerged commits will be lost."), action: Box::new(Action::DeleteBranch { name: name.clone(), force: true }) });
+        }
+    });
+}
+
+/// A worktree row, shaped like a branch row: ● when it's this tab, the
+/// branch it has checked out, and its folder name dimmed on the right.
+fn worktree_row(ui: &mut Ui, rv: &RepoView, w: &crate::jobs::WorktreeInfo, isz: f32, actions: &mut Vec<Action>) {
+    let wt = &w.wt;
+    let folder = wt.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| wt.path.display().to_string());
+    let label = match (&wt.branch, &wt.head) {
+        (Some(b), _) => b.clone(),
+        (None, Some(h)) => format!("detached at {}", &h[..7.min(h.len())]),
+        (None, None) => "detached".into(),
+    };
+    let resp = ui
+        .horizontal(|ui| {
+            gutter(ui, 0, w.current.then_some(theme::ACCENT));
+            ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, if w.current { theme::ACCENT } else { theme::TEXT_DIM }));
+            let mut detail = folder.clone();
+            if wt.prunable {
+                detail = format!("{detail} · missing");
+            } else if wt.locked {
+                detail = format!("{detail} · locked");
+            }
+            let small = egui::TextStyle::Small.resolve(ui.style());
+            let dw = ui.painter().layout_no_wrap(detail.clone(), small, theme::TEXT_DIM).size().x;
+            let name_w = (ui.available_width() - dw - 12.0).max(40.0);
+            let mut rt = RichText::new(&label);
+            if w.current {
+                rt = rt.strong();
+            }
+            let focused = wt.branch.is_some() && rv.focus_branch.as_deref() == wt.branch.as_deref();
+            let resp = ui
+                .allocate_ui_with_layout(egui::vec2(name_w, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.selectable_label(focused, rt)
+                })
+                .inner;
+            ui.label(RichText::new(detail).small().color(theme::TEXT_DIM));
+            resp
+        })
+        .inner;
+    let path = wt.path.clone();
+    let hover = format!(
+        "{}{}",
+        path.display(),
+        if w.current { "\n(this tab)" } else { "\nDouble-click to open in a tab" }
+    );
+    let resp = resp.on_hover_text(hover);
+    if resp.clicked() {
+        // Like a branch row: show its tip in the history.
+        if let Some(b) = &wt.branch {
+            if let Some(r) = rv.snap.as_ref().and_then(|s| s.refs.iter().find(|r| r.kind == RefKind::Local && &r.name == b)) {
+                actions.push(Action::JumpTo(r.target.clone()));
+                actions.push(Action::FocusBranch(b.clone()));
+            }
+        } else if let Some(h) = &wt.head {
+            actions.push(Action::JumpTo(h.clone()));
+        }
+    }
+    if resp.double_clicked() && !w.current {
+        actions.push(Action::OpenRepo(path.clone()));
+    }
+    let (main, current, prunable) = (wt.main, w.current, wt.prunable);
+    resp.context_menu(|ui| {
+        let mut item = |ui: &mut Ui, label: &str, a: Action| {
+            if ui.button(label).clicked() {
+                actions.push(a);
+                ui.close();
+            }
+        };
+        if !current && !prunable {
+            item(ui, "Open in tab", Action::OpenRepo(path.clone()));
+        }
+        if !prunable {
+            item(ui, "Reveal in Finder", Action::OpenPath { path: path.clone(), terminal: false });
+            item(ui, "Open in Terminal", Action::OpenPath { path: path.clone(), terminal: true });
+        }
+        item(ui, "Copy path", Action::Copy(path.display().to_string()));
+        if prunable {
+            ui.separator();
+            item(ui, "Prune missing worktrees", Action::RunGit { label: "Prune worktrees".into(), f: std::sync::Arc::new(|r| r.prune_worktrees()) });
+        } else if !main && !current {
+            ui.separator();
+            let p = path.display().to_string();
+            let remove = |force: bool| {
+                let p = p.clone();
+                Action::RunGit { label: "Remove worktree".into(), f: std::sync::Arc::new(move |r| r.remove_worktree(&p, force).map(|_| String::new())) }
+            };
+            item(ui, "Remove…", Action::Confirm { msg: format!("Remove the worktree folder {p}?\n(Refused if it has uncommitted changes.)"), action: Box::new(remove(false)) });
+            item(ui, "Force remove…", Action::Confirm { msg: format!("Force-remove {p}? Uncommitted changes in it are lost."), action: Box::new(remove(true)) });
         }
     });
 }

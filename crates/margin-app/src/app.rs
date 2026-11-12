@@ -60,6 +60,9 @@ pub enum Action {
     Refresh,
     LoadMore,
     OpenRepo(PathBuf),
+    /// Pick a folder with the system dialog and open it (macOS); elsewhere
+    /// asks for a path in the palette.
+    OpenFolderDialog,
     CloseRepo,
     Confirm { msg: String, action: Box<Action> },
     NewBranchDialog { start: Option<String>, name: String },
@@ -91,6 +94,8 @@ pub enum Action {
     OpenPalette,
     /// Open the palette with a prefilled search (e.g. "branch").
     OpenPaletteWith(String),
+    /// Start a palette command directly by key (`Group/Title`), e.g. from the menu bar.
+    RunPaletteCommand(String),
     NavBack,
     NavForward,
     OpenSettings,
@@ -137,6 +142,8 @@ pub struct RepoView {
     pub commit_diff: DiffView,
     pub generation: u64,
     pub commit_msg: String,
+    /// Focus the commit message box on the next frame (Repository → Commit…).
+    pub focus_commit_msg: bool,
     pub amend: bool,
     pub filter: String,
     pub filtered: Option<(String, Vec<usize>)>,
@@ -221,6 +228,7 @@ impl RepoView {
             commit_diff: DiffView::default(),
             generation: 0,
             commit_msg: String::new(),
+            focus_commit_msg: false,
             amend: false,
             filter: String::new(),
             filtered: None,
@@ -299,6 +307,18 @@ impl RepoView {
     }
 }
 
+/// Recently opened directories kept (File → Open Recent, the + menu).
+pub const RECENT_REPOS: usize = 10;
+
+/// `/Users/me/src` → `~/src` for display.
+pub fn tilde(p: &std::path::Path) -> String {
+    let s = p.display().to_string();
+    match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() && s.starts_with(&h) => format!("~{}", &s[h.len()..]),
+        _ => s,
+    }
+}
+
 pub struct MarginApp {
     pub cfg: Config,
     pub state: State,
@@ -309,6 +329,8 @@ pub struct MarginApp {
     pub license_error: Option<String>,
     /// The free notes-sync limit was hit (shows the Pro hint in Settings).
     pub sync_limit_hit: bool,
+    /// Typed sync folder path (non-macOS; macOS uses the folder picker).
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub sync_folder_input: String,
     pub show_settings: bool,
     pub jobs: Jobs,
@@ -330,6 +352,9 @@ pub struct MarginApp {
     /// Journal ids the toolbar "Undo" button reverts (last auto re-attach).
     pub status_undo: Vec<String>,
     pub palette: Option<crate::palette::Palette>,
+    /// Focus the commit search box on the next frame (Edit → Find Commits).
+    pub focus_search: bool,
+    menu: crate::menu_bar::MenuBar,
     ctx: egui::Context,
 }
 
@@ -364,6 +389,8 @@ impl MarginApp {
             pending_copy: None,
             status_undo: vec![],
             palette: None,
+            focus_search: false,
+            menu: crate::menu_bar::MenuBar::new(ctx),
             ctx: ctx.clone(),
         };
         // Restore open tabs without loading them; only the active one loads.
@@ -422,6 +449,16 @@ impl MarginApp {
                     stashes: repo.stashes().unwrap_or_default(),
                     pending_op: repo.pending_operation(),
                     limit,
+                    worktrees: {
+                        let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+                        let here = canon(&repo.workdir);
+                        repo.worktrees()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|w| !w.bare)
+                            .map(|w| crate::jobs::WorktreeInfo { current: canon(&w.path) == here, wt: w })
+                            .collect()
+                    },
                 }))
             });
             Msg::Refreshed { workdir: repo.workdir.clone(), result: r.map_err(|e| e.0) }
@@ -477,6 +514,83 @@ impl MarginApp {
         let repo = rv.repo.clone();
         let label = label.to_string();
         self.jobs.spawn(move || Msg::OpDone { workdir: repo.workdir.clone(), result: f(&repo).map_err(|e| e.0), label, refresh: true });
+    }
+
+    fn save_note(&mut self) {
+        if let Some(rv) = &mut self.rv {
+            rv.editor.save(&rv.notes);
+            self.reload_notes_index();
+        }
+    }
+
+    /// A menu bar command (see `menu_bar`).
+    fn menu_cmd(&mut self, cmd: crate::menu_bar::Cmd, ctx: &egui::Context) {
+        use crate::menu_bar::Cmd;
+        // The menu takes ⌘C/⌘V/⌘Z… before egui sees the key, so hand the
+        // focused widget the event it would have got.
+        let key = |key: egui::Key, shift: bool| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers { shift, ..egui::Modifiers::COMMAND },
+        };
+        let inject = |e: egui::Event| ctx.input_mut(|i| i.events.push(e));
+        let workdir = self.rv.as_ref().map(|rv| rv.repo.workdir.clone());
+        let a = match cmd {
+            Cmd::Settings => Action::OpenSettings,
+            Cmd::OpenFolder => Action::OpenFolderDialog,
+            Cmd::OpenRecent(p) => Action::OpenRepo(PathBuf::from(p)),
+            Cmd::SaveNote => return self.save_note(),
+            Cmd::CloseTab => Action::CloseRepo,
+            Cmd::Reveal | Cmd::Terminal => match workdir {
+                Some(path) => Action::OpenPath { path, terminal: cmd == Cmd::Terminal },
+                None => return,
+            },
+            Cmd::Undo => return inject(key(egui::Key::Z, false)),
+            Cmd::Redo => return inject(key(egui::Key::Z, true)),
+            Cmd::SelectAll => return inject(key(egui::Key::A, false)),
+            Cmd::Cut => return inject(egui::Event::Cut),
+            Cmd::Copy => return inject(egui::Event::Copy),
+            Cmd::Paste => {
+                #[cfg(target_os = "macos")]
+                if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+                    inject(egui::Event::Paste(text));
+                }
+                return;
+            }
+            Cmd::FindCommits => {
+                self.focus_search = true;
+                return;
+            }
+            Cmd::Fetch => Action::Fetch,
+            Cmd::Pull => Action::Pull,
+            Cmd::Push => Action::Push { force: false },
+            Cmd::Commit => {
+                if let Some(rv) = &mut self.rv {
+                    rv.focus_commit_msg = true;
+                }
+                Action::Select(Sel::Working)
+            }
+            Cmd::Stash => Action::StashPush,
+            Cmd::NewBranch => Action::NewBranchDialog { start: None, name: String::new() },
+            Cmd::Palette(key) => Action::RunPaletteCommand(key.to_string()),
+            Cmd::Refresh => return self.refresh(),
+            Cmd::CommandPalette => {
+                if self.palette.take().is_none() {
+                    self.handle(Action::OpenPalette);
+                }
+                return;
+            }
+            Cmd::Back => Action::NavBack,
+            Cmd::Forward => Action::NavForward,
+            Cmd::WorkingDirectory => Action::Select(Sel::Working),
+            Cmd::NextTab => Action::NextTab,
+            Cmd::PrevTab => Action::PrevTab,
+            Cmd::Help => Action::OpenUrl(crate::pro::HELP_URL.into()),
+            Cmd::ReportIssue => Action::OpenUrl(crate::pro::SUPPORT_URL.into()),
+        };
+        self.handle(a);
     }
 
     pub fn pro(&self) -> bool {
@@ -538,6 +652,12 @@ impl MarginApp {
             v.insert(self.active_pos.min(v.len()), (rv.repo.workdir.clone(), rv.repo.name(), true));
         }
         v
+    }
+
+    /// Recent directories that aren't open as a tab (newest first, ≤ 10).
+    pub fn recent_closed(&self, tabs: &[(PathBuf, String, bool)]) -> Vec<String> {
+        let open: Vec<String> = tabs.iter().map(|(p, _, _)| p.display().to_string()).collect();
+        self.state.recent_repos.iter().filter(|r| !open.contains(r)).take(RECENT_REPOS).cloned().collect()
     }
 
     fn tab_index_of(&self, workdir: &std::path::Path) -> Option<usize> {
@@ -683,7 +803,7 @@ impl MarginApp {
                     let path = repo.workdir.display().to_string();
                     self.state.recent_repos.retain(|r| r != &path);
                     self.state.recent_repos.insert(0, path);
-                    self.state.recent_repos.truncate(15);
+                    self.state.recent_repos.truncate(RECENT_REPOS);
                     // New tab right after the current one.
                     if let Some(cur) = self.rv.take() {
                         self.others.insert(self.active_pos, cur);
@@ -1095,7 +1215,31 @@ impl MarginApp {
                     Err(e) => self.err(e),
                 }
             }
-            OpenPalette => self.palette = Some(crate::palette::Palette::new(crate::commands::build(self))),
+            OpenFolderDialog => {
+                #[cfg(target_os = "macos")]
+                if let Some(p) = rfd::FileDialog::new().set_title("Open a git repository").pick_folder() {
+                    self.handle(Action::OpenRepo(p));
+                }
+                #[cfg(not(target_os = "macos"))]
+                self.handle(Action::OpenPaletteWith("open repository".into()));
+            }
+            OpenPalette => self.palette = Some(crate::palette::Palette::new(crate::commands::build(self)).with_recent(&self.state.recent_commands)),
+            RunPaletteCommand(key) => {
+                let mut p = crate::palette::Palette::new(crate::commands::build(self)).with_recent(&self.state.recent_commands);
+                match p.find(&key) {
+                    Some(i) => match p.start(i) {
+                        None => self.palette = Some(p),
+                        Some(actions) => {
+                            self.palette = None;
+                            for a in actions {
+                                self.handle(a);
+                            }
+                        }
+                    },
+                    // Not available here: show the matching commands instead.
+                    None => self.palette = Some(p.with_query(key.rsplit('/').next().unwrap_or(&key).trim_end_matches('…').to_string())),
+                }
+            }
             OpenPaletteWith(q) => self.palette = Some(crate::palette::Palette::new(crate::commands::build(self)).with_query(q)),
             NavBack | NavForward => {
                 let Some(rv) = &mut self.rv else { return };
@@ -1525,9 +1669,7 @@ impl MarginApp {
                     }
                     #[cfg(target_os = "macos")]
                     if ui.button("Browse…").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                            actions.push(Action::OpenRepo(p));
-                        }
+                        actions.push(Action::OpenFolderDialog);
                     }
                 });
                 ui.add_space(16.0);
@@ -1545,10 +1687,8 @@ impl MarginApp {
     /// [repo ▾] [branch ▾] [‹][›]      [Commands ⌘P][Search commits]      status … [Pull ↓n][Push ↑n]
     fn toolbar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let tabs = self.tabs();
-        let open: Vec<String> = tabs.iter().map(|(p, _, _)| p.display().to_string()).collect();
+        let recent = self.recent_closed(&tabs);
         let Some(rv) = &mut self.rv else { return };
-        // Recent = not already open as a tab.
-        let recent: Vec<String> = self.state.recent_repos.iter().filter(|r| !open.contains(r)).take(10).cloned().collect();
         let busy = self.busy.clone();
         let working = rv.loading || self.jobs.in_flight > 0;
         egui::Panel::top("toolbar").show(ui, |ui| {
@@ -1605,16 +1745,8 @@ impl MarginApp {
                     }
                 }
                 ui.separator();
-                #[cfg(target_os = "macos")]
-                if ui.button("Open repository…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                        actions.push(Action::OpenRepo(p));
-                    }
-                    ui.close();
-                }
-                #[cfg(not(target_os = "macos"))]
-                if ui.button("Open repository…").clicked() {
-                    actions.push(Action::OpenPaletteWith("open repository".into()));
+                if ui.button("Open folder…").clicked() {
+                    actions.push(Action::OpenFolderDialog);
                     ui.close();
                 }
                 let wd = rv.repo.workdir.clone();
@@ -1748,7 +1880,10 @@ impl MarginApp {
             {
                 actions.push(Action::OpenPalette);
             }
-            center.add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Search commits…").desired_width(search_w));
+            let search = center.add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Search commits…").desired_width(search_w));
+            if std::mem::take(&mut self.focus_search) {
+                search.request_focus();
+            }
 
             // ---- status (between centre and Pull/Push): spinner, message, Undo
             let status_rect = egui::Rect::from_min_max(egui::pos2(center_rect.right() + gap, row.top()), egui::pos2(right_start - 8.0, row.bottom()));
@@ -1800,6 +1935,13 @@ impl eframe::App for MarginApp {
         }
         if let Some(s) = self.pending_copy.take() {
             ctx.copy_text(s);
+        }
+        // Native menu bar (macOS): keep it current, then run what was chosen.
+        let tabs = self.tabs();
+        let recent = self.recent_closed(&tabs);
+        self.menu.update(&recent, self.rv.is_some());
+        for cmd in self.menu.poll() {
+            self.menu_cmd(cmd, &ctx);
         }
 
         // Refresh when the window regains focus (like Sublime Merge) and
@@ -1863,10 +2005,7 @@ impl eframe::App for MarginApp {
             self.refresh();
         }
         if save {
-            if let Some(rv) = &mut self.rv {
-                rv.editor.save(&rv.notes);
-                self.reload_notes_index();
-            }
+            self.save_note();
         }
 
         let mut actions = Vec::new();
@@ -1874,7 +2013,9 @@ impl eframe::App for MarginApp {
             actions = self.welcome(ui);
         } else {
             // Tab strip first so it sits above the toolbar.
-            crate::tab_strip::show(ui, &self.tabs(), &mut actions);
+            let tabs = self.tabs();
+            let recent = self.recent_closed(&tabs);
+            crate::tab_strip::show(ui, &tabs, &recent, &mut actions);
             self.toolbar(ui, &mut actions);
             let tasks_configured = self.tasks.is_some();
             let pro = self.pro();
@@ -1909,9 +2050,14 @@ impl eframe::App for MarginApp {
             match p.show(&ctx) {
                 crate::palette::Outcome::Open => {}
                 crate::palette::Outcome::Close => self.palette = None,
-                crate::palette::Outcome::Run(a) => {
+                crate::palette::Outcome::Run(a, key) => {
                     self.palette = None;
                     actions.extend(a);
+                    let recent = &mut self.state.recent_commands;
+                    recent.retain(|k| k != &key);
+                    recent.insert(0, key);
+                    recent.truncate(crate::palette::RECENT_MAX);
+                    let _ = config::save_state(&self.state);
                 }
             }
         }

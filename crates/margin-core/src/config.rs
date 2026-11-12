@@ -85,6 +85,9 @@ pub struct State {
     /// First launch (unix time): start of the Margin Pro trial.
     #[serde(default)]
     pub trial_started: Option<i64>,
+    /// Command palette: recently run commands (`Group/Title`), newest first.
+    #[serde(default)]
+    pub recent_commands: Vec<String>,
 }
 
 pub fn config_dir() -> PathBuf {

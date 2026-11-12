@@ -8,6 +8,9 @@ use margin_core::license::Status;
 /// Where "Buy Margin Pro" goes. Set this to your store's checkout page
 /// (e.g. a Paddle / Lemon Squeezy product link) before release.
 pub const PURCHASE_URL: &str = "https://margin.app/pro";
+/// Help → Margin Help, and Help → Report an Issue… (placeholders until the website exists).
+pub const HELP_URL: &str = "https://margin.app/help";
+pub const SUPPORT_URL: &str = "https://margin.app/support";
 
 pub fn lock_hint(ui: &mut Ui, feature: &str, status: &Status, actions: &mut Vec<Action>) {
     egui::Frame::new().fill(theme::HUNK_BG).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {

@@ -3,7 +3,8 @@
 //! Fuzzy search over every command; results are grouped (Branch, Tag,
 //! Git Flow, …) with a header + icon per group. Commands that need input run
 //! as steps inside the palette: pick from a list, type a value, or confirm.
-//! ↑/↓ move, Enter runs, Esc goes back / closes.
+//! ↑/↓ move, Enter runs, Esc goes back / closes. With an empty search the
+//! last few commands run are listed first under "Recent".
 
 use crate::app::Action;
 use crate::icons::{self, Icon};
@@ -100,8 +101,20 @@ pub struct Command {
     pub run: Run,
 }
 
+/// How many recently run commands the palette remembers and shows first.
+pub const RECENT_MAX: usize = 5;
+
+impl Command {
+    /// Stable identity for the recent list ("Branch/New branch…").
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.group.label(), self.title)
+    }
+}
+
 pub struct Palette {
     cmds: Vec<Command>,
+    /// Indices into `cmds` of recently run commands, newest first.
+    recent: Vec<usize>,
     query: String,
     sel: usize,
     active: Option<usize>,
@@ -114,12 +127,25 @@ pub struct Palette {
 pub enum Outcome {
     Open,
     Close,
-    Run(Vec<Action>),
+    /// Run these actions; the `String` is the command's `key()` (for the recent list).
+    Run(Vec<Action>, String),
 }
 
 impl Palette {
     pub fn new(cmds: Vec<Command>) -> Self {
-        Palette { cmds, query: String::new(), sel: 0, active: None, step: 0, values: vec![], focus: true }
+        Palette { cmds, recent: vec![], query: String::new(), sel: 0, active: None, step: 0, values: vec![], focus: true }
+    }
+
+    /// Commands to list first under "Recent" (keys from `Command::key`, newest first).
+    /// Keys whose command doesn't exist right now (e.g. no remote) are skipped.
+    pub fn with_recent(mut self, keys: &[String]) -> Self {
+        self.recent = keys.iter().filter_map(|k| self.cmds.iter().position(|c| &c.key() == k)).take(RECENT_MAX).collect();
+        self
+    }
+
+    /// Index of the command with this `key()`, if it exists right now.
+    pub fn find(&self, key: &str) -> Option<usize> {
+        self.cmds.iter().position(|c| c.key() == key)
     }
 
     pub fn with_query(mut self, q: String) -> Self {
@@ -148,7 +174,8 @@ impl Palette {
         None
     }
 
-    fn start(&mut self, idx: usize) -> Option<Vec<Action>> {
+    /// Start a command: its actions if it needs no input, else `None` (palette shows its first step).
+    pub fn start(&mut self, idx: usize) -> Option<Vec<Action>> {
         self.active = Some(idx);
         self.step = 0;
         self.values.clear();
@@ -206,7 +233,10 @@ impl Palette {
 
         let mut clicked: Option<usize> = None;
         let mut go_back = false;
-        let width = 600.0_f32.min(ctx.content_rect().width() - 32.0);
+        let screen = ctx.content_rect();
+        let width = 680.0_f32.min(screen.width() - 32.0);
+        // Use most of the window height so long lists scroll comfortably.
+        let list_h = (screen.height() - 46.0 - 120.0).clamp(220.0, 760.0);
         let area = egui::Area::new(egui::Id::unique("command_palette"))
             .order(egui::Order::Foreground)
             .anchor(Align2::CENTER_TOP, vec2(0.0, 46.0))
@@ -265,31 +295,41 @@ impl Palette {
                     if entries.is_empty() {
                         ui.weak(if matches!(view, View::List) { "No matching commands" } else { "Nothing to choose" });
                     }
-                    egui::ScrollArea::vertical().max_height(440.0).auto_shrink([false, true]).show(ui, |ui| {
-                        let mut last_group = None;
+                    egui::ScrollArea::vertical().max_height(list_h).min_scrolled_height(list_h).auto_shrink([false, true]).show(ui, |ui| {
+                        // Header key: Some(None) = "Recent", Some(Some(g)) = group g.
+                        let mut last_header: Option<Option<Group>> = None;
                         for (row, e) in entries.iter().enumerate() {
-                            let (label, detail, group) = match *e {
+                            let (label, detail, header) = match *e {
                                 Entry::Cmd(i) => {
                                     let c = &self.cmds[i];
-                                    (c.title.clone(), c.hint.clone(), Some(c.group))
+                                    (c.title.clone(), c.hint.clone(), Some(Some(c.group)))
+                                }
+                                Entry::Recent(i) => {
+                                    let c = &self.cmds[i];
+                                    let detail = if c.hint.is_empty() { c.group.label().to_string() } else { format!("{} · {}", c.group.label(), c.hint) };
+                                    (c.title.clone(), detail, Some(None))
                                 }
                                 Entry::Item(i) => match self.active.and_then(|a| self.cmds[a].steps.get(self.step)) {
                                     Some(Step::Pick { items, .. }) => (items[i].label.clone(), items[i].detail.clone(), None),
                                     _ => continue,
                                 },
                             };
-                            // Group header: icon + name, once per group.
-                            if let Some(g) = group {
-                                if last_group != Some(g) {
-                                    if last_group.is_some() {
-                                        ui.add_space(5.0);
-                                    }
-                                    ui.horizontal(|ui| {
-                                        ui.add(icons::image(ui.ctx(), g.icon(), 13.0, theme::TEXT_DIM));
-                                        ui.label(RichText::new(g.label().to_uppercase()).small().strong().color(theme::TEXT_DIM));
-                                    });
-                                    last_group = Some(g);
+                            // Header: icon + name, once per group (or "Recent").
+                            if let Some(h) = header
+                                && last_header != Some(h)
+                            {
+                                if last_header.is_some() {
+                                    ui.add_space(5.0);
                                 }
+                                let (icon, name) = match h {
+                                    Some(g) => (g.icon(), g.label()),
+                                    None => (Icon::History, "Recent"),
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.add(icons::image(ui.ctx(), icon, 13.0, theme::TEXT_DIM));
+                                    ui.label(RichText::new(name.to_uppercase()).small().strong().color(theme::TEXT_DIM));
+                                });
+                                last_header = Some(h);
                             }
                             let h = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
                             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
@@ -301,7 +341,7 @@ impl Palette {
                                 resp.scroll_to_me(None);
                             }
                             let font = egui::TextStyle::Body.resolve(ui.style());
-                            let indent = if group.is_some() { 22.0 } else { 8.0 };
+                            let indent = if header.is_some() { 22.0 } else { 8.0 };
                             let p = ui.painter_at(rect);
                             p.text(rect.left_center() + vec2(indent, 0.0), Align2::LEFT_CENTER, &label, font, theme::TEXT);
                             if !detail.is_empty() {
@@ -331,7 +371,7 @@ impl Palette {
         }
         let Some(row) = clicked else { return Outcome::Open };
         let res = match (&view, entries.get(row)) {
-            (View::List, Some(Entry::Cmd(i))) => self.start(*i),
+            (View::List, Some(Entry::Cmd(i) | Entry::Recent(i))) => self.start(*i),
             (View::Pick(_), Some(Entry::Item(i))) => {
                 let v = match self.active.and_then(|a| self.cmds[a].steps.get(self.step)) {
                     Some(Step::Pick { items, .. }) => items[*i].value.clone(),
@@ -347,7 +387,7 @@ impl Palette {
             _ => None,
         };
         match res {
-            Some(actions) => Outcome::Run(actions),
+            Some(actions) => Outcome::Run(actions, self.active.map(|a| self.cmds[a].key()).unwrap_or_default()),
             None => Outcome::Open,
         }
     }
@@ -380,7 +420,8 @@ impl Palette {
                     }
                     scored.sort_by_key(|&(s, i)| (-best[&self.cmds[i].group], self.cmds[i].group, -s, i));
                 }
-                scored.into_iter().map(|(_, i)| Entry::Cmd(i)).collect()
+                let recent: &[usize] = if q.is_empty() { &self.recent } else { &[] };
+                recent.iter().map(|&i| Entry::Recent(i)).chain(scored.into_iter().map(|(_, i)| Entry::Cmd(i))).collect()
             }
             View::Pick(_) => {
                 let Some(Step::Pick { items, .. }) = self.active.and_then(|a| self.cmds[a].steps.get(self.step)) else { return vec![] };
@@ -407,6 +448,8 @@ enum View {
 #[derive(Clone, Copy)]
 enum Entry {
     Cmd(usize),
+    /// A command shown again under "Recent" (empty search only).
+    Recent(usize),
     Item(usize),
 }
 

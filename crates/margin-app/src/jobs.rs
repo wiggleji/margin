@@ -3,7 +3,7 @@
 
 use eframe::egui;
 use margin_core::diff::FileDiff;
-use margin_core::git::{Commit, CommitDetail, RefInfo, Stash, Status};
+use margin_core::git::{Commit, CommitDetail, RefInfo, Stash, Status, Worktree};
 use margin_core::github::{GitHub, PrDetail, PrSummary};
 use margin_core::tasks::Task;
 use std::collections::HashMap;
@@ -18,6 +18,21 @@ pub struct Snapshot {
     pub stashes: Vec<Stash>,
     pub pending_op: Option<&'static str>,
     pub limit: usize,
+    /// All worktrees of the repository (`git worktree list`), bare ones excluded.
+    pub worktrees: Vec<WorktreeInfo>,
+}
+
+pub struct WorktreeInfo {
+    pub wt: Worktree,
+    /// The worktree this tab shows.
+    pub current: bool,
+}
+
+impl Snapshot {
+    /// Another worktree that has `branch` checked out (git refuses to check it out here).
+    pub fn worktree_for(&self, branch: &str) -> Option<&WorktreeInfo> {
+        self.worktrees.iter().find(|w| !w.current && w.wt.branch.as_deref() == Some(branch))
+    }
 }
 
 pub enum Msg {
