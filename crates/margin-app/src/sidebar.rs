@@ -152,13 +152,12 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                         }
                         let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
                         gutter(&mut row, depth, None);
-                        let w = (row.available_width() - h - 6.0).max(30.0);
+                        let w = (row.available_width() - h - 6.0 - EYE_MARGIN).max(30.0);
                         row.allocate_ui_with_layout(egui::vec2(w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            let t = if shown { RichText::new(label) } else { RichText::new(label).color(theme::TEXT_DIM) };
-                            ui.add(egui::Label::new(t).truncate());
+                            ui.add(egui::Label::new(RichText::new(label)).truncate());
                         });
                         row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(2.0);
+                            ui.add_space(EYE_MARGIN);
                             if eye(ui, shown).clicked() {
                                 let mut f = rv.graph_filter.clone();
                                 f.set(r, !shown);
@@ -515,6 +514,9 @@ impl Badge {
     }
 }
 
+/// Space right of the eye, so the sidebar's scroll bar never covers it.
+const EYE_MARGIN: f32 = 14.0;
+
 /// Eye toggle at the right edge of a branch row: is it in the history graph?
 fn eye(ui: &mut Ui, shown: bool) -> egui::Response {
     let size = ui.spacing().interact_size.y;
@@ -562,7 +564,7 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
     let badge = Badge::new(ui, r);
     let bw = badge.width();
     // Right side: [badge] [eye]; the name truncates before them.
-    let right_w = h + 4.0 + if bw > 0.0 { bw + 6.0 } else { 0.0 };
+    let right_w = h + EYE_MARGIN + 2.0 + if bw > 0.0 { bw + 6.0 } else { 0.0 };
     let left_w = (ui.available_width() - right_w).max(40.0);
     // The linked task key, unless the branch name already says it (SER-6114 / SER-6114).
     let task_label = task.clone().filter(|t| !r.name.to_lowercase().contains(&t.to_lowercase()));
@@ -573,8 +575,8 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
         if r.is_head {
             rt = rt.strong();
         }
-        // Upstream deleted (e.g. merged and removed on the server), or not in the graph: dimmed.
-        if r.upstream_gone() || !shown {
+        // Only a deleted upstream dims the name (hidden-in-history shows on the eye).
+        if r.upstream_gone() {
             rt = rt.color(theme::TEXT_DIM);
         }
         ui.allocate_ui_with_layout(egui::vec2(name_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -587,7 +589,7 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
         branch_extras(ui, rv, r, &task_label, note, isz);
     });
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.add_space(2.0);
+        ui.add_space(EYE_MARGIN);
         if eye(ui, shown).clicked() {
             let mut f = rv.graph_filter.clone();
             f.set(r, !shown);
