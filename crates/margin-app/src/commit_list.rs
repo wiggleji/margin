@@ -218,17 +218,17 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             rx -= tg.size().x;
             p.galley(pos2(rx, y2 - tg.size().y / 2.0), tg, theme::TEXT_DIM);
             rx -= 8.0;
-            // Tasks: keys in the subject, and the task linked to a branch whose tip this is.
-            let mut keys = margin_core::tasks::extract_keys(&c.subject);
-            for b in tips.into_iter().flatten() {
-                if let Some(k) = rv.notes.task_for_branch(b) {
-                    if !keys.contains(&k) {
-                        keys.push(k);
-                    }
+            // Task: one label, on the newest commit of that ticket only (see
+            // `row_tasks`); "+N" when this commit starts more than one.
+            if let Some(keys) = rv.row_tasks.get(&c.id) {
+                if keys.len() > 1 {
+                    let g = p.layout_no_wrap(format!("+{}", keys.len() - 1), small.clone(), theme::TEXT_DIM);
+                    rx -= g.size().x;
+                    p.galley(pos2(rx, y2 - g.size().y / 2.0), g, theme::TEXT_DIM);
+                    rx -= 4.0;
                 }
-            }
-            for k in keys.iter().rev() {
-                rx = outline_chip_right(&p, rx, y2, k, None, theme::lane(0), &small, isz) - 4.0;
+                rx = outline_chip_right(&p, rx, y2, &keys[0], None, theme::lane(0), &small, isz) - 4.0;
+                hover_extra += &format!("\n\nTasks: {}", keys.join(", "));
             }
             for b in tips.into_iter().flatten().rev() {
                 if let Some(pr) = rv.prs.get(b) {
