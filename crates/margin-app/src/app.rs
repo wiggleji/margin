@@ -145,10 +145,6 @@ pub struct RepoView {
     pub commit_detail: Option<CommitDetail>,
     /// Branches containing the selected commit (commit details).
     pub commit_branches: Vec<String>,
-    /// Commit details shrunk to one line while the diff is scrolled down;
-    /// `header_pinned`: opened by hand while scrolled.
-    pub header_compact: bool,
-    pub header_pinned: bool,
     pub commit_diff: DiffView,
     pub generation: u64,
     pub commit_msg: String,
@@ -249,8 +245,6 @@ impl RepoView {
             work_diff: DiffView::default(),
             commit_detail: None,
             commit_branches: vec![],
-            header_compact: false,
-            header_pinned: false,
             commit_diff: DiffView::default(),
             generation: 0,
             commit_msg: String::new(),
@@ -534,8 +528,9 @@ impl MarginApp {
     fn load_commit(&mut self, id: String) {
         let Some(rv) = &mut self.rv else { return };
         rv.generation += 1;
+        // Keep showing the previous commit until this one arrives (no blank
+        // flash while moving through the history); the toolbar shows a spinner.
         rv.commit_diff.loading = true;
-        rv.commit_diff.files.clear();
         let generation = rv.generation;
         let repo = rv.repo.clone();
         let ignore_ws = self.state.diff_ignore_ws;
@@ -947,7 +942,6 @@ impl MarginApp {
                 rv.focus_branch = None;
                 match sel {
                     Sel::Working => {
-                        rv.commit_detail = None;
                         rv.editor.tab = crate::notes_panel::NoteTab::Branch;
                         self.load_work_diff();
                     }
@@ -2129,10 +2123,13 @@ impl eframe::App for MarginApp {
                 // The dragged height, or fitted to the content when collapsed /
                 // empty (see notes_panel). The panel draws its own grip.
                 let max_h = (ui.available_height() - 160.0).max(crate::notes_panel::MIN_H);
-                let notes_h = match rv.editor.fit_h {
+                let target = match rv.editor.fit_h {
                     Some(fit) => fit + 6.0,
                     None => state.notes_height.unwrap_or(crate::notes_panel::DEFAULT_H).clamp(crate::notes_panel::MIN_H, max_h),
                 };
+                // Collapse / expand slides; dragging the grip follows the mouse exactly.
+                let dragging = ui.input(|i| i.pointer.primary_down());
+                let notes_h = ui.ctx().animate_value_with_time(egui::Id::unique("notes_panel_h"), target, if dragging { 0.0 } else { 0.12 });
                 egui::Panel::bottom("notes").exact_size(notes_h).show(ui, |ui| {
                     crate::notes_panel::show(ui, rv, &self.task_cache, tasks_configured, &license, &task_url, &self.author, state, notes_h, actions);
                 });

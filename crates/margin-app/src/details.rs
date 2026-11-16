@@ -79,7 +79,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
 
     // All changed files: conflicts, then Unstaged and Staged sections; each
     // file expands to its diff (defaults in Settings → Diffs).
-    for e in rv.work_diff.show(ui, DiffMode::Working, "workdiff", prefs) {
+    for e in rv.work_diff.show(ui, DiffMode::Working, "workdiff", prefs, None) {
         actions.push(match e {
             DiffEvent::Hunk(a) => {
                 let staged_view = rv.work_diff.section(a.file) == Some(crate::diff_view::Section::Staged);
@@ -103,46 +103,19 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
 
 fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, task_url: &dyn Fn(&str) -> Option<String>, actions: &mut Vec<Action>) {
     let Some(d) = rv.commit_detail.clone() else {
-        ui.spinner();
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(12.0));
+            ui.weak("Loading commit…");
+        });
         return;
     };
-    // Scrolled into the diff: shrink the header to one line (more room for the
-    // code); back at the top it opens again. Hysteresis avoids flicker.
-    let scrolled = rv.commit_diff.scrolled();
-    if scrolled < 2.0 {
-        rv.header_compact = false;
-        rv.header_pinned = false;
-    } else if scrolled > 40.0 && !rv.header_pinned {
-        rv.header_compact = true;
-    }
-    if rv.header_compact {
-        egui::Panel::top("commit_header_compact").show(ui, |ui| {
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                let (subject, _) = split_message(&d.message);
-                let right = ui.spacing().interact_size.x + 40.0;
-                ui.monospace(RichText::new(&d.id[..8.min(d.id.len())]).color(theme::TEXT_DIM));
-                let meta = format!("{} · {}", d.author, crate::commit_list::rel_time(margin_core::time_now(), d.author_time));
-                let small = egui::TextStyle::Small.resolve(ui.style());
-                let meta_w = ui.painter().layout_no_wrap(meta.clone(), small, theme::TEXT_DIM).size().x;
-                let w = (ui.available_width() - meta_w - right - 12.0).max(60.0);
-                ui.allocate_ui_with_layout(egui::vec2(w, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(egui::Label::new(RichText::new(subject).strong()).truncate());
-                });
-                ui.label(RichText::new(meta).small().color(theme::TEXT_DIM));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Details ▾").on_hover_text("Show the commit's details and message").clicked() {
-                        rv.header_compact = false;
-                        rv.header_pinned = true;
-                    }
-                });
-            });
-            ui.add_space(2.0);
-        });
-        rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff", prefs);
-        return;
-    }
-    egui::Panel::top("commit_header").show(ui, |ui| {
+    // The metadata and message scroll with the diff (one page; the diff's
+    // toolbar sticks to the top and shows the title once they're out of view).
+    let branches = rv.commit_branches.clone();
+    let files: Vec<(usize, usize)> = rv.commit_diff.files.iter().map(|f| (f.added, f.removed)).collect();
+    let (title, _) = split_message(&d.message);
+    let title = format!("{}  {}", &d.id[..8.min(d.id.len())], title);
+    let mut header = |ui: &mut Ui| {
         // ---- metadata first
         let when = |t: i64| format!("{} {}", margin_core::format_local(t), margin_core::local_zone(t));
         egui::Grid::new("commit_meta").num_columns(2).spacing([10.0, 3.0]).show(ui, |ui| {
@@ -174,17 +147,17 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 ui.end_row();
             }
             // Branches whose history contains this commit (local first).
-            if !rv.commit_branches.is_empty() {
+            if !branches.is_empty() {
                 ui.weak("Branches");
-                let all = rv.commit_branches.join(", ");
+                let all = branches.join(", ");
                 ui.horizontal_wrapped(|ui| {
                     const SHOW: usize = 6;
-                    for b in rv.commit_branches.iter().take(SHOW) {
+                    for b in branches.iter().take(SHOW) {
                         if ui.link(RichText::new(b).small()).on_hover_text("Show this branch").clicked() {
                             actions.push(Action::GotoRev(b.clone()));
                         }
                     }
-                    let more = rv.commit_branches.len().saturating_sub(SHOW);
+                    let more = branches.len().saturating_sub(SHOW);
                     if more > 0 {
                         ui.label(RichText::new(format!("+{more} more")).small().color(theme::TEXT_DIM)).on_hover_text(&all);
                     }
@@ -192,9 +165,9 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 ui.end_row();
             }
             // Changes: files and lines in this commit.
-            let files = &rv.commit_diff.files;
+            let files = &files;
             if !files.is_empty() {
-                let (a, r) = files.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
+                let (a, r) = files.iter().fold((0, 0), |(a, r), f| (a + f.0, r + f.1));
                 ui.weak("Changes");
                 ui.horizontal(|ui| {
                     ui.label(format!("{} file{}", files.len(), if files.len() == 1 { "" } else { "s" }));
@@ -234,14 +207,12 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
         let body = body.trim_end();
         if !body.is_empty() {
             ui.add_space(6.0);
-            let max = (ui.ctx().content_rect().height() * 0.3).max(80.0);
-            egui::ScrollArea::vertical().id_salt("commit_body_scroll").max_height(max).auto_shrink([false, true]).show(ui, |ui| {
-                ui.add(egui::Label::new(RichText::new(body).color(theme::TEXT).line_height(Some(size * 1.55))).selectable(true).wrap());
-            });
+            ui.add(egui::Label::new(RichText::new(body).color(theme::TEXT).line_height(Some(size * 1.55))).selectable(true).wrap());
+
         }
         ui.add_space(4.0);
-    });
-    rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff", prefs);
+    };
+    rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff", prefs, Some(crate::diff_view::Header { ui: &mut header, title }));
 }
 
 /// "Summary\n\nBody" → ("Summary", "Body").

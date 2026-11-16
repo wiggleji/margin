@@ -4,6 +4,9 @@
 //! Two layouts, switched from the bar above the diff: inline (unified) and
 //! side by side (old left, new right; removed/added runs paired up).
 //! Long lines wrap onto extra rows (no sideways scrolling).
+//! Layout of the scrolled page: an optional header (commit details), then
+//! the toolbar, then the rows. The toolbar sticks to the top once the header
+//! has scrolled away (showing the commit title), so nothing ever resizes.
 //! The code text can be selected by dragging (not line numbers or signs; in
 //! side by side, one side at a time) and copied with ⌘C or the context menu.
 //! Within paired changed lines the changed words are highlighted; whitespace
@@ -110,6 +113,88 @@ pub struct DiffView {
     /// Text selection in the code, and whether a drag is extending it.
     sel: Option<TextSel>,
     dragging: bool,
+    /// Height of the header above the toolbar (measured last frame).
+    header_h: f32,
+    /// ↑/↓ clicked in the toolbar, applied next frame.
+    pending_nav: i32,
+    /// Scroll smoothly to this offset (next / previous change).
+    glide_to: Option<f32>,
+    /// Row of the change last jumped to, and the viewport height.
+    nav_row: Option<usize>,
+    view_h: f32,
+}
+
+/// Content scrolled above the diff (commit details), and the short title
+/// shown in the toolbar once it has scrolled away.
+pub struct Header<'a> {
+    pub ui: &'a mut dyn FnMut(&mut Ui),
+    pub title: String,
+}
+
+/// What the toolbar was used for this frame.
+#[derive(Default)]
+struct BarOut {
+    all: Option<bool>,
+    nav: i32,
+    ws: Option<bool>,
+    split: Option<bool>,
+}
+
+/// The toolbar above the rows: counts, collapse/expand all, ↑↓, whitespace,
+/// layout; `title` (faded in by `title_a`) once the header is out of view.
+#[allow(clippy::too_many_arguments)]
+fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: bool, prefs: &DiffPrefs, title: Option<&str>, title_a: f32, loading: bool) -> BarOut {
+    let mut out = BarOut::default();
+    // Stuck under a scrolled-away header: the commit title takes the place of
+    // the counts (they're in the header); it fades in.
+    let stuck = title.is_some() && title_a > 0.01;
+    ui.horizontal_centered(|ui| {
+        if !stuck {
+            ui.label(egui::RichText::new(format!("{n} file{}", if n == 1 { "" } else { "s" })).small().color(theme::TEXT_DIM));
+            ui.label(egui::RichText::new(format!("+{added}")).small().color(theme::ADDED));
+            ui.label(egui::RichText::new(format!("−{removed}")).small().color(theme::REMOVED));
+        }
+        if n > 1 && !stuck && ui.small_button(if collapsed_all { "Expand all" } else { "Collapse all" }).clicked() {
+            out.all = Some(!collapsed_all);
+        }
+        if loading {
+            ui.add(egui::Spinner::new().size(12.0));
+        }
+        // controls on the right; the title fills the space between (no shifting)
+        let right = ui.available_width();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if layout_button(ui, true, prefs.split).on_hover_text("Side by side").clicked() {
+                out.split = Some(true);
+            }
+            if layout_button(ui, false, !prefs.split).on_hover_text("Inline").clicked() {
+                out.split = Some(false);
+            }
+            ui.add_space(6.0);
+            let t = egui::RichText::new("Ignore whitespace").small();
+            if ui.selectable_label(prefs.ignore_ws, t).on_hover_text("Hide changes that only touch spaces, tabs or indentation (git diff -w)").clicked() {
+                out.ws = Some(!prefs.ignore_ws);
+            }
+            ui.add_space(4.0);
+            let alt = if cfg!(target_os = "macos") { "⌥" } else { "Alt+" };
+            if ui.small_button("↓").on_hover_text(format!("Next change ({alt}↓)")).clicked() {
+                out.nav = 1;
+            }
+            if ui.small_button("↑").on_hover_text(format!("Previous change ({alt}↑)")).clicked() {
+                out.nav = -1;
+            }
+            if let (Some(t), true) = (title, stuck) {
+                let w = (ui.available_width() - 8.0).max(0.0);
+                if w > 40.0 && right > 0.0 {
+                    ui.add_space(8.0);
+                    // left-aligned in the space left of the controls
+                    ui.allocate_ui_with_layout(egui::vec2(w, ui.available_height()), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(t).strong().color(theme::TEXT.gamma_multiply(title_a))).truncate());
+                    });
+                }
+            }
+        });
+    });
+    out
 }
 
 /// Which text column a selection is in.
@@ -195,6 +280,7 @@ impl DiffView {
         self.words = word_highlights(&self.files);
         self.sel = None;
         self.dragging = false;
+        self.nav_row = None;
         self.offset = 0.0;
         self.jump = Some(0.0);
         self.rebuild();
@@ -246,11 +332,6 @@ impl DiffView {
             prev = Some(t.line);
         }
         out
-    }
-
-    /// How far the diff is scrolled down (points; from the last frame).
-    pub fn scrolled(&self) -> f32 {
-        self.offset
     }
 
     pub fn section(&self, fi: usize) -> Option<Section> {
@@ -340,10 +421,20 @@ impl DiffView {
 
     /// `prefs` are changed from the bar above the diff (layout, whitespace);
     /// the caller reloads the diff when `ignore_ws` changes.
-    pub fn show(&mut self, ui: &mut Ui, mode: DiffMode, id: &str, prefs: &mut DiffPrefs) -> Vec<DiffEvent> {
+    pub fn show(&mut self, ui: &mut Ui, mode: DiffMode, id: &str, prefs: &mut DiffPrefs, header: Option<Header<'_>>) -> Vec<DiffEvent> {
         let mut events = vec![];
+        let mut header = header;
+        // Nothing to scroll: header (if any), then the message.
+        if self.files.is_empty() || self.error.is_some() {
+            if let Some(h) = header.as_mut() {
+                (h.ui)(ui);
+            }
+        }
         if self.loading && self.files.is_empty() {
-            ui.weak("Loading diff…");
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.weak("Loading diff…");
+            });
             return events;
         }
         if let Some(e) = &self.error {
@@ -365,53 +456,11 @@ impl DiffView {
             self.defaults = defaults;
             self.rebuild();
         }
-        let split = &mut prefs.split;
         if self.truncated {
             ui.colored_label(theme::ACCENT, "Diff truncated (too large). Use the terminal for the full patch.");
         }
 
-        // ---- bar: file count, collapse/expand all, next/previous change, whitespace, layout
-        let mut all = None;
-        let mut nav: i32 = 0;
-        let mut ws = None;
-        let ignore_ws = prefs.ignore_ws;
-        ui.horizontal(|ui| {
-            let (a, r) = self.files.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
-            let n = self.files.len();
-            ui.label(egui::RichText::new(format!("{n} file{}", if n == 1 { "" } else { "s" })).small().color(theme::TEXT_DIM));
-            ui.label(egui::RichText::new(format!("+{a}")).small().color(theme::ADDED));
-            ui.label(egui::RichText::new(format!("−{r}")).small().color(theme::REMOVED));
-            if n > 1 {
-                let collapsed_all = (0..n).all(|fi| !self.is_open(fi));
-                if ui.small_button(if collapsed_all { "Expand all" } else { "Collapse all" }).clicked() {
-                    all = Some(!collapsed_all);
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if layout_button(ui, true, *split).on_hover_text("Side by side").clicked() {
-                    *split = true;
-                }
-                if layout_button(ui, false, !*split).on_hover_text("Inline").clicked() {
-                    *split = false;
-                }
-                ui.add_space(6.0);
-                let t = egui::RichText::new("Ignore whitespace").small();
-                if ui.selectable_label(ignore_ws, t).on_hover_text("Hide changes that only touch spaces, tabs or indentation (git diff -w)").clicked() {
-                    ws = Some(!ignore_ws);
-                }
-                ui.add_space(4.0);
-                let alt = if cfg!(target_os = "macos") { "⌥" } else { "Alt+" };
-                if ui.small_button("↓").on_hover_text(format!("Next change ({alt}↓)")).clicked() {
-                    nav = 1;
-                }
-                if ui.small_button("↑").on_hover_text(format!("Previous change ({alt}↑)")).clicked() {
-                    nav = -1;
-                }
-            });
-        });
-        if let Some(w) = ws {
-            prefs.ignore_ws = w;
-        }
+        let mut nav: i32 = std::mem::take(&mut self.pending_nav);
         let split = &mut prefs.split;
         // ⌥↓ / ⌥↑ when no text field has focus
         if ui.memory(|m| m.focused().is_none()) {
@@ -424,12 +473,6 @@ impl DiffView {
                 }
             });
         }
-        if let Some(collapse) = all {
-            for fi in 0..self.files.len() {
-                self.set_open(fi, !collapse);
-            }
-            self.rebuild();
-        }
         if self.split != *split {
             self.split = *split;
             self.rebuild();
@@ -439,6 +482,10 @@ impl DiffView {
         let font = FontId::monospace(ui.style().text_styles[&egui::TextStyle::Monospace].size);
         let char_w = ui.fonts_mut(|f| f.glyph_width(&font, 'm'));
         let row_h = font.size + 5.0;
+        // Page layout (content coordinates): header, toolbar slot, rows.
+        let bar_h = ui.spacing().interact_size.y + 8.0;
+        let head_h = if header.is_some() { self.header_h } else { 0.0 };
+        let rows_y = head_h + bar_h;
         let gutter = char_w * 12.0 + 8.0;
         let mut toggle = None;
 
@@ -454,12 +501,25 @@ impl DiffView {
         }
 
         // Next / previous change = the next hunk header below / above the top of the view.
+        // (a hunk lands just under the sticky toolbar)
         if nav != 0 {
-            let ys = self.rows.iter().enumerate().filter(|(_, r)| matches!(r, Row::Hunk(..))).map(|(i, _)| i as f32 * row_h);
-            let target = if nav > 0 { ys.clone().find(|&y| y > self.offset + 1.0) } else { ys.filter(|&y| y < self.offset - 1.0).last() };
-            if let Some(y) = target {
-                self.jump = Some(y);
-                self.flash = Some(((y / row_h).round() as usize, ui.input(|i| i.time)));
+            let ys = self.rows.iter().enumerate().filter(|(_, r)| matches!(r, Row::Hunk(..))).map(|(i, _)| (i, rows_y + i as f32 * row_h - bar_h));
+            // The change we're on: the last one jumped to, while it's still in
+            // view (the page may not scroll far enough to bring it to the top).
+            let on = self.nav_row.filter(|&r| {
+                let y = rows_y + r as f32 * row_h;
+                y >= self.offset - 1.0 && y <= self.offset + self.view_h
+            });
+            let target = match (nav > 0, on) {
+                (true, Some(r)) => ys.clone().find(|&(i, _)| i > r),
+                (false, Some(r)) => ys.filter(|&(i, _)| i < r).last(),
+                (true, None) => ys.clone().find(|&(_, y)| y > self.offset + 1.0),
+                (false, None) => ys.filter(|&(_, y)| y < self.offset - 1.0).last(),
+            };
+            if let Some((i, y)) = target {
+                self.nav_row = Some(i);
+                self.glide_to = Some(y.max(0.0));
+                self.flash = Some((i, ui.input(|i| i.time)));
             }
         }
         // (mouse drags select text; egui only drag-scrolls on touch screens)
@@ -483,8 +543,40 @@ impl DiffView {
         let mut auto_scroll = 0.0;
         let mut copy_now = false;
         let base_id = ui.scope_id().with(id).with("text");
-        let out = area.show_rows(ui, row_h, self.rows.len(), |ui, range| {
+        // toolbar inputs (filled in while drawing the sticky toolbar)
+        let n_files = self.files.len();
+        let (added, removed) = self.files.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
+        let collapsed_all = (0..n_files).all(|fi| !open[fi]);
+        let stuck_id = ui.scope_id().with(id).with("stuck");
+        let mut bar_out = BarOut::default();
+        let mut measured_head = None;
+        let loading = self.loading;
+        let n_rows = self.rows.len();
+        let prefs_now = *prefs;
+        let mut glide = self.glide_to.take();
+        let out = area.show_viewport(ui, |page, vp| {
+                let top = page.max_rect().top();
+                let x0 = page.max_rect().left();
+                let page_w = page.available_width();
+                page.set_min_height(rows_y + n_rows as f32 * row_h + 4.0);
+                if let Some(y) = glide.take() {
+                    page.scroll_with_delta_animation(vec2(0.0, vp.min.y - y), egui::style::ScrollAnimation::duration(0.18));
+                }
+                // ---- header (scrolls away with the page)
+                if let Some(h) = header.as_mut() {
+                    if vp.min.y < head_h + 1.0 || head_h == 0.0 {
+                        let r = page.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(x0, top), vec2(page_w, f32::INFINITY))), |ui| (h.ui)(ui)).response.rect;
+                        measured_head = Some(r.height());
+                    }
+                }
+                // ---- rows in view
+                let first_row = (((vp.min.y - rows_y) / row_h).floor().max(0.0) as usize).min(n_rows);
+                let last_row = ((((vp.max.y - rows_y) / row_h).ceil().max(0.0) as usize) + 1).min(n_rows);
+                let range = first_row..last_row;
                 let visible = range.clone();
+                let rows_rect = Rect::from_min_size(pos2(x0, top + rows_y + first_row as f32 * row_h), vec2(page_w, (last_row - first_row) as f32 * row_h + 1.0));
+                let mut rows_ui = page.new_child(egui::UiBuilder::new().max_rect(rows_rect).layout(egui::Layout::top_down(egui::Align::Min)));
+                let ui = &mut rows_ui;
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let width = ui.available_width();
                 for i in range {
@@ -723,7 +815,7 @@ impl DiffView {
                 }
 
                 // ---- text selection: drag over code text (not numbers / signs / headers)
-                let Some(geo) = first else { return };
+                if let Some(geo) = first {
                 let sides: &[Side] = if self.split { &[Side::Old, Side::New] } else { &[Side::Inline] };
                 let pointer = ui.input(|i| i.pointer.interact_pos());
                 let pos_of = |p: egui::Pos2, side: Side| -> (usize, usize) {
@@ -797,9 +889,48 @@ impl DiffView {
                         }
                     }
                 }
+                }
+                // ---- toolbar: in its slot under the header, then stuck to the top
+                let stuck = header.is_some() && vp.min.y > head_h + 0.5;
+                let title_a = page.ctx().animate_bool_with_time(stuck_id, stuck, 0.15);
+                let bar_y = head_h.max(vp.min.y);
+                let bar_rect = Rect::from_min_size(pos2(x0, top + bar_y), vec2(page_w, bar_h));
+                page.painter().rect_filled(bar_rect, 0.0, page.visuals().panel_fill);
+                if title_a > 0.0 {
+                    // soft edge under the stuck toolbar
+                    page.painter().line_segment([bar_rect.left_bottom(), bar_rect.right_bottom()], Stroke::new(1.0, theme::BG_DARK.gamma_multiply(title_a)));
+                }
+                let mut bar_ui = page.new_child(egui::UiBuilder::new().max_rect(bar_rect.shrink2(vec2(0.0, 2.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                let title = header.as_ref().map(|h| h.title.as_str());
+                bar_out = diff_bar(&mut bar_ui, n_files, added, removed, collapsed_all, &prefs_now, title, title_a, loading);
             });
+        if let Some(h) = measured_head {
+            if (h - self.header_h).abs() > 0.5 {
+                self.header_h = h;
+                ui.ctx().request_repaint();
+            }
+        }
+        // apply toolbar actions
+        if let Some(collapse) = bar_out.all {
+            for fi in 0..self.files.len() {
+                self.set_open(fi, !collapse);
+            }
+            self.rebuild();
+        }
+        if let Some(w) = bar_out.ws {
+            prefs.ignore_ws = w;
+        }
+        if let Some(sp) = bar_out.split {
+            prefs.split = sp;
+        }
+        if bar_out.nav != 0 {
+            // handled next frame (same code path as ⌥↑/⌥↓)
+            self.pending_nav = bar_out.nav;
+            ui.ctx().request_repaint();
+        }
 
         self.offset = out.state.clamped_offset().y;
+        self.view_h = out.inner_rect.height();
         if let Some(s) = new_sel {
             self.sel = s;
         }

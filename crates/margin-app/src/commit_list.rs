@@ -35,13 +35,14 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             None if f.show_all || !f.branches.is_empty() || !f.remotes.is_empty() => {
                 Some(("All branches shown".to_string(), "Major branches only", HistoryFilter::reset(false, f.hide_tags)))
             }
-            None => None,
+            // (always a line here, so the list never jumps when it would come or go)
+            None => Some((format!("All {total} branches shown"), "", HistoryFilter::reset(false, f.hide_tags))),
         };
         if let Some((text, button, to)) = line {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(text).small().color(theme::TEXT_DIM))
                     .on_hover_text("Use the eye next to each branch in the sidebar to show or hide it.");
-                if ui.small_button(button).clicked() {
+                if !button.is_empty() && ui.small_button(button).clicked() {
                     actions.push(Action::SetGraphFilter(to));
                 }
             });
