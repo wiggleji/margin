@@ -656,8 +656,9 @@ impl DiffView {
                                 LineKind::Context => (None, " ", theme::TEXT),
                                 LineKind::NoNewline => (None, "\\", theme::TEXT_DIM),
                             };
+                            // colour only the code (from the +/− sign), not the line numbers
                             if let Some(bg) = bg {
-                                p.rect_filled(rect, 0.0, bg);
+                                p.rect_filled(Rect::from_min_max(pos2(rect.left() + gutter - 4.0, rect.top()), rect.max), 0.0, bg);
                             }
                             if seg == 0 {
                                 let num = |n: Option<u32>| n.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
@@ -691,7 +692,7 @@ impl DiffView {
                                 if seg >= st.count() {
                                     // the other side wrapped further: keep the line's background
                                     if let Some(bg) = match l.kind { LineKind::Added => Some(theme::ADDED_BG), LineKind::Removed => Some(theme::REMOVED_BG), _ => None } {
-                                        sp.rect_filled(r, 0.0, bg);
+                                        sp.rect_filled(Rect::from_min_max(pos2(r.left() + char_w * 6.0 + 4.0, r.top()), r.max), 0.0, bg);
                                     }
                                     continue;
                                 }
@@ -702,7 +703,7 @@ impl DiffView {
                                     LineKind::NoNewline => (None, "\\", theme::TEXT_DIM),
                                 };
                                 if let Some(bg) = bg {
-                                    sp.rect_filled(r, 0.0, bg);
+                                    sp.rect_filled(Rect::from_min_max(pos2(r.left() + char_w * 6.0 + 4.0, r.top()), r.max), 0.0, bg);
                                 }
                                 if seg == 0 {
                                     let n = if is_old { l.old_no } else { l.new_no };
