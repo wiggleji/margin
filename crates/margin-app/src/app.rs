@@ -182,6 +182,8 @@ pub struct RepoView {
     pub focus_branch: Option<String>,
     pub focus_task: Option<String>,
     pub scroll_to_row: Option<usize>,
+    /// History viewport (scroll offset, height) from the last frame.
+    pub list_view: (f32, f32),
     pub loading: bool,
     pub limit: usize,
     /// Selection history for the toolbar's back/forward (like a browser).
@@ -264,6 +266,7 @@ impl RepoView {
             focus_branch: None,
             focus_task: None,
             scroll_to_row: None,
+            list_view: (0.0, 0.0),
             loading: true,
             limit: PAGE,
             history: vec![Sel::Working],
@@ -1936,7 +1939,9 @@ impl MarginApp {
             {
                 actions.push(Action::OpenPalette);
             }
-            let search = center.add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Search commits…").desired_width(search_w));
+            let search = center
+                .add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Search commits…  author: title: commit: task:").desired_width(search_w))
+                .on_hover_text(crate::search::HELP);
             if std::mem::take(&mut self.focus_search) {
                 search.request_focus();
             }

@@ -14,6 +14,7 @@ mod note_format;
 mod notes_panel;
 mod palette;
 mod pro;
+mod search;
 mod pr_view;
 mod sidebar;
 mod tab_strip;

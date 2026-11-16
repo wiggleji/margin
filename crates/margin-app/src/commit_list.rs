@@ -49,18 +49,16 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
     }
 
     // Filter cache
-    let filter = rv.filter.trim().to_lowercase();
+    // Search: words and filters like author:/commit:/title: (see `search`).
+    let filter = rv.filter.trim().to_string();
+    let query = crate::search::Query::parse(&filter);
+    let filter = if query.is_empty() { String::new() } else { filter };
     if !filter.is_empty() && rv.filtered.as_ref().is_none_or(|(f, _)| *f != filter) {
         let idx: Vec<usize> = snap
             .commits
             .iter()
             .enumerate()
-            .filter(|(_, c)| {
-                c.subject.to_lowercase().contains(&filter)
-                    || c.author.to_lowercase().contains(&filter)
-                    || c.id.starts_with(&filter)
-                    || c.refs.iter().any(|r| r.to_lowercase().contains(&filter))
-            })
+            .filter(|(_, c)| query.matches(c))
             .map(|(i, _)| i)
             .collect();
         // While searching, a task label sits on the newest *matching* commit.
@@ -111,12 +109,31 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
 
     let mut scroll = egui::ScrollArea::vertical().id_salt("commits").auto_shrink([false, false]);
     if let Some(r) = rv.scroll_to_row.take() {
-        // Keep the target row in view.
-        let y = r as f32 * (ROW_H + 0.0);
-        scroll = scroll.vertical_scroll_offset((y - 200.0).max(0.0));
+        // Bring the row into view without moving the list when it's already
+        // visible: arrow keys only scroll at the top / bottom edge; a jump to a
+        // row far away puts it a third of the way down.
+        let (off, h) = rv.list_view;
+        // Keep the edge row fully visible (the reported viewport runs a little
+        // under the panel below it).
+        let h = h - ROW_H * 0.6;
+        let y = r as f32 * ROW_H;
+        let target = if h <= 0.0 {
+            Some((y - 200.0).max(0.0))
+        } else if y >= off && y + ROW_H <= off + h {
+            None
+        } else if y < off && y >= off - ROW_H {
+            Some(y)
+        } else if y + ROW_H > off + h && y + ROW_H <= off + h + ROW_H {
+            Some(y + ROW_H - h)
+        } else {
+            Some((y - h / 3.0).max(0.0))
+        };
+        if let Some(t) = target {
+            scroll = scroll.vertical_scroll_offset(t);
+        }
     }
 
-    scroll.show_rows(ui, ROW_H, total, |ui, range| {
+    let out = scroll.show_rows(ui, ROW_H, total, |ui, range| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let width = ui.available_width();
         for row in range {
@@ -283,6 +300,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 .context_menu(|ui| commit_menu(ui, c, actions));
         }
     });
+    rv.list_view = (out.state.clamped_offset().y, out.inner_rect.height());
 }
 
 /// Outlined label (optional icon + text) whose right edge is `right`; returns its left edge.

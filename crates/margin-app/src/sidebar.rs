@@ -562,7 +562,9 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
     // Right side: [badge] [eye]; the name truncates before them.
     let right_w = h + 4.0 + if bw > 0.0 { bw + 6.0 } else { 0.0 };
     let left_w = (ui.available_width() - right_w).max(40.0);
-    let extras_w = extras_width(ui, rv, r, &task, note, isz) + if elsewhere.is_some() { isz + ui.spacing().item_spacing.x } else { 0.0 };
+    // The linked task key, unless the branch name already says it (SER-6114 / SER-6114).
+    let task_label = task.clone().filter(|t| !r.name.to_lowercase().contains(&t.to_lowercase()));
+    let extras_w = extras_width(ui, rv, r, &task_label, note, isz) + if elsewhere.is_some() { isz + ui.spacing().item_spacing.x } else { 0.0 };
     let name_w = (left_w - extras_w).max(40.0);
     ui.allocate_ui_with_layout(egui::vec2(left_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         let mut rt = RichText::new(label);
@@ -580,7 +582,7 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
             ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, theme::TEXT_DIM))
                 .on_hover_text(format!("Checked out in worktree {}\nDouble-click to open it", p.display()));
         }
-        branch_extras(ui, rv, r, &task, note, isz);
+        branch_extras(ui, rv, r, &task_label, note, isz);
     });
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.add_space(2.0);
@@ -663,6 +665,10 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
 fn worktree_row(ui: &mut Ui, rv: &RepoView, w: &crate::jobs::WorktreeInfo, isz: f32, actions: &mut Vec<Action>) {
     let wt = &w.wt;
     let folder = wt.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| wt.path.display().to_string());
+    // Only what the folder name adds to the branch (and repo) name:
+    // "api-server-SER-6051" on hotfix/SER-6051-… → "" ; "sec6050-adminxls" stays.
+    let main_folder = rv.snap.as_ref().and_then(|s| s.worktrees.iter().find(|w| w.wt.main)).and_then(|w| w.wt.path.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let folder_extra = folder_diff(&folder, wt.branch.as_deref().unwrap_or(""), if wt.main { None } else { main_folder.as_deref() });
     let label = match (&wt.branch, &wt.head) {
         (Some(b), _) => b.clone(),
         (None, Some(h)) => format!("detached at {}", &h[..7.min(h.len())]),
@@ -672,7 +678,7 @@ fn worktree_row(ui: &mut Ui, rv: &RepoView, w: &crate::jobs::WorktreeInfo, isz: 
         .horizontal(|ui| {
             gutter(ui, 0, w.current.then_some(theme::ACCENT));
             ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, if w.current { theme::ACCENT } else { theme::TEXT_DIM }));
-            let mut detail = folder.clone();
+            let mut detail = folder_extra.clone();
             if wt.prunable {
                 detail = format!("{detail} · missing");
             } else if wt.locked {
@@ -691,7 +697,9 @@ fn worktree_row(ui: &mut Ui, rv: &RepoView, w: &crate::jobs::WorktreeInfo, isz: 
                     ui.selectable_label(focused, rt)
                 })
                 .inner;
-            ui.label(RichText::new(detail).small().color(theme::TEXT_DIM));
+            if !detail.is_empty() {
+                ui.label(RichText::new(detail).small().color(theme::TEXT_DIM)).on_hover_text(format!("Folder: {folder}"));
+            }
             resp
         })
         .inner;
@@ -746,4 +754,34 @@ fn worktree_row(ui: &mut Ui, rv: &RepoView, w: &crate::jobs::WorktreeInfo, isz: 
             item(ui, "Force remove…", Action::Confirm { msg: format!("Force-remove {p}? Uncommitted changes in it are lost."), action: Box::new(remove(true)) });
         }
     });
+}
+
+/// The words of a worktree folder name that aren't already in its branch name
+/// or the main checkout's folder name, joined with "-" (may be empty).
+fn folder_diff(folder: &str, branch: &str, main_folder: Option<&str>) -> String {
+    let words = |s: &str| s.to_lowercase().split(['/', '-', '_', '.', ' ']).filter(|w| !w.is_empty()).map(String::from).collect::<Vec<_>>();
+    let mut known = words(branch);
+    known.extend(main_folder.map(words).unwrap_or_default());
+    // Keep the original spelling of the words that remain.
+    folder
+        .split(['-', '_', '.', ' '])
+        .filter(|w| !w.is_empty() && !known.contains(&w.to_lowercase()))
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::folder_diff;
+
+    #[test]
+    fn worktree_folder_shows_only_what_differs() {
+        assert_eq!(folder_diff("api-server-SER-6051", "hotfix/SER-6051-blank-invite", Some("api-server")), "");
+        assert_eq!(folder_diff("sec6050-adminxls", "hotfix/SER-6227-admin-excel", Some("api-server")), "sec6050-adminxls");
+        assert_eq!(folder_diff("api-server-open-api-metering", "feature/open-api-metering", Some("api-server")), "");
+        assert_eq!(folder_diff("domain-knowledge-wiki", "worktree-domain-knowledge-wiki", Some("api-server")), "");
+        assert_eq!(folder_diff("qa-phase3", "hotfix/20261030_parallel_qa", Some("api-server")), "phase3");
+        // the main checkout keeps its own folder name
+        assert_eq!(folder_diff("api-server", "develop", None), "api-server");
+    }
 }
