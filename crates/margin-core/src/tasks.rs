@@ -79,11 +79,25 @@ pub fn extract_keys(s: &str) -> Vec<String> {
         }
         i += 1;
     }
-    // Lowercase branch names like `feature/proj-123-x` are common too.
+    // Lowercase branch names like `feature/proj-123-x` are common too. They're
+    // ambiguous (`topic-1`, `release-2`, `feature-123`), so a lowercase key
+    // needs 2+ digits and a prefix that isn't an everyday branch word.
     if keys.is_empty() && s.chars().any(|c| c.is_ascii_lowercase()) {
         let upper = s.to_ascii_uppercase();
         if upper != s {
-            return extract_keys(&upper);
+            const WORDS: &[&str] = &[
+                "RELEASE", "RELEASES", "FEATURE", "FEATURES", "FEAT", "HOTFIX", "BUGFIX", "FIX", "TOPIC", "BRANCH", "TEST", "TESTS", "TMP",
+                "TEMP", "WIP", "BACKUP", "OLD", "NEW", "DRAFT", "EXPERIMENT", "EXP", "SPIKE", "POC", "DEMO", "VERSION", "VER", "V", "PHASE",
+                "STEP", "PART", "STAGE", "SPRINT", "WEEK", "DAY", "TRY", "ATTEMPT", "COPY", "PATCH", "CHORE", "DOCS", "REFACTOR", "MAIN",
+                "MASTER", "DEVELOP", "DEV", "QA", "STAGING", "PROD", "BUILD", "CI", "PR", "MR", "ISSUE", "TASK", "TICKET", "STORY", "BUG",
+            ];
+            return extract_keys(&upper)
+                .into_iter()
+                .filter(|k| {
+                    let (prefix, num) = k.split_once('-').unwrap_or((k, ""));
+                    num.len() >= 2 && !WORDS.contains(&prefix)
+                })
+                .collect();
         }
     }
     keys
@@ -272,6 +286,15 @@ mod tests {
         assert_eq!(extract_keys("feature/PROJ-123-login"), vec!["PROJ-123"]);
         assert_eq!(extract_keys("fix(ABC-1): also XY2-77, not a-1 or AB-x"), vec!["ABC-1", "XY2-77"]);
         assert_eq!(extract_keys("bugfix/ops-42_crash"), vec!["OPS-42"]);
+        assert_eq!(extract_keys("feature/proj-123-login"), vec!["PROJ-123"]);
+        // lowercase look-alikes are not tasks
+        assert!(extract_keys("topic-1").is_empty());
+        assert!(extract_keys("release-2").is_empty());
+        assert!(extract_keys("feature-123").is_empty());
+        assert!(extract_keys("hotfix/ser-6").is_empty()); // one digit
+        assert!(extract_keys("prep release-26 notes").is_empty());
+        // uppercase keys are unchanged
+        assert_eq!(extract_keys("TOPIC-1 fix"), vec!["TOPIC-1"]);
         assert!(extract_keys("main").is_empty());
         assert!(extract_keys("UTF-8 and SHA-256, ISO-8601, CVE-2024-1234").is_empty());
         assert_eq!(extract_keys("[SER-6287] 하나 로그인 CF-13101 안내"), vec!["SER-6287", "CF-13101"]);

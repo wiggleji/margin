@@ -217,9 +217,9 @@ impl DiffView {
     fn row_text(&self, row: usize, side: Side, geo: &Geo) -> Option<RowText<'_>> {
         let top = geo.top0 + row as f32 * geo.row_h;
         let (fi, hi, li, seg, left, right) = match (*self.rows.get(row)?, side) {
-            (Row::Line(fi, hi, li, seg), Side::Inline) => (fi, hi, li, seg, geo.x0 + geo.gutter + geo.char_w * 2.0, geo.x0 + geo.width),
-            (Row::Pair(fi, hi, Some(li), _, seg), Side::Old) => (fi, hi, li, seg, geo.x0 + geo.char_w * 8.0 + 8.0, geo.x0 + geo.width / 2.0),
-            (Row::Pair(fi, hi, _, Some(li), seg), Side::New) => (fi, hi, li, seg, geo.x0 + geo.width / 2.0 + geo.char_w * 8.0 + 8.0, geo.x0 + geo.width),
+            (Row::Line(fi, hi, li, seg), Side::Inline) => (fi, hi, li, seg, geo.x0 + geo.gutter, geo.x0 + geo.width),
+            (Row::Pair(fi, hi, Some(li), _, seg), Side::Old) => (fi, hi, li, seg, geo.x0 + geo.char_w * 6.0 + 8.0, geo.x0 + geo.width / 2.0),
+            (Row::Pair(fi, hi, _, Some(li), seg), Side::New) => (fi, hi, li, seg, geo.x0 + geo.width / 2.0 + geo.char_w * 6.0 + 8.0, geo.x0 + geo.width),
             _ => return None,
         };
         let text = self.files[fi].hunks[hi].lines[li].text.as_str();
@@ -439,7 +439,7 @@ impl DiffView {
 
         // Wrap width in columns (minus room for the scrollbar); rows depend on it.
         let avail = ui.available_width() - 18.0;
-        let text_w = if self.split { avail / 2.0 - (char_w * 8.0 + 8.0) } else { avail - gutter - char_w * 2.0 };
+        let text_w = if self.split { avail / 2.0 - (char_w * 6.0 + 8.0) } else { avail - gutter };
         // (one column spare: glyph widths aren't exactly `char_w` in every font)
         let cols = ((text_w / char_w).floor() as usize).saturating_sub(1).max(10);
         if cols != self.cols {
@@ -650,13 +650,13 @@ impl DiffView {
                         }
                         Row::Line(fi, hi, li, seg) => {
                             let l = &self.files[fi].hunks[hi].lines[li];
-                            let (bg, sign, fg) = match l.kind {
-                                LineKind::Added => (Some(theme::ADDED_BG), "+", theme::TEXT),
-                                LineKind::Removed => (Some(theme::REMOVED_BG), "-", theme::TEXT),
-                                LineKind::Context => (None, " ", theme::TEXT),
-                                LineKind::NoNewline => (None, "\\", theme::TEXT_DIM),
+                            let (bg, fg) = match l.kind {
+                                LineKind::Added => (Some(theme::ADDED_BG), theme::TEXT),
+                                LineKind::Removed => (Some(theme::REMOVED_BG), theme::TEXT),
+                                LineKind::Context => (None, theme::TEXT),
+                                LineKind::NoNewline => (None, theme::TEXT_DIM),
                             };
-                            // colour only the code (from the +/− sign), not the line numbers
+                            // colour only the code, not the line numbers
                             if let Some(bg) = bg {
                                 p.rect_filled(Rect::from_min_max(pos2(rect.left() + gutter - 4.0, rect.top()), rect.max), 0.0, bg);
                             }
@@ -671,7 +671,7 @@ impl DiffView {
                                 );
                             }
                             let seg_text = Seg { text: &l.text, seg, cols: self.cols };
-                            seg_text.paint(&p, rect, rect.left() + gutter, sign, words.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
+                            seg_text.paint(&p, rect, rect.left() + gutter, words.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
                         }
                         Row::Pair(fi, hi, old, new, seg) => {
                             let lines = &self.files[fi].hunks[hi].lines;
@@ -696,11 +696,11 @@ impl DiffView {
                                     }
                                     continue;
                                 }
-                                let (bg, sign, fg) = match l.kind {
-                                    LineKind::Added => (Some(theme::ADDED_BG), "+", theme::TEXT),
-                                    LineKind::Removed => (Some(theme::REMOVED_BG), "-", theme::TEXT),
-                                    LineKind::Context => (None, " ", theme::TEXT),
-                                    LineKind::NoNewline => (None, "\\", theme::TEXT_DIM),
+                                let (bg, fg) = match l.kind {
+                                    LineKind::Added => (Some(theme::ADDED_BG), theme::TEXT),
+                                    LineKind::Removed => (Some(theme::REMOVED_BG), theme::TEXT),
+                                    LineKind::Context => (None, theme::TEXT),
+                                    LineKind::NoNewline => (None, theme::TEXT_DIM),
                                 };
                                 if let Some(bg) = bg {
                                     sp.rect_filled(Rect::from_min_max(pos2(r.left() + char_w * 6.0 + 4.0, r.top()), r.max), 0.0, bg);
@@ -710,7 +710,7 @@ impl DiffView {
                                     let num = n.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
                                     sp.text(pos2(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, num, font.clone(), theme::TEXT_DIM);
                                 }
-                                st.paint(&sp, r, r.left() + char_w * 6.0 + 8.0, sign, words.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
+                                st.paint(&sp, r, r.left() + char_w * 6.0 + 8.0, words.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
                             }
                             p.line_segment([pos2(rect.left() + half, rect.top()), pos2(rect.left() + half, rect.bottom())], Stroke::new(1.0, theme::BG_DARK));
                         }
@@ -912,8 +912,9 @@ impl Seg<'_> {
 
     /// Sign (first segment only) at `x`, text after it, changed words highlighted.
     #[allow(clippy::too_many_arguments)]
-    fn paint(&self, p: &egui::Painter, rect: Rect, x: f32, sign: &str, words: Option<&Vec<(usize, usize)>>, kind: LineKind, font: &FontId, fg: Color32, char_w: f32) {
-        let text_x = x + char_w * 2.0;
+    fn paint(&self, p: &egui::Painter, rect: Rect, x: f32, words: Option<&Vec<(usize, usize)>>, kind: LineKind, font: &FontId, fg: Color32, char_w: f32) {
+        // (no +/− signs: the red / green background says it)
+        let text_x = x;
         let (from, to) = wrap_ranges(self.text, self.cols).get(self.seg).copied().unwrap_or((0, 0));
         if let Some(spans) = words {
             let color = if kind == LineKind::Added { theme::ADDED_WORD_BG } else { theme::REMOVED_WORD_BG };
@@ -929,9 +930,6 @@ impl Seg<'_> {
                     p.rect_filled(r, 2.0, color);
                 }
             }
-        }
-        if self.seg == 0 {
-            p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, sign, font.clone(), fg);
         }
         let chunk: String = self.text.replace('\t', "    ").chars().skip(from).take(to - from).collect();
         p.text(pos2(text_x, rect.center().y), Align2::LEFT_CENTER, chunk, font.clone(), fg);

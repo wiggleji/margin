@@ -191,14 +191,16 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
         ui.separator();
         // ---- then the message: subject, and the body (selectable; scrolls when long)
         let (subject, body) = split_message(&d.message);
-        let big = ui.style().text_styles[&egui::TextStyle::Body].size + 2.0;
-        ui.add(egui::Label::new(RichText::new(subject).strong().size(big)).selectable(true).wrap());
+        let size = ui.style().text_styles[&egui::TextStyle::Body].size;
+        let big = size + 2.0;
+        // Roomier line spacing for reading (wrapped lines and the body).
+        ui.add(egui::Label::new(RichText::new(subject).strong().size(big).line_height(Some(big * 1.4))).selectable(true).wrap());
         let body = body.trim_end();
         if !body.is_empty() {
-            ui.add_space(2.0);
+            ui.add_space(6.0);
             let max = (ui.ctx().content_rect().height() * 0.3).max(80.0);
             egui::ScrollArea::vertical().id_salt("commit_body_scroll").max_height(max).auto_shrink([false, true]).show(ui, |ui| {
-                ui.add(egui::Label::new(RichText::new(body).color(theme::TEXT)).selectable(true).wrap());
+                ui.add(egui::Label::new(RichText::new(body).color(theme::TEXT).line_height(Some(size * 1.55))).selectable(true).wrap());
             });
         }
         ui.add_space(4.0);
