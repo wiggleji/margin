@@ -209,7 +209,7 @@ pub fn show(
             let _ = margin_core::config::save_state(prefs);
         }
         // Move the panel to the other column (under the history / under the details).
-        let (arrow, tip) = if prefs.notes_under_history { ("⇥", "Move notes under the commit details") } else { ("⇤", "Move notes under the history") };
+        let (arrow, tip) = if prefs.notes_under_history { ("⇥", "Move notes under the commit details") } else { ("⇤", "Move notes under the branches and history") };
         if ui.add(egui::Button::new(RichText::new(arrow).color(theme::TEXT_DIM)).frame(false)).on_hover_text(tip).clicked() {
             actions.push(Action::ToggleNotesDock);
         }

@@ -2109,14 +2109,8 @@ impl eframe::App for MarginApp {
             let tasks_enabled = tasks_configured && pro;
             let license = self.license.clone();
             let rv = self.rv.as_mut().unwrap();
-            egui::Panel::left("sidebar").resizable(true).default_size(220.0).show(ui, |ui| {
-                // Fill the panel: otherwise it shrinks to its content when no
-                // row has a right-aligned badge (e.g. a repo without upstreams).
-                ui.set_min_width(ui.available_width());
-                crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &mut actions);
-            });
-            // Notes sit at the bottom of the details column or of the history
-            // column (Notes → "Move notes…"); same panel either way.
+            // Notes sit at the bottom of the details column, or under the sidebar
+            // and history together (Notes → "Move notes…"); same panel either way.
             let under_history = self.state.notes_under_history;
             let task_url = |k: &str| tasks::task_url(&self.cfg, self.tasks.as_deref(), self.settings.ticket_url.as_deref(), k);
             let notes = |ui: &mut egui::Ui, rv: &mut RepoView, state: &mut State, actions: &mut Vec<Action>| {
@@ -2159,15 +2153,19 @@ impl eframe::App for MarginApp {
                     actions.push(Action::ReloadDiff);
                 }
             }
+            // Notes on the left: one wide panel under both the sidebar and the
+            // history (added before them, so it spans their full width).
+            if under_history {
+                notes(ui, rv, state, &mut actions);
+            }
+            egui::Panel::left("sidebar").resizable(true).default_size(220.0).show(ui, |ui| {
+                // Fill the panel: otherwise it shrinks to its content when no
+                // row has a right-aligned badge (e.g. a repo without upstreams).
+                ui.set_min_width(ui.available_width());
+                crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &mut actions);
+            });
             egui::CentralPanel::default().show(ui, |ui| {
-                if under_history {
-                    notes(ui, rv, state, &mut actions);
-                    egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
-                        crate::commit_list::show(ui, rv, &mut actions);
-                    });
-                } else {
-                    crate::commit_list::show(ui, rv, &mut actions);
-                }
+                crate::commit_list::show(ui, rv, &mut actions);
             });
         }
         self.auto_fetch_tick(&ctx);
