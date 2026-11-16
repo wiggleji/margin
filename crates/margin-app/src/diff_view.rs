@@ -4,6 +4,8 @@
 //! Two layouts, switched from the bar above the diff: inline (unified) and
 //! side by side (old left, new right; removed/added runs paired up).
 //! Long lines wrap onto extra rows (no sideways scrolling).
+//! The code text can be selected by dragging (not line numbers or signs; in
+//! side by side, one side at a time) and copied with ⌘C or the context menu.
 //! Within paired changed lines the changed words are highlighted; whitespace
 //! changes can be ignored (git -w); ⌥↑/⌥↓ jump between changes.
 
@@ -105,6 +107,55 @@ pub struct DiffView {
     jump: Option<f32>,
     /// Hunk row briefly highlighted after a jump (row, start time).
     flash: Option<(usize, f64)>,
+    /// Text selection in the code, and whether a drag is extending it.
+    sel: Option<TextSel>,
+    dragging: bool,
+}
+
+/// Which text column a selection is in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Side {
+    Inline,
+    Old,
+    New,
+}
+
+/// Selection from `a` to `b` (row, column within that row's wrapped segment).
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct TextSel {
+    side: Side,
+    a: (usize, usize),
+    b: (usize, usize),
+}
+
+impl TextSel {
+    fn ordered(&self) -> ((usize, usize), (usize, usize)) {
+        if self.a <= self.b { (self.a, self.b) } else { (self.b, self.a) }
+    }
+}
+
+/// Where rows are on screen (for mapping the pointer to text).
+#[derive(Clone, Copy)]
+struct Geo {
+    x0: f32,
+    top0: f32,
+    width: f32,
+    row_h: f32,
+    char_w: f32,
+    gutter: f32,
+}
+
+/// The selectable text of one row on one side.
+struct RowText<'a> {
+    /// Identity of the source line (file, hunk, line) — wrapped rows share it.
+    line: (usize, usize, usize),
+    text: &'a str,
+    /// This row's columns of the line (tabs = 4 columns).
+    from: usize,
+    to: usize,
+    /// x of column `from`, and the clickable text area.
+    text_x: f32,
+    rect: Rect,
 }
 
 impl DiffView {
@@ -142,6 +193,8 @@ impl DiffView {
         self.loading = false;
         self.error = None;
         self.words = word_highlights(&self.files);
+        self.sel = None;
+        self.dragging = false;
         self.offset = 0.0;
         self.jump = Some(0.0);
         self.rebuild();
@@ -158,6 +211,41 @@ impl DiffView {
     pub fn set_error(&mut self, e: String) {
         self.clear();
         self.error = Some(e);
+    }
+
+    /// The selectable text of `row` on `side`, positioned by `geo`.
+    fn row_text(&self, row: usize, side: Side, geo: &Geo) -> Option<RowText<'_>> {
+        let top = geo.top0 + row as f32 * geo.row_h;
+        let (fi, hi, li, seg, left, right) = match (*self.rows.get(row)?, side) {
+            (Row::Line(fi, hi, li, seg), Side::Inline) => (fi, hi, li, seg, geo.x0 + geo.gutter + geo.char_w * 2.0, geo.x0 + geo.width),
+            (Row::Pair(fi, hi, Some(li), _, seg), Side::Old) => (fi, hi, li, seg, geo.x0 + geo.char_w * 8.0 + 8.0, geo.x0 + geo.width / 2.0),
+            (Row::Pair(fi, hi, _, Some(li), seg), Side::New) => (fi, hi, li, seg, geo.x0 + geo.width / 2.0 + geo.char_w * 8.0 + 8.0, geo.x0 + geo.width),
+            _ => return None,
+        };
+        let text = self.files[fi].hunks[hi].lines[li].text.as_str();
+        let (from, to) = *wrap_ranges(text, self.cols.max(10)).get(seg)?;
+        let rect = Rect::from_min_max(pos2(left - geo.char_w * 0.5, top), pos2(right, top + geo.row_h));
+        Some(RowText { line: (fi, hi, li), text, from, to, text_x: left, rect })
+    }
+
+    /// The selected code as plain text: original characters (tabs kept),
+    /// wrapped rows of one line joined, lines separated by newlines.
+    fn selected_text(&self, geo: Option<Geo>) -> String {
+        let (Some(s), Some(geo)) = (self.sel, geo) else { return String::new() };
+        let (a, b) = s.ordered();
+        let mut out = String::new();
+        let mut prev = None;
+        for row in a.0..=b.0 {
+            let Some(t) = self.row_text(row, s.side, &geo) else { continue };
+            let c0 = t.from + if row == a.0 { a.1 } else { 0 };
+            let c1 = if row == b.0 { t.from + b.1 } else { t.to };
+            if prev.is_some() && prev != Some(t.line) {
+                out.push('\n');
+            }
+            out.push_str(&slice_cols(t.text, c0, c1));
+            prev = Some(t.line);
+        }
+        out
     }
 
     pub fn section(&self, fi: usize) -> Option<Section> {
@@ -340,6 +428,7 @@ impl DiffView {
         if self.split != *split {
             self.split = *split;
             self.rebuild();
+            self.sel = None;
         }
 
         let font = FontId::monospace(ui.style().text_styles[&egui::TextStyle::Monospace].size);
@@ -356,6 +445,7 @@ impl DiffView {
         if cols != self.cols {
             self.cols = cols;
             self.rebuild();
+            self.sel = None;
         }
 
         // Next / previous change = the next hunk header below / above the top of the view.
@@ -367,6 +457,7 @@ impl DiffView {
                 self.flash = Some(((y / row_h).round() as usize, ui.input(|i| i.time)));
             }
         }
+        // (mouse drags select text; egui only drag-scrolls on touch screens)
         let mut area = egui::ScrollArea::vertical().id_salt(id).auto_shrink([false, false]);
         if let Some(y) = self.jump.take() {
             area = area.vertical_scroll_offset(y);
@@ -381,7 +472,14 @@ impl DiffView {
             ui.ctx().request_repaint();
             (r, 1.0 - ((now - t) / 0.8) as f32)
         });
+        let mut first: Option<Geo> = None;
+        let mut new_sel: Option<Option<TextSel>> = None;
+        let mut drag_start = false;
+        let mut auto_scroll = 0.0;
+        let mut copy_now = false;
+        let base_id = ui.scope_id().with(id).with("text");
         let out = area.show_rows(ui, row_h, self.rows.len(), |ui, range| {
+                let visible = range.clone();
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let width = ui.available_width();
                 for i in range {
@@ -397,6 +495,9 @@ impl DiffView {
                         (clicked, bw)
                     };
                     let (rect, resp) = ui.allocate_exact_size(vec2(width, row_h), sense);
+                    if first.is_none() {
+                        first = Some(Geo { x0: rect.left(), top0: rect.top() - i as f32 * row_h, width: rect.width(), row_h, char_w, gutter });
+                    }
                     let p = ui.painter_at(rect);
                     match row {
                         Row::Section(sec) => {
@@ -614,9 +715,106 @@ impl DiffView {
                         }
                     }
                 }
+
+                // ---- text selection: drag over code text (not numbers / signs / headers)
+                let Some(geo) = first else { return };
+                let sides: &[Side] = if self.split { &[Side::Old, Side::New] } else { &[Side::Inline] };
+                let pointer = ui.input(|i| i.pointer.interact_pos());
+                let pos_of = |p: egui::Pos2, side: Side| -> (usize, usize) {
+                    let row = (((p.y - geo.top0) / geo.row_h).floor().max(0.0) as usize).min(self.rows.len().saturating_sub(1));
+                    let col = self.row_text(row, side, &geo).map_or(0, |t| (((p.x - t.text_x) / geo.char_w).round().max(0.0) as usize).min(t.to - t.from));
+                    (row, col)
+                };
+                for i in visible.clone() {
+                    for &side in sides {
+                        let Some(t) = self.row_text(i, side, &geo) else { continue };
+                        let resp = ui.interact(t.rect, base_id.with((i, side as u8)), Sense::click_and_drag());
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                        }
+                        if resp.drag_started() {
+                            // start where the button went down, not where the drag was recognised
+                            if let Some(p) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()) {
+                                let at = pos_of(p, side);
+                                new_sel = Some(Some(TextSel { side, a: at, b: at }));
+                                drag_start = true;
+                            }
+                        } else if resp.double_clicked() {
+                            // the whole source line (all its wrapped rows)
+                            let rows: Vec<usize> = (0..self.rows.len()).filter(|&r| self.row_text(r, side, &geo).is_some_and(|x| x.line == t.line)).collect();
+                            if let (Some(&f), Some(&l)) = (rows.first(), rows.last()) {
+                                let end = self.row_text(l, side, &geo).map_or(0, |x| x.to - x.from);
+                                new_sel = Some(Some(TextSel { side, a: (f, 0), b: (l, end) }));
+                            }
+                        } else if resp.clicked() {
+                            new_sel = Some(None);
+                        }
+                        let has_sel = self.sel.is_some_and(|s| s.side == side && s.a != s.b);
+                        resp.context_menu(|ui| {
+                            if ui.add_enabled(has_sel, egui::Button::new("Copy")).clicked() {
+                                copy_now = true;
+                                ui.close();
+                            }
+                            if ui.button("Copy line").clicked() {
+                                let line = &self.files[t.line.0].hunks[t.line.1].lines[t.line.2].text;
+                                ui.ctx().copy_text(line.clone());
+                                ui.close();
+                            }
+                        });
+                    }
+                }
+                // extend while the button is held (also above / below the view)
+                if self.dragging {
+                    if let (Some(p), Some(s)) = (pointer, self.sel) {
+                        new_sel = Some(Some(TextSel { b: pos_of(p, s.side), ..s }));
+                        let clip = ui.clip_rect();
+                        if p.y > clip.bottom() - 4.0 {
+                            auto_scroll = row_h;
+                        } else if p.y < clip.top() + 4.0 {
+                            auto_scroll = -row_h;
+                        }
+                    }
+                }
+                // highlight
+                if let Some(s) = new_sel.unwrap_or(self.sel) {
+                    let (a, b) = s.ordered();
+                    for i in visible.clone() {
+                        if i < a.0 || i > b.0 {
+                            continue;
+                        }
+                        let Some(t) = self.row_text(i, s.side, &geo) else { continue };
+                        let c0 = if i == a.0 { a.1 } else { 0 };
+                        let c1 = if i == b.0 { b.1 } else { t.to - t.from };
+                        if c1 > c0 {
+                            let r = Rect::from_min_max(pos2(t.text_x + c0 as f32 * char_w, t.rect.top()), pos2(t.text_x + c1 as f32 * char_w, t.rect.bottom()));
+                            ui.painter().rect_filled(r, 0.0, theme::ACCENT.gamma_multiply(0.28));
+                        }
+                    }
+                }
             });
 
         self.offset = out.state.clamped_offset().y;
+        if let Some(s) = new_sel {
+            self.sel = s;
+        }
+        if drag_start {
+            self.dragging = true;
+        }
+        if self.dragging && !ui.input(|i| i.pointer.primary_down()) {
+            self.dragging = false;
+        }
+        if self.dragging && auto_scroll != 0.0 {
+            self.jump = Some((self.offset + auto_scroll).max(0.0));
+            ui.ctx().request_repaint();
+        }
+        // ⌘C (or Copy from the menu) copies the selected code
+        let copy_key = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+        if (copy_now || (copy_key && ui.memory(|m| m.focused().is_none()))) && self.sel.is_some() {
+            let t = self.selected_text(first);
+            if !t.is_empty() {
+                ui.ctx().copy_text(t);
+            }
+        }
         if let Some(fi) = toggle {
             let o = self.is_open(fi);
             self.set_open(fi, !o);
@@ -665,6 +863,20 @@ struct Seg<'a> {
     text: &'a str,
     seg: usize,
     cols: usize,
+}
+
+/// The characters of `text` whose columns fall in `[c0, c1)` (a tab spans 4).
+fn slice_cols(text: &str, c0: usize, c1: usize) -> String {
+    let mut col = 0;
+    let mut out = String::new();
+    for ch in text.chars() {
+        let w = if ch == '\t' { 4 } else { 1 };
+        if col >= c0 && col < c1 {
+            out.push(ch);
+        }
+        col += w;
+    }
+    out
 }
 
 /// Wrapped rows of a line as column ranges (tabs expanded to 4 columns):
@@ -776,5 +988,14 @@ mod tests {
         assert_eq!(wrap_ranges("", 10), [(0, 0)]);
         // tabs count as 4 columns
         assert_eq!(wrap_ranges("\tab", 10), [(0, 6)]);
+    }
+
+    #[test]
+    fn slices_by_column_keeping_tabs() {
+        use super::slice_cols;
+        assert_eq!(slice_cols("let x = 1;", 4, 9), "x = 1");
+        assert_eq!(slice_cols("\tfoo()", 0, 7), "\tfoo");
+        assert_eq!(slice_cols("\tfoo()", 4, 99), "foo()");
+        assert_eq!(slice_cols("한글 텍스트", 3, 6), "텍스트");
     }
 }
