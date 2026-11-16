@@ -105,6 +105,14 @@ pub struct State {
     /// Diffs ignore whitespace-only changes (git diff -w).
     #[serde(default)]
     pub diff_ignore_ws: bool,
+    /// Which diffs start with their files expanded (Settings → Diffs):
+    /// commits and staged files expanded, unstaged collapsed, by default.
+    #[serde(default)]
+    pub diff_collapse_commits: bool,
+    #[serde(default)]
+    pub diff_collapse_staged: bool,
+    #[serde(default)]
+    pub diff_expand_unstaged: bool,
 }
 
 pub fn config_dir() -> PathBuf {

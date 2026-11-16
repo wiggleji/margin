@@ -35,15 +35,6 @@ pub fn lane(i: u16) -> Color32 {
     LANES[i as usize % LANES.len()]
 }
 
-pub fn status_color(c: char) -> Color32 {
-    match c {
-        'A' | '?' => ADDED,
-        'D' => REMOVED,
-        'U' => ERROR,
-        'R' | 'C' => Color32::from_rgb(0x8c, 0xb4, 0xf0),
-        _ => ACCENT,
-    }
-}
 
 pub fn apply(ctx: &egui::Context, font_size: f32) {
     ctx.set_theme(egui::ThemePreference::Dark);

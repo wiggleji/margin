@@ -285,6 +285,26 @@ impl Repo {
         self.run(&args)
     }
 
+    /// Diff of the whole working tree (`staged`: index vs HEAD, else worktree
+    /// vs index). Untracked files aren't included; `exclude` paths are left out
+    /// (e.g. conflicted files, whose combined diff isn't a normal patch).
+    pub fn worktree_diff(&self, staged: bool, ignore_ws: bool, exclude: &[String]) -> Result<String> {
+        let mut args: Vec<String> = ["diff", "--no-color", "--no-ext-diff", "-M"].map(String::from).to_vec();
+        if staged {
+            args.push("--cached".into());
+        }
+        if ignore_ws {
+            args.push("-w".into());
+        }
+        args.push("--".into());
+        if !exclude.is_empty() {
+            args.push(".".into());
+            args.extend(exclude.iter().map(|p| format!(":(exclude,literal){p}")));
+        }
+        let a: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.run(&a)
+    }
+
     /// Working-tree diff for one file. `staged` = index vs HEAD.
     pub fn file_diff(&self, change: &FileChange, staged: bool) -> Result<String> {
         self.file_diff_opts(change, staged, false)

@@ -39,7 +39,7 @@ pub enum Msg {
     // Repo-scoped messages carry `workdir` so a result never lands in the
     // wrong tab (see MarginApp::on_msg).
     Refreshed { workdir: PathBuf, result: Result<Box<Snapshot>, String> },
-    WorkDiff { workdir: PathBuf, generation: u64, result: Result<(Vec<FileDiff>, bool), String> },
+    WorkDiff { workdir: PathBuf, generation: u64, result: Result<crate::diff_view::WorkDiff, String> },
     CommitLoaded { workdir: PathBuf, generation: u64, result: Result<(CommitDetail, Vec<FileDiff>, bool), String> },
     /// A git operation finished. `refresh`: reload repo state afterwards.
     OpDone { workdir: PathBuf, label: String, result: Result<String, String>, refresh: bool },

@@ -35,7 +35,6 @@ pub enum HunkOp {
 #[derive(Clone)]
 pub enum Action {
     Select(Sel),
-    SelectFile { path: String, staged: bool },
     Stage(Vec<String>),
     Unstage(Vec<String>),
     Discard(Vec<String>),
@@ -142,7 +141,6 @@ pub struct RepoView {
     pub graph: Vec<GraphRow>,
     pub row_of: HashMap<String, usize>,
     pub sel: Sel,
-    pub selected_file: Option<(String, bool)>,
     pub work_diff: DiffView,
     pub commit_detail: Option<CommitDetail>,
     pub commit_diff: DiffView,
@@ -232,7 +230,6 @@ impl RepoView {
             graph: vec![],
             row_of: HashMap::new(),
             sel: Sel::Working,
-            selected_file: None,
             work_diff: DiffView::default(),
             commit_detail: None,
             commit_diff: DiffView::default(),
@@ -477,25 +474,35 @@ impl MarginApp {
     }
 
     fn load_work_diff(&mut self) {
+        // Whole working directory: unstaged + untracked, staged, conflicts.
         let Some(rv) = &mut self.rv else { return };
-        let Some((path, staged)) = rv.selected_file.clone() else {
-            rv.work_diff.clear();
-            return;
-        };
-        let Some(change) = rv.change(&path).cloned() else {
-            rv.selected_file = None;
-            rv.work_diff.clear();
-            return;
-        };
+        let Some(snap) = rv.snap.as_ref() else { return };
+        let files = snap.status.files.clone();
         rv.generation += 1;
         rv.work_diff.loading = true;
         let generation = rv.generation;
         let repo = rv.repo.clone();
         let ignore_ws = self.state.diff_ignore_ws;
-        self.jobs.spawn(move || Msg::WorkDiff {
-            workdir: repo.workdir.clone(),
-            generation,
-            result: repo.file_diff_opts(&change, staged, ignore_ws).map(|t| diff::parse(&t)).map_err(|e| e.0),
+        self.jobs.spawn(move || {
+            let r = (|| {
+                let conflicted: Vec<String> = files.iter().filter(|f| f.conflicted).map(|f| f.path.clone()).collect();
+                let (mut unstaged, t1) = diff::parse(&repo.worktree_diff(false, ignore_ws, &conflicted)?);
+                // Untracked files (first 200; each read like `git diff --no-index`).
+                let mut t3 = false;
+                for (n, f) in files.iter().filter(|f| f.is_untracked()).enumerate() {
+                    if n >= 200 {
+                        t3 = true;
+                        break;
+                    }
+                    if let Ok(t) = repo.file_diff_opts(f, false, false) {
+                        unstaged.extend(diff::parse(&t).0);
+                    }
+                }
+                unstaged.sort_by(|a, b| a.display_path().cmp(b.display_path()));
+                let (staged, t2) = diff::parse(&repo.worktree_diff(true, ignore_ws, &conflicted)?);
+                Ok::<_, margin_core::Error>(crate::diff_view::WorkDiff { unstaged, staged, conflicted, truncated: t1 || t2 || t3 })
+            })();
+            Msg::WorkDiff { workdir: repo.workdir.clone(), generation, result: r.map_err(|e| e.0) }
         });
     }
 
@@ -940,12 +947,6 @@ impl MarginApp {
                     rv.filter.clear();
                 }
                 self.handle(Select(Sel::Commit(id)));
-            }
-            SelectFile { path, staged } => {
-                if let Some(rv) = &mut self.rv {
-                    rv.selected_file = Some((path, staged));
-                }
-                self.load_work_diff();
             }
             Stage(paths) => self.op("Stage", move |r| {
                 r.stage(&paths.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| String::new())
@@ -1539,7 +1540,7 @@ impl MarginApp {
                     return;
                 }
                 match result {
-                    Ok((f, t)) => rv.work_diff.set(f, t),
+                    Ok(w) => rv.work_diff.set_work(w),
                     Err(e) => rv.work_diff.set_error(e),
                 }
             }
@@ -2089,7 +2090,13 @@ impl eframe::App for MarginApp {
                     crate::notes_panel::show(ui, rv, &self.task_cache, tasks_configured, &license, &task_url, &self.author, state, notes_h, actions);
                 });
             };
-            let before = crate::diff_view::DiffPrefs { split: self.state.diff_split, ignore_ws: self.state.diff_ignore_ws };
+            let before = crate::diff_view::DiffPrefs {
+                split: self.state.diff_split,
+                ignore_ws: self.state.diff_ignore_ws,
+                expand_commit: !self.state.diff_collapse_commits,
+                expand_staged: !self.state.diff_collapse_staged,
+                expand_unstaged: self.state.diff_expand_unstaged,
+            };
             let mut diff_prefs = before;
             let state = &mut self.state;
             egui::Panel::right("details").resizable(true).default_size(560.0).min_size(360.0).show(ui, |ui| {
@@ -2256,6 +2263,25 @@ impl MarginApp {
                     actions.push(Action::Fetch);
                 }
             });
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("DIFFS").small().strong().color(theme::TEXT_DIM));
+            ui.separator();
+            ui.label("Show files expanded by default:");
+            let st = &mut self.state;
+            let mut commits = !st.diff_collapse_commits;
+            let mut staged = !st.diff_collapse_staged;
+            let mut view_changed = false;
+            ui.horizontal(|ui| {
+                view_changed |= ui.checkbox(&mut commits, "Commits").changed();
+                view_changed |= ui.checkbox(&mut staged, "Staged").changed();
+                view_changed |= ui.checkbox(&mut st.diff_expand_unstaged, "Unstaged").changed();
+            });
+            ui.label(egui::RichText::new("Click a file header to expand or collapse it; that choice is kept while you work.").small().color(theme::TEXT_DIM));
+            if view_changed {
+                st.diff_collapse_commits = !commits;
+                st.diff_collapse_staged = !staged;
+                let _ = config::save_state(st);
+            }
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if ui.button("Close").clicked() {

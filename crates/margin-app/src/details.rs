@@ -1,10 +1,9 @@
 //! Right-hand pane: working-directory staging + commit box, or commit details.
 
 use crate::app::{Action, RepoView, Sel};
-use crate::diff_view::DiffMode;
+use crate::diff_view::{DiffEvent, DiffMode};
 use crate::theme;
 use eframe::egui::{self, RichText, Ui};
-use margin_core::git::FileChange;
 
 /// `prefs`: diff layout and whitespace (the diff bar changes them).
 pub fn show(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>) {
@@ -16,45 +15,9 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPr
 
 fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>) {
     let Some(snap) = rv.snap.as_ref() else { return };
-    let files = snap.status.files.clone();
-    let unstaged: Vec<&FileChange> = files.iter().filter(|f| f.is_unstaged()).collect();
-    let staged: Vec<&FileChange> = files.iter().filter(|f| f.is_staged()).collect();
-    let sel = rv.selected_file.clone();
-
-    let lists_h = (ui.available_height() * 0.38).clamp(90.0, 340.0);
+    let staged_n = snap.status.files.iter().filter(|f| f.is_staged()).count();
     ui.vertical(|ui| {
-        egui::ScrollArea::vertical().id_salt("worklists_scroll").auto_shrink([false, true]).max_height(lists_h).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.strong(format!("Unstaged ({})", unstaged.len()));
-                if !unstaged.is_empty() {
-                    if ui.small_button("Stage all").clicked() {
-                        actions.push(Action::Stage(unstaged.iter().map(|f| f.path.clone()).collect()));
-                    }
-                    if ui.small_button("Discard all").clicked() {
-                        actions.push(Action::Confirm {
-                            msg: format!("Discard ALL {} unstaged changes? Untracked files will be deleted.", unstaged.len()),
-                            action: Box::new(Action::Discard(unstaged.iter().map(|f| f.path.clone()).collect())),
-                        });
-                    }
-                }
-            });
-            for f in &unstaged {
-                file_row(ui, f, false, sel.as_ref(), actions);
-            }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.strong(format!("Staged ({})", staged.len()));
-                if !staged.is_empty() && ui.small_button("Unstage all").clicked() {
-                    actions.push(Action::Unstage(staged.iter().map(|f| f.path.clone()).collect()));
-                }
-            });
-            for f in &staged {
-                file_row(ui, f, true, sel.as_ref(), actions);
-            }
-        });
-
         // ---- commit box
-        ui.separator();
         let task = rv.current_branch().and_then(|b| rv.notes.task_for_branch(b));
         let enter = if cfg!(target_os = "macos") { "⌘↵" } else { "Ctrl+↵" };
         let hint = match &task {
@@ -88,7 +51,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             s.request_focus();
         }
         ui.horizontal(|ui| {
-            let can = (!staged.is_empty() || rv.amend) && !rv.commit_msg.trim().is_empty();
+            let can = (staged_n > 0 || rv.amend) && !rv.commit_msg.trim().is_empty();
             if ui.add_enabled(can, egui::Button::new(if rv.amend { "Amend commit" } else { "Commit" })).clicked() {
                 actions.push(Action::Commit);
             }
@@ -113,77 +76,28 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
         ui.separator();
     });
 
-    let mode = match &sel {
-        Some((_, true)) => DiffMode::Staged,
-        _ => DiffMode::Unstaged,
-    };
-    if sel.is_none() {
-        ui.weak("Select a file to see its diff.");
-        return;
-    }
-    if let Some(a) = rv.work_diff.show(ui, mode, "workdiff", prefs) {
-        let action = Action::Hunk { file: a.file, hunk: a.hunk, op: a.op, staged_view: mode == DiffMode::Staged };
-        if a.op == crate::app::HunkOp::Discard {
-            actions.push(Action::Confirm { msg: "Discard this hunk? This cannot be undone.".into(), action: Box::new(action) });
-        } else {
-            actions.push(action);
-        }
-    }
-}
-
-fn file_row(ui: &mut Ui, f: &FileChange, staged: bool, sel: Option<&(String, bool)>, actions: &mut Vec<Action>) {
-    let code = if f.conflicted {
-        'U'
-    } else if staged {
-        f.index
-    } else if f.is_untracked() {
-        '?'
-    } else {
-        f.worktree
-    };
-    let is_sel = sel.is_some_and(|(p, s)| *p == f.path && *s == staged);
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(code.to_string()).monospace().color(theme::status_color(code)));
-        let label = match &f.orig_path {
-            Some(o) => format!("{o} → {}", f.path),
-            None => f.path.clone(),
-        };
-        let resp = ui.selectable_label(is_sel, label);
-        if resp.clicked() {
-            actions.push(Action::SelectFile { path: f.path.clone(), staged });
-        }
-        if resp.double_clicked() {
-            actions.push(if staged { Action::Unstage(vec![f.path.clone()]) } else { Action::Stage(vec![f.path.clone()]) });
-        }
-        let p = f.path.clone();
-        resp.context_menu(|ui| {
-            if staged {
-                if ui.button("Unstage").clicked() {
-                    actions.push(Action::Unstage(vec![p.clone()]));
-                    ui.close();
-                }
-            } else {
-                if ui.button("Stage").clicked() {
-                    actions.push(Action::Stage(vec![p.clone()]));
-                    ui.close();
-                }
-                if ui.button("Discard changes…").clicked() {
-                    actions.push(Action::Confirm { msg: format!("Discard changes to {p}?"), action: Box::new(Action::Discard(vec![p.clone()])) });
-                    ui.close();
+    // All changed files: conflicts, then Unstaged and Staged sections; each
+    // file expands to its diff (defaults in Settings → Diffs).
+    for e in rv.work_diff.show(ui, DiffMode::Working, "workdiff", prefs) {
+        actions.push(match e {
+            DiffEvent::Hunk(a) => {
+                let staged_view = rv.work_diff.section(a.file) == Some(crate::diff_view::Section::Staged);
+                let action = Action::Hunk { file: a.file, hunk: a.hunk, op: a.op, staged_view };
+                if a.op == crate::app::HunkOp::Discard {
+                    Action::Confirm { msg: "Discard this hunk? This cannot be undone.".into(), action: Box::new(action) }
+                } else {
+                    action
                 }
             }
-            if ui.button("Copy path").clicked() {
-                actions.push(Action::Copy(p.clone()));
-                ui.close();
+            DiffEvent::Stage(p) => Action::Stage(p),
+            DiffEvent::Unstage(p) => Action::Unstage(p),
+            DiffEvent::Discard(p) => {
+                let what = if p.len() == 1 { p[0].clone() } else { format!("{} files", p.len()) };
+                Action::Confirm { msg: format!("Discard changes to {what}? Untracked files are deleted. This cannot be undone."), action: Box::new(Action::Discard(p)) }
             }
+            DiffEvent::CopyPath(p) => Action::Copy(p),
         });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (label, a) = if staged { ("−", Action::Unstage(vec![f.path.clone()])) } else { ("+", Action::Stage(vec![f.path.clone()])) };
-            if ui.small_button(label).on_hover_text(if staged { "Unstage" } else { "Stage" }).clicked() {
-                actions.push(a);
-            }
-        });
-    });
+    }
 }
 
 fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>) {

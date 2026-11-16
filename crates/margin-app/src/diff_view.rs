@@ -11,7 +11,7 @@ use crate::app::HunkOp;
 use crate::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 use margin_core::diff::{FileDiff, LineKind};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Diff display options (remembered in state.json).
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -20,19 +20,53 @@ pub struct DiffPrefs {
     pub split: bool,
     /// `git diff -w`: hide whitespace-only changes.
     pub ignore_ws: bool,
+    /// Files start expanded in commits / staged / unstaged (Settings → Diffs).
+    pub expand_commit: bool,
+    pub expand_staged: bool,
+    pub expand_unstaged: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DiffMode {
+    /// Working directory: an Unstaged and a Staged section, per-file buttons.
+    Working,
+    Commit,
+}
+
+/// Which list a file belongs to (decides its default expansion and buttons).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Section {
+    Commit,
+    Conflicted,
     Unstaged,
     Staged,
-    Commit,
+}
+
+/// Working-directory diff, loaded in the background.
+pub struct WorkDiff {
+    pub unstaged: Vec<FileDiff>,
+    pub staged: Vec<FileDiff>,
+    /// Paths with merge conflicts (shown first, no diff).
+    pub conflicted: Vec<String>,
+    pub truncated: bool,
+}
+
+/// Something the user did in the diff that the app carries out.
+pub enum DiffEvent {
+    Hunk(DiffAction),
+    Stage(Vec<String>),
+    Unstage(Vec<String>),
+    /// Asks for confirmation first.
+    Discard(Vec<String>),
+    CopyPath(String),
 }
 
 #[derive(Clone, Copy)]
 enum Row {
     File(usize),
     Hunk(usize, usize),
+    /// "UNSTAGED (3)" / "STAGED (1)" header with stage-all buttons.
+    Section(Section),
     /// (file, hunk, line, wrapped segment)
     Line(usize, usize, usize, usize),
     /// Side by side: (file, hunk, old line, new line, wrapped segment) — either side may be empty.
@@ -52,7 +86,13 @@ pub struct DiffView {
     pub truncated: bool,
     pub loading: bool,
     pub error: Option<String>,
-    collapsed: HashSet<usize>,
+    /// Section of each file (parallel to `files`).
+    sections: Vec<Section>,
+    /// Files the user expanded/collapsed by hand, by (section, path); kept
+    /// across reloads of the working directory. `true` = expanded.
+    toggled: HashMap<(Section, String), bool>,
+    /// Expansion defaults the rows were built with.
+    defaults: (bool, bool, bool),
     rows: Vec<Row>,
     /// Columns per visual row; longer lines wrap.
     cols: usize,
@@ -68,12 +108,35 @@ pub struct DiffView {
 }
 
 impl DiffView {
+    /// A commit's diff (all files in one list).
     pub fn set(&mut self, files: Vec<FileDiff>, truncated: bool) {
-        self.collapsed.clear();
-        if files.len() > 25 {
-            // Big commits: start collapsed, like Sublime Merge.
-            self.collapsed.extend(0..files.len());
+        self.toggled.clear();
+        self.sections = vec![Section::Commit; files.len()];
+        self.set_files(files, truncated);
+    }
+
+    /// The working directory: conflicts, unstaged, then staged files.
+    /// Hand-made expand/collapse choices survive the reload.
+    pub fn set_work(&mut self, w: WorkDiff) {
+        let mut files = vec![];
+        let mut sections = vec![];
+        for p in &w.conflicted {
+            files.push(FileDiff { old_path: Some(p.clone()), new_path: Some(p.clone()), header: vec![], hunks: vec![], binary: false, added: 0, removed: 0 });
+            sections.push(Section::Conflicted);
         }
+        sections.extend(std::iter::repeat_n(Section::Unstaged, w.unstaged.len()));
+        sections.extend(std::iter::repeat_n(Section::Staged, w.staged.len()));
+        files.extend(w.unstaged);
+        files.extend(w.staged);
+        self.sections = sections;
+        let (offset, jump) = (self.offset, self.jump);
+        self.set_files(files, w.truncated);
+        // keep the scroll position while staging / unstaging
+        self.offset = offset;
+        self.jump = jump.or(Some(offset));
+    }
+
+    fn set_files(&mut self, files: Vec<FileDiff>, truncated: bool) {
         self.files = files;
         self.truncated = truncated;
         self.loading = false;
@@ -86,6 +149,7 @@ impl DiffView {
 
     pub fn clear(&mut self) {
         self.files.clear();
+        self.sections.clear();
         self.rows.clear();
         self.error = None;
         self.loading = false;
@@ -96,14 +160,42 @@ impl DiffView {
         self.error = Some(e);
     }
 
+    pub fn section(&self, fi: usize) -> Option<Section> {
+        self.sections.get(fi).copied()
+    }
+
+    fn is_open(&self, fi: usize) -> bool {
+        let sec = self.sections.get(fi).copied().unwrap_or(Section::Commit);
+        let key = (sec, self.files[fi].display_path().to_string());
+        self.toggled.get(&key).copied().unwrap_or(match sec {
+            // very large commits start collapsed regardless
+            Section::Commit => self.defaults.0 && self.files.len() <= 200,
+            Section::Staged => self.defaults.1,
+            Section::Unstaged => self.defaults.2,
+            Section::Conflicted => true,
+        })
+    }
+
+    fn set_open(&mut self, fi: usize, open: bool) {
+        let sec = self.sections.get(fi).copied().unwrap_or(Section::Commit);
+        self.toggled.insert((sec, self.files[fi].display_path().to_string()), open);
+    }
+
     fn rebuild(&mut self) {
         self.rows.clear();
         let cols = self.cols.max(10);
         // Visual rows a line takes (tabs count as 4 columns).
-        let segs = |t: &str| t.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>().div_ceil(cols).max(1);
+        let segs = |t: &str| wrap_ranges(t, cols).len();
+        let open: Vec<bool> = (0..self.files.len()).map(|fi| self.is_open(fi)).collect();
+        let mut last = None;
         for (fi, f) in self.files.iter().enumerate() {
+            let sec = self.sections.get(fi).copied().unwrap_or(Section::Commit);
+            if matches!(sec, Section::Unstaged | Section::Staged) && last != Some(sec) {
+                self.rows.push(Row::Section(sec));
+            }
+            last = Some(sec);
             self.rows.push(Row::File(fi));
-            if self.collapsed.contains(&fi) {
+            if !open[fi] {
                 continue;
             }
             if f.binary || f.hunks.is_empty() {
@@ -155,23 +247,30 @@ impl DiffView {
 
     /// `prefs` are changed from the bar above the diff (layout, whitespace);
     /// the caller reloads the diff when `ignore_ws` changes.
-    pub fn show(&mut self, ui: &mut Ui, mode: DiffMode, id: &str, prefs: &mut DiffPrefs) -> Option<DiffAction> {
+    pub fn show(&mut self, ui: &mut Ui, mode: DiffMode, id: &str, prefs: &mut DiffPrefs) -> Vec<DiffEvent> {
+        let mut events = vec![];
         if self.loading && self.files.is_empty() {
             ui.weak("Loading diff…");
-            return None;
+            return events;
         }
         if let Some(e) = &self.error {
             ui.colored_label(theme::ERROR, e);
-            return None;
+            return events;
         }
         if self.files.is_empty() {
             ui.horizontal(|ui| {
-                ui.weak(if prefs.ignore_ws { "No changes (ignoring whitespace)." } else { "No changes." });
+                let none = if mode == DiffMode::Working { "No changes in the working directory." } else { "No changes." };
+                ui.weak(if prefs.ignore_ws { "No changes (ignoring whitespace)." } else { none });
                 if prefs.ignore_ws && ui.small_button("Show whitespace changes").clicked() {
                     prefs.ignore_ws = false;
                 }
             });
-            return None;
+            return events;
+        }
+        let defaults = (prefs.expand_commit, prefs.expand_staged, prefs.expand_unstaged);
+        if defaults != self.defaults {
+            self.defaults = defaults;
+            self.rebuild();
         }
         let split = &mut prefs.split;
         if self.truncated {
@@ -190,7 +289,7 @@ impl DiffView {
             ui.label(egui::RichText::new(format!("+{a}")).small().color(theme::ADDED));
             ui.label(egui::RichText::new(format!("−{r}")).small().color(theme::REMOVED));
             if n > 1 {
-                let collapsed_all = self.collapsed.len() == n;
+                let collapsed_all = (0..n).all(|fi| !self.is_open(fi));
                 if ui.small_button(if collapsed_all { "Expand all" } else { "Collapse all" }).clicked() {
                     all = Some(!collapsed_all);
                 }
@@ -233,9 +332,8 @@ impl DiffView {
             });
         }
         if let Some(collapse) = all {
-            self.collapsed.clear();
-            if collapse {
-                self.collapsed.extend(0..self.files.len());
+            for fi in 0..self.files.len() {
+                self.set_open(fi, !collapse);
             }
             self.rebuild();
         }
@@ -248,7 +346,6 @@ impl DiffView {
         let char_w = ui.fonts_mut(|f| f.glyph_width(&font, 'm'));
         let row_h = font.size + 5.0;
         let gutter = char_w * 12.0 + 8.0;
-        let mut action = None;
         let mut toggle = None;
 
         // Wrap width in columns (minus room for the scrollbar); rows depend on it.
@@ -274,7 +371,10 @@ impl DiffView {
         if let Some(y) = self.jump.take() {
             area = area.vertical_scroll_offset(y);
         }
-        let ws_on = prefs.ignore_ws && mode != DiffMode::Commit;
+        let ws_on = prefs.ignore_ws && mode == DiffMode::Working;
+        let open: Vec<bool> = (0..self.files.len()).map(|fi| self.is_open(fi)).collect();
+        let counts = |s: Section| self.sections.iter().filter(|&&x| x == s).count();
+        let (n_unstaged, n_staged) = (counts(Section::Unstaged), counts(Section::Staged));
         let words = &self.words;
         let now = ui.input(|i| i.time);
         let flash = self.flash.filter(|&(_, t)| now - t < 0.8).map(|(r, t)| {
@@ -287,13 +387,45 @@ impl DiffView {
                 for i in range {
                     let row = self.rows[i];
                     let sense = if matches!(row, Row::File(_)) { Sense::click() } else { Sense::hover() };
+                    let small = FontId::proportional(font.size - 1.0);
+                    // A small button drawn at `x` in this row; returns (clicked, its width).
+                    let button = |ui: &mut Ui, x: f32, rect: Rect, text: &str| {
+                        let pad = ui.spacing().button_padding.x * 2.0 + 6.0;
+                        let bw = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), small.clone(), Color32::WHITE).size().x) + pad;
+                        let r = Rect::from_min_size(pos2(x, rect.top() + 2.0), vec2(bw, row_h - 4.0));
+                        let clicked = ui.put(r, egui::Button::new(egui::RichText::new(text).font(small.clone())).wrap_mode(egui::TextWrapMode::Extend)).clicked();
+                        (clicked, bw)
+                    };
                     let (rect, resp) = ui.allocate_exact_size(vec2(width, row_h), sense);
                     let p = ui.painter_at(rect);
                     match row {
+                        Row::Section(sec) => {
+                            let (title, n) = if sec == Section::Staged { ("STAGED", n_staged) } else { ("UNSTAGED", n_unstaged) };
+                            let g = p.layout_no_wrap(format!("{title} ({n})"), small.clone(), theme::TEXT_DIM);
+                            let gw = g.size().x;
+                            p.galley(pos2(rect.left() + 6.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT_DIM);
+                            let paths = |s: Section| -> Vec<String> {
+                                self.files.iter().zip(&self.sections).filter(|(_, x)| **x == s).map(|(f, _)| f.display_path().to_string()).collect()
+                            };
+                            let mut x = rect.left() + 18.0 + gw;
+                            if sec == Section::Unstaged {
+                                let (c, w) = button(ui, x, rect, "Stage all");
+                                if c {
+                                    events.push(DiffEvent::Stage(paths(Section::Unstaged)));
+                                }
+                                x += w + 6.0;
+                                if button(ui, x, rect, "Discard all").0 {
+                                    events.push(DiffEvent::Discard(paths(Section::Unstaged)));
+                                }
+                            } else if button(ui, x, rect, "Unstage all").0 {
+                                events.push(DiffEvent::Unstage(paths(Section::Staged)));
+                            }
+                        }
                         Row::File(fi) => {
                             let f = &self.files[fi];
+                            let sec = self.sections.get(fi).copied().unwrap_or(Section::Commit);
                             p.rect_filled(rect, 0.0, theme::BG_DARK);
-                            let open = !self.collapsed.contains(&fi);
+                            let open = open[fi];
                             tri(&p, pos2(rect.left() + 10.0, rect.center().y), open, theme::TEXT_DIM);
                             let label = match (&f.old_path, &f.new_path) {
                                 (Some(o), Some(n)) if o != n => format!("{o} → {n}"),
@@ -303,6 +435,7 @@ impl DiffView {
                             };
                             // Status letter: Added / Deleted / Renamed / Modified
                             let (letter, color) = match (&f.old_path, &f.new_path) {
+                                _ if sec == Section::Conflicted => ("U", theme::ERROR),
                                 (None, Some(_)) => ("A", theme::ADDED),
                                 (Some(_), None) => ("D", theme::REMOVED),
                                 (Some(o), Some(n)) if o != n => ("R", theme::lane(0)),
@@ -323,13 +456,69 @@ impl DiffView {
                                 font.clone(),
                                 theme::REMOVED,
                             );
-                            if resp.clicked() {
+                            // Working directory: per-file buttons on the right, and a menu.
+                            let path = f.display_path().to_string();
+                            if matches!(sec, Section::Unstaged | Section::Staged | Section::Conflicted) {
+                                let labels: &[&str] = match sec {
+                                    Section::Staged => &["Unstage"],
+                                    Section::Conflicted => &["Stage"],
+                                    _ => &["Discard", "Stage"],
+                                };
+                                let mut bx = rect.right() - 6.0;
+                                for &l in labels.iter().rev() {
+                                    let pad = ui.spacing().button_padding.x * 2.0 + 6.0;
+                                    let bw = ui.fonts_mut(|f| f.layout_no_wrap(l.to_string(), small.clone(), Color32::WHITE).size().x) + pad;
+                                    bx -= bw;
+                                    if button(ui, bx, rect, l).0 {
+                                        events.push(match l {
+                                            "Unstage" => DiffEvent::Unstage(vec![path.clone()]),
+                                            "Discard" => DiffEvent::Discard(vec![path.clone()]),
+                                            _ => DiffEvent::Stage(vec![path.clone()]),
+                                        });
+                                    }
+                                    bx -= 6.0;
+                                }
+                            }
+                            if resp.double_clicked() && matches!(sec, Section::Unstaged | Section::Staged) {
+                                events.push(if sec == Section::Staged { DiffEvent::Unstage(vec![path.clone()]) } else { DiffEvent::Stage(vec![path.clone()]) });
+                            } else if resp.clicked() {
                                 toggle = Some(fi);
                             }
+                            resp.context_menu(|ui| {
+                                match sec {
+                                    Section::Unstaged | Section::Conflicted => {
+                                        if ui.button("Stage").clicked() {
+                                            events.push(DiffEvent::Stage(vec![path.clone()]));
+                                            ui.close();
+                                        }
+                                        if sec == Section::Unstaged && ui.button("Discard changes…").clicked() {
+                                            events.push(DiffEvent::Discard(vec![path.clone()]));
+                                            ui.close();
+                                        }
+                                    }
+                                    Section::Staged => {
+                                        if ui.button("Unstage").clicked() {
+                                            events.push(DiffEvent::Unstage(vec![path.clone()]));
+                                            ui.close();
+                                        }
+                                    }
+                                    Section::Commit => {}
+                                }
+                                if ui.button("Copy path").clicked() {
+                                    events.push(DiffEvent::CopyPath(path.clone()));
+                                    ui.close();
+                                }
+                            });
                         }
                         Row::Note(fi) => {
                             let f = &self.files[fi];
-                            let msg = if f.binary { "Binary file" } else { "No content changes (mode / rename only)" };
+                            let msg = if self.sections.get(fi) == Some(&Section::Conflicted) {
+                                "Merge conflict: resolve it in your editor, then stage the file."
+                            } else if f.binary {
+                                "Binary file"
+                            } else {
+                                "No content changes (mode / rename only)"
+                            };
                             p.text(pos2(rect.left() + gutter, rect.center().y), Align2::LEFT_CENTER, msg, font.clone(), theme::TEXT_DIM);
                         }
                         Row::Hunk(fi, hi) => {
@@ -340,20 +529,19 @@ impl DiffView {
                             let h = &self.files[fi].hunks[hi];
                             let mut x = rect.left() + 6.0;
                             // Hunks of a `-w` diff don't match the file: no staging from them.
-                            let ops: &[(HunkOp, &str)] = match mode {
+                            let ops: &[(HunkOp, &str)] = match self.sections.get(fi) {
                                 _ if ws_on => &[],
-                                DiffMode::Unstaged => &[(HunkOp::Stage, "Stage hunk"), (HunkOp::Discard, "Discard")],
-                                DiffMode::Staged => &[(HunkOp::Unstage, "Unstage hunk")],
-                                DiffMode::Commit => &[],
+                                Some(Section::Unstaged) => &[(HunkOp::Stage, "Stage hunk"), (HunkOp::Discard, "Discard")],
+                                Some(Section::Staged) => &[(HunkOp::Unstage, "Unstage hunk")],
+                                _ => &[],
                             };
-                            let small = FontId::proportional(font.size - 1.0);
                             for (op, text) in ops {
                                 let pad = ui.spacing().button_padding.x * 2.0 + 6.0;
                                 let bw = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), small.clone(), Color32::WHITE).size().x) + pad;
                                 let r = Rect::from_min_size(pos2(x, rect.top() + 2.0), vec2(bw, row_h - 4.0));
                                 let btn = ui.put(r, egui::Button::new(egui::RichText::new(*text).font(small.clone())).wrap_mode(egui::TextWrapMode::Extend));
                                 if btn.clicked() {
-                                    action = Some(DiffAction { file: fi, hunk: hi, op: *op });
+                                    events.push(DiffEvent::Hunk(DiffAction { file: fi, hunk: hi, op: *op }));
                                 }
                                 x += bw + 6.0;
                             }
@@ -430,12 +618,11 @@ impl DiffView {
 
         self.offset = out.state.clamped_offset().y;
         if let Some(fi) = toggle {
-            if !self.collapsed.remove(&fi) {
-                self.collapsed.insert(fi);
-            }
+            let o = self.is_open(fi);
+            self.set_open(fi, !o);
             self.rebuild();
         }
-        action
+        events
     }
 }
 
@@ -473,24 +660,48 @@ fn word_highlights(files: &[FileDiff]) -> HashMap<(usize, usize, usize), Vec<(us
     out
 }
 
-/// One wrapped segment of a diff line: columns `[seg*cols, (seg+1)*cols)` of
-/// the line with tabs expanded to 4 spaces.
+/// One wrapped row (`seg`) of a diff line; see `wrap_ranges`.
 struct Seg<'a> {
     text: &'a str,
     seg: usize,
     cols: usize,
 }
 
+/// Wrapped rows of a line as column ranges (tabs expanded to 4 columns):
+/// break after the last space that fits, or mid-word only when a single
+/// word is longer than the row.
+fn wrap_ranges(text: &str, cols: usize) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = text.replace('\t', "    ").chars().collect();
+    let n = chars.len();
+    let mut out = vec![];
+    let mut s = 0;
+    while s < n {
+        let mut e = (s + cols).min(n);
+        if e < n && chars[e] != ' ' {
+            // last space inside the row; keep rows from getting very short
+            if let Some(b) = (s + cols / 3 + 1..=e).rev().find(|&b| chars[b - 1] == ' ') {
+                e = b;
+            }
+        }
+        out.push((s, e));
+        s = e;
+    }
+    if out.is_empty() {
+        out.push((0, 0));
+    }
+    out
+}
+
 impl Seg<'_> {
     fn count(&self) -> usize {
-        self.text.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>().div_ceil(self.cols).max(1)
+        wrap_ranges(self.text, self.cols).len()
     }
 
     /// Sign (first segment only) at `x`, text after it, changed words highlighted.
     #[allow(clippy::too_many_arguments)]
     fn paint(&self, p: &egui::Painter, rect: Rect, x: f32, sign: &str, words: Option<&Vec<(usize, usize)>>, kind: LineKind, font: &FontId, fg: Color32, char_w: f32) {
         let text_x = x + char_w * 2.0;
-        let (from, to) = (self.seg * self.cols, (self.seg + 1) * self.cols);
+        let (from, to) = wrap_ranges(self.text, self.cols).get(self.seg).copied().unwrap_or((0, 0));
         if let Some(spans) = words {
             let color = if kind == LineKind::Added { theme::ADDED_WORD_BG } else { theme::REMOVED_WORD_BG };
             // Column of a byte offset (tabs are drawn as 4 spaces).
@@ -509,7 +720,7 @@ impl Seg<'_> {
         if self.seg == 0 {
             p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, sign, font.clone(), fg);
         }
-        let chunk: String = self.text.replace('\t', "    ").chars().skip(from).take(self.cols).collect();
+        let chunk: String = self.text.replace('\t', "    ").chars().skip(from).take(to - from).collect();
         p.text(pos2(text_x, rect.center().y), Align2::LEFT_CENTER, chunk, font.clone(), fg);
     }
 }
@@ -548,4 +759,22 @@ fn tri(p: &egui::Painter, c: egui::Pos2, open: bool, color: Color32) {
         vec![pos2(c.x - s / 2.0, c.y - s), pos2(c.x + s / 2.0 + 1.0, c.y), pos2(c.x - s / 2.0, c.y + s)]
     };
     p.add(Shape::convex_polygon(pts, color, Stroke::NONE));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_ranges;
+
+    #[test]
+    fn wraps_between_words() {
+        let t = "the login request timed out";
+        let r = wrap_ranges(t, 12);
+        let rows: Vec<String> = r.iter().map(|&(a, b)| t.chars().skip(a).take(b - a).collect()).collect();
+        assert_eq!(rows, ["the login ", "request ", "timed out"]);
+        // a word longer than the row is split
+        assert_eq!(wrap_ranges("abcdefghij", 4), [(0, 4), (4, 8), (8, 10)]);
+        assert_eq!(wrap_ranges("", 10), [(0, 0)]);
+        // tabs count as 4 columns
+        assert_eq!(wrap_ranges("\tab", 10), [(0, 6)]);
+    }
 }
