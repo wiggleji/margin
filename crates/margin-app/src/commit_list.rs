@@ -16,37 +16,37 @@ const LANE_W: f32 = 12.0;
 const MAX_LANES: usize = 14;
 
 pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
-    // Some branches hidden: say so, with a way back.
-    if !rv.graph_filter.is_empty() {
-        let f = &rv.graph_filter;
-        let what = match &f.only {
-            Some(b) => format!("Showing only {b}"),
-            None => {
-                let mut parts = vec![];
-                let n = f.hidden_branches.len() + f.hidden_remotes.len();
-                if n > 0 {
-                    parts.push(format!("{n} branch{} hidden", if n == 1 { "" } else { "es" }));
-                }
-                if f.hide_all_remotes {
-                    parts.push("remote branches hidden".into());
-                }
-                if f.hide_tags {
-                    parts.push("tags hidden".into());
-                }
-                parts.join(" · ")
-            }
-        };
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(what).small().color(theme::ACCENT));
-            if ui.small_button("Show all").clicked() {
-                actions.push(Action::SetGraphFilter(Default::default()));
-            }
-        });
-    }
     let Some(snap) = rv.snap.as_ref() else {
         ui.centered_and_justified(|ui| ui.spinner());
         return;
     };
+    // Which branches are in the graph: "3 of 12 branches · Show all".
+    {
+        use margin_core::history::HistoryFilter;
+        let f = &rv.graph_filter;
+        let (shown, total) = f.counts(&snap.refs);
+        let line = match &f.only {
+            Some(b) => Some((format!("Showing only {b}"), "Show major branches", HistoryFilter::reset(false, f.hide_tags))),
+            None if shown < total => Some((
+                format!("{shown} of {total} branches shown"),
+                "Show all",
+                HistoryFilter::reset(true, f.hide_tags),
+            )),
+            None if f.show_all || !f.branches.is_empty() || !f.remotes.is_empty() => {
+                Some(("All branches shown".to_string(), "Major branches only", HistoryFilter::reset(false, f.hide_tags)))
+            }
+            None => None,
+        };
+        if let Some((text, button, to)) = line {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(text).small().color(theme::TEXT_DIM))
+                    .on_hover_text("Use the eye next to each branch in the sidebar to show or hide it.");
+                if ui.small_button(button).clicked() {
+                    actions.push(Action::SetGraphFilter(to));
+                }
+            });
+        }
+    }
 
     // Filter cache
     let filter = rv.filter.trim().to_lowercase();
@@ -137,10 +137,13 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 continue;
             }
             if row == 1 + n_commits {
-                p.text(rect.center(), Align2::CENTER_CENTER, "Load more commits…", font.clone(), theme::ACCENT);
-                if resp.clicked() {
+                // Reaching the end loads the next page by itself (once per load).
+                p.text(rect.center(), Align2::CENTER_CENTER, if rv.loading { "Loading more commits…" } else { "Load more commits…" }, font.clone(), theme::TEXT_DIM);
+                // (refresh sets `loading` right away, so this asks once)
+                if !rv.loading {
                     actions.push(Action::LoadMore);
                 }
+                let _ = resp;
                 continue;
             }
 

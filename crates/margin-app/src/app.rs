@@ -6,7 +6,7 @@ use eframe::egui;
 use margin_core::config::{self, Config, State};
 use margin_core::diff;
 use margin_core::github::{GitHub, PrDetail, PrSummary};
-use margin_core::git::{CommitDetail, FileChange, RefKind, Repo, ResetMode};
+use margin_core::git::{CommitDetail, FileChange, Repo, ResetMode};
 use margin_core::graph::{self, GraphRow};
 use margin_core::notes::{NoteStore, NoteTarget};
 use margin_core::tasks::{self, Task, TaskProvider};
@@ -442,13 +442,14 @@ impl MarginApp {
         let limit = rv.limit;
         let filter = rv.graph_filter.clone();
         self.jobs.spawn(move || {
-            // status (slow in monorepos), log and refs run concurrently.
+            // status (slow in monorepos) runs while refs and the log load;
+            // the log needs the refs to know which branches are shown.
             let r = std::thread::scope(|s| {
                 let st = s.spawn(|| repo.status());
-                let refs = s.spawn(|| repo.refs());
-                let log = margin_core::history::log(&repo, &filter, limit, 0);
+                let refs = repo.refs();
+                let log = refs.as_ref().map_err(|e| e.clone()).and_then(|refs| margin_core::history::log(&repo, &filter, refs, limit, 0));
                 let status = st.join().unwrap()?;
-                let refs = refs.join().unwrap()?;
+                let refs = refs?;
                 let commits = log?;
                 Ok::<_, margin_core::Error>(Box::new(Snapshot {
                     status,
@@ -1508,8 +1509,7 @@ impl MarginApp {
                 match r {
                     Ok(snap) => {
                         // Forget hidden branches that no longer exist (deleted / pruned).
-                        let names = |k: RefKind| snap.refs.iter().filter(|r| r.kind == k).map(|r| r.name.as_str()).collect::<Vec<_>>();
-                        if rv.graph_filter.prune(&names(RefKind::Local), &names(RefKind::Remote)) {
+                        if rv.graph_filter.prune(&snap.refs) {
                             let _ = margin_core::history::save(&rv.repo, &rv.graph_filter);
                         }
                         let (g, _w) = graph::layout(&snap.commits);

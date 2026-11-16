@@ -129,6 +129,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
             remotes.entry(remote).or_default().push(r);
         }
         let n_remotes = remotes.len();
+        let up = margin_core::history::head_upstream(&snap.refs);
         section(ui, &format!("REMOTES ({n_remotes})"), "remotes", false, |ui| {
             for (remote, refs) in remotes {
                 // Each remote is a group row like "feature/", one level deep.
@@ -141,16 +142,27 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                         refs.into_iter().map(|r| (r.name.split_once('/').map_or(r.name.clone(), |(_, b)| b.to_string()), r)).collect(),
                     );
                     render_tree(ui, &tree, remote, 1, &|_| false, &mut |ui, label, depth, r| {
-                        let hidden = rv.graph_filter.hides(&r.name, true);
-                        let resp = ui.horizontal(|ui| {
-                            gutter(ui, depth, None);
-                            let t = if hidden { RichText::new(label).color(theme::TEXT_DIM) } else { RichText::new(label) };
-                            let resp = ui.selectable_label(false, t);
-                            if hidden {
-                                ui.label(RichText::new("hidden").small().color(theme::TEXT_DIM));
+                        let shown = rv.graph_filter.shows(r, up.as_deref());
+                        let h = ui.spacing().interact_size.y;
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(rect, 3.0, theme::HOVER);
+                        }
+                        let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                        gutter(&mut row, depth, None);
+                        let w = (row.available_width() - h - 6.0).max(30.0);
+                        row.allocate_ui_with_layout(egui::vec2(w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let t = if shown { RichText::new(label) } else { RichText::new(label).color(theme::TEXT_DIM) };
+                            ui.add(egui::Label::new(t).truncate());
+                        });
+                        row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(2.0);
+                            if eye(ui, shown).clicked() {
+                                let mut f = rv.graph_filter.clone();
+                                f.set(r, !shown);
+                                actions.push(Action::SetGraphFilter(f));
                             }
-                            resp
-                        }).inner;
+                        });
                         if resp.clicked() {
                             actions.push(Action::JumpTo(r.target.clone()));
                         }
@@ -164,13 +176,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                                 actions.push(Action::Confirm { msg: format!("Merge {name}?"), action: Box::new(Action::Merge(name.clone())) });
                                 ui.close();
                             }
-                            ui.separator();
-                            let mut f = rv.graph_filter.clone();
-                            f.toggle(&name, true);
-                            if ui.button(if hidden { "Show in history" } else { "Hide in history" }).clicked() {
-                                actions.push(Action::SetGraphFilter(f));
-                                ui.close();
-                            }
+
                         });
                     });
                 }
@@ -422,10 +428,20 @@ fn extras_width(ui: &Ui, rv: &RepoView, r: &RefInfo, task: &Option<String>, note
 
 /// Sublime Merge-style ahead/behind pill: "1849↓ │ 1↑" (behind first), or
 /// "gone" when the upstream branch was deleted. Width 0 when nothing to show.
+/// The ↓ part pulls (fast-forwards) and the ↑ part pushes.
 struct Badge {
-    galleys: Vec<std::sync::Arc<egui::Galley>>,
+    /// (text, what clicking it does)
+    segs: Vec<(std::sync::Arc<egui::Galley>, Option<SyncDir>)>,
     gone: bool,
-    tip: String,
+    behind: u32,
+    ahead: u32,
+    up: String,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SyncDir {
+    Pull,
+    Push,
 }
 
 impl Badge {
@@ -434,104 +450,165 @@ impl Badge {
     fn new(ui: &Ui, r: &RefInfo) -> Badge {
         let (ahead, behind) = r.ahead_behind();
         let gone = r.upstream_gone();
-        let segs: Vec<String> = if gone {
-            vec!["gone".into()]
+        let segs: Vec<(String, Option<SyncDir>)> = if gone {
+            vec![("gone".into(), None)]
         } else {
-            [(behind > 0).then(|| format!("{behind}↓")), (ahead > 0).then(|| format!("{ahead}↑"))].into_iter().flatten().collect()
+            [(behind > 0).then(|| (format!("{behind}↓"), Some(SyncDir::Pull))), (ahead > 0).then(|| (format!("{ahead}↑"), Some(SyncDir::Push)))]
+                .into_iter()
+                .flatten()
+                .collect()
         };
         let small = egui::TextStyle::Small.resolve(ui.style());
         let color = if gone { theme::TEXT_DIM } else { theme::TEXT };
-        let galleys = segs.into_iter().map(|t| ui.painter().layout_no_wrap(t, small.clone(), color)).collect();
-        let up = r.upstream.clone().unwrap_or_default();
-        let tip = if gone {
-            format!("Upstream {up} no longer exists on the remote")
-        } else {
-            format!("{behind} behind, {ahead} ahead of {up}\n(as of the last fetch)")
-        };
-        Badge { galleys, gone, tip }
+        let segs = segs.into_iter().map(|(t, a)| (ui.painter().layout_no_wrap(t, small.clone(), color), a)).collect();
+        Badge { segs, gone, behind, ahead, up: r.upstream.clone().unwrap_or_default() }
     }
 
     fn width(&self) -> f32 {
-        self.galleys.iter().map(|g| g.size().x + 2.0 * Self::PAD).sum()
+        self.segs.iter().map(|(g, _)| g.size().x + 2.0 * Self::PAD).sum()
     }
 
-    fn show(self, ui: &mut Ui) {
-        if self.galleys.is_empty() {
-            return;
+    /// Draws the pill; returns the part that was clicked.
+    /// `id`: unique per branch row.
+    fn show(self, ui: &mut Ui, id: egui::Id) -> Option<SyncDir> {
+        if self.segs.is_empty() {
+            return None;
         }
-        let h = self.galleys[0].size().y + 4.0;
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(self.width(), h), egui::Sense::hover());
-        let p = ui.painter();
-        p.rect_filled(rect, 3.0, if self.gone { theme::BADGE.gamma_multiply(0.6) } else { theme::BADGE });
+        let h = self.segs[0].0.size().y + 4.0;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(self.width(), h), egui::Sense::hover());
+        let bg = if self.gone { theme::BADGE.gamma_multiply(0.6) } else { theme::BADGE };
+        ui.painter().rect_filled(rect, 3.0, bg);
         let mut x = rect.left();
-        for (i, g) in self.galleys.into_iter().enumerate() {
-            if i > 0 {
-                p.line_segment([egui::pos2(x, rect.top() + 3.0), egui::pos2(x, rect.bottom() - 3.0)], egui::Stroke::new(1.0, theme::BG));
-            }
+        let mut clicked = None;
+        let n = self.segs.len();
+        for (i, (g, act)) in self.segs.into_iter().enumerate() {
             let w = g.size().x + 2.0 * Self::PAD;
-            p.galley(egui::pos2(x + Self::PAD, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
+            let seg = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(w, h));
+            let sense = if act.is_some() { egui::Sense::click() } else { egui::Sense::hover() };
+            let resp = ui.interact(seg, id.with(i), sense);
+            if act.is_some() && resp.hovered() {
+                let cr = egui::CornerRadius {
+                    nw: if i == 0 { 3 } else { 0 },
+                    sw: if i == 0 { 3 } else { 0 },
+                    ne: if i + 1 == n { 3 } else { 0 },
+                    se: if i + 1 == n { 3 } else { 0 },
+                };
+                ui.painter().rect_filled(seg, cr, theme::SELECTED);
+            }
+            if i > 0 {
+                ui.painter().line_segment([egui::pos2(x, rect.top() + 3.0), egui::pos2(x, rect.bottom() - 3.0)], egui::Stroke::new(1.0, theme::BG));
+            }
+            ui.painter().galley(egui::pos2(x + Self::PAD, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
+            let tip = match act {
+                Some(SyncDir::Pull) => format!("{} behind {} — click to pull", self.behind, self.up),
+                Some(SyncDir::Push) => format!("{} ahead of {} — click to push", self.ahead, self.up),
+                None => format!("Upstream {} no longer exists on the remote", self.up),
+            };
+            if resp.on_hover_text(tip).clicked() {
+                clicked = act;
+            }
             x += w;
         }
-        resp.on_hover_text(self.tip);
+        clicked
     }
 }
 
-/// One local branch row: [● gutter] name  task note PR …… [behind↓│ahead↑]
+/// Eye toggle at the right edge of a branch row: is it in the history graph?
+fn eye(ui: &mut Ui, shown: bool) -> egui::Response {
+    let size = ui.spacing().interact_size.y;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    let hot = resp.hovered();
+    let c = if hot { theme::TEXT } else if shown { theme::TEXT_DIM } else { theme::TEXT_DIM.gamma_multiply(0.5) };
+    let p = ui.painter();
+    let ctr = rect.center();
+    let (w, h) = (6.0, 3.6);
+    // almond outline
+    let pts: Vec<egui::Pos2> = (0..=24)
+        .map(|k| {
+            let t = k as f32 / 24.0 * std::f32::consts::TAU;
+            egui::pos2(ctr.x + w * t.cos(), ctr.y + h * t.sin() * (1.0 - 0.35 * t.cos().abs()))
+        })
+        .collect();
+    p.add(egui::Shape::closed_line(pts, egui::Stroke::new(1.2, c)));
+    if shown {
+        p.circle_filled(ctr, 1.9, c);
+    } else {
+        p.line_segment([ctr + egui::vec2(-5.5, 4.5), ctr + egui::vec2(5.5, -4.5)], egui::Stroke::new(1.3, c));
+    }
+    resp.on_hover_text(if shown { "Shown in the history — click to hide" } else { "Hidden from the history — click to show" })
+}
+
+/// One local branch row: [● gutter] name  task note PR …… [behind↓│ahead↑] [eye]
+/// The whole row is the click target (click: show its tip; double-click: check out).
 fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize, isz: f32, actions: &mut Vec<Action>) {
     let task = rv.notes.task_for_branch(&r.name);
     let note = rv.has_note(&NoteTarget::Branch(r.name.clone()));
-    let hidden = rv.graph_filter.hides(&r.name, false);
+    let refs = rv.snap.as_ref().map(|s| s.refs.as_slice()).unwrap_or_default();
+    let shown = rv.graph_filter.shows(r, margin_core::history::head_upstream(refs).as_deref());
     // Checked out in another worktree: git refuses to check it out here.
     let elsewhere = rv.snap.as_ref().and_then(|s| s.worktree_for(&r.name)).map(|w| w.wt.path.clone());
-    let resp = ui
-        .horizontal(|ui| {
-            // ● for the current branch sits in the triangle column
-            gutter(ui, depth, r.is_head.then_some(theme::ACCENT));
-            let badge = Badge::new(ui, r);
-            let bw = badge.width();
-            // Left part gets what the badge leaves, so long names truncate before it.
-            let left_w = (ui.available_width() - if bw > 0.0 { bw + 8.0 } else { 0.0 }).max(40.0);
-            let h = ui.spacing().interact_size.y;
-            // Reserve room for task / note / PR so only the *name* truncates.
-            let small = egui::TextStyle::Small.resolve(ui.style());
-            let hidden_w = if hidden { ui.painter().layout_no_wrap("hidden".into(), small, theme::TEXT_DIM).size().x + ui.spacing().item_spacing.x } else { 0.0 };
-            let extras_w = extras_width(ui, rv, r, &task, note, isz) + hidden_w + if elsewhere.is_some() { isz + ui.spacing().item_spacing.x } else { 0.0 };
-            let name_w = (left_w - extras_w).max(40.0);
-            let resp = ui
-                .allocate_ui_with_layout(egui::vec2(left_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let mut rt = RichText::new(label);
-                    if r.is_head {
-                        rt = rt.strong();
+    let h = ui.spacing().interact_size.y;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+    let focused = rv.focus_branch.as_deref() == Some(r.name.as_str());
+    if focused || resp.hovered() {
+        ui.painter().rect_filled(rect, 3.0, if focused { theme::SELECTED } else { theme::HOVER });
+    }
+    let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let ui = &mut row;
+    // ● for the current branch sits in the triangle column
+    gutter(ui, depth, r.is_head.then_some(theme::ACCENT));
+    let badge = Badge::new(ui, r);
+    let bw = badge.width();
+    // Right side: [badge] [eye]; the name truncates before them.
+    let right_w = h + 4.0 + if bw > 0.0 { bw + 6.0 } else { 0.0 };
+    let left_w = (ui.available_width() - right_w).max(40.0);
+    let extras_w = extras_width(ui, rv, r, &task, note, isz) + if elsewhere.is_some() { isz + ui.spacing().item_spacing.x } else { 0.0 };
+    let name_w = (left_w - extras_w).max(40.0);
+    ui.allocate_ui_with_layout(egui::vec2(left_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        let mut rt = RichText::new(label);
+        if r.is_head {
+            rt = rt.strong();
+        }
+        // Upstream deleted (e.g. merged and removed on the server), or not in the graph: dimmed.
+        if r.upstream_gone() || !shown {
+            rt = rt.color(theme::TEXT_DIM);
+        }
+        ui.allocate_ui_with_layout(egui::vec2(name_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.add(egui::Label::new(rt).truncate()).on_hover_text(&r.name);
+        });
+        if let Some(p) = &elsewhere {
+            ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, theme::TEXT_DIM))
+                .on_hover_text(format!("Checked out in worktree {}\nDouble-click to open it", p.display()));
+        }
+        branch_extras(ui, rv, r, &task, note, isz);
+    });
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.add_space(2.0);
+        if eye(ui, shown).clicked() {
+            let mut f = rv.graph_filter.clone();
+            f.set(r, !shown);
+            actions.push(Action::SetGraphFilter(f));
+        }
+        if bw > 0.0 {
+            ui.add_space(4.0);
+            match badge.show(ui, egui::Id::unique(("branch-badge", r.name.as_str()))) {
+                Some(SyncDir::Pull) if r.is_head => actions.push(Action::Pull),
+                Some(SyncDir::Push) if r.is_head => actions.push(Action::Push { force: false }),
+                Some(sync) => {
+                    if let (Some(remote), Some(rb)) = (r.upstream_remote.clone(), r.upstream_branch.clone()) {
+                        let (branch, label) = (r.name.clone(), if sync == SyncDir::Pull { "Pull" } else { "Push" });
+                        let f: std::sync::Arc<dyn Fn(&margin_core::git::Repo) -> margin_core::Result<String> + Send + std::marker::Sync> = if sync == SyncDir::Pull {
+                            std::sync::Arc::new(move |repo| repo.fast_forward(&remote, &rb, &branch))
+                        } else {
+                            std::sync::Arc::new(move |repo| repo.push_to_upstream(&remote, &branch, &rb))
+                        };
+                        actions.push(Action::RunGit { label: format!("{label} {}", r.name), f });
                     }
-                    // Upstream deleted (e.g. merged and removed on the server): dimmed.
-                    if r.upstream_gone() || hidden {
-                        rt = rt.color(theme::TEXT_DIM);
-                    }
-                    let resp = ui
-                        .allocate_ui_with_layout(egui::vec2(name_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.selectable_label(rv.focus_branch.as_deref() == Some(r.name.as_str()), rt).on_hover_text(&r.name)
-                        })
-                        .inner;
-                    if hidden {
-                        ui.label(RichText::new("hidden").small().color(theme::TEXT_DIM)).on_hover_text("Hidden in the history graph (right-click → Show in history)");
-                    }
-                    if let Some(p) = &elsewhere {
-                        ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, theme::TEXT_DIM))
-                            .on_hover_text(format!("Checked out in worktree {}\nDouble-click to open it", p.display()));
-                    }
-                    branch_extras(ui, rv, r, &task, note, isz);
-                    resp
-                })
-                .inner;
-            if bw > 0.0 {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(4.0);
-                    badge.show(ui);
-                });
+                }
+                None => {}
             }
-            resp
-        })
-        .inner;
+        }
+    });
     if resp.clicked() {
         // Select the tip first (selection resets focus), then focus the branch.
         actions.push(Action::JumpTo(r.target.clone()));
@@ -569,14 +646,9 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
         item(ui, "Rename…", Action::RenameBranchDialog(name.clone()));
         ui.separator();
         let mut f = rv.graph_filter.clone();
-        if f.only.is_some() || !hidden {
-            let mut solo = f.clone();
-            solo.only = if f.only.as_deref() == Some(name.as_str()) { None } else { Some(name.clone()) };
-            let label = if solo.only.is_some() { "Show only this branch in history" } else { "Show all branches in history" };
-            item(ui, label, Action::SetGraphFilter(solo));
-        }
-        f.toggle(&name, false);
-        item(ui, if hidden { "Show in history" } else { "Hide in history" }, Action::SetGraphFilter(f));
+        let solo = f.only.as_deref() == Some(name.as_str());
+        f.only = if solo { None } else { Some(name.clone()) };
+        item(ui, if solo { "Show the other branches again" } else { "Show only this branch in history" }, Action::SetGraphFilter(f));
         item(ui, "Copy name", Action::Copy(name.clone()));
         if !is_head {
             ui.separator();

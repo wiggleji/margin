@@ -688,6 +688,19 @@ impl Repo {
         self.run(&["push", "-u", remote, branch])
     }
 
+    /// Update a branch that isn't checked out from its upstream, fast-forward
+    /// only (`git fetch <remote> <remote-branch>:<local>`; refused otherwise).
+    pub fn fast_forward(&self, remote: &str, remote_branch: &str, local: &str) -> Result<String> {
+        let spec = format!("refs/heads/{remote_branch}:refs/heads/{local}");
+        self.run(&["fetch", remote, &spec])
+    }
+
+    /// Push a branch (checked out or not) to its upstream branch.
+    pub fn push_to_upstream(&self, remote: &str, local: &str, remote_branch: &str) -> Result<String> {
+        let spec = format!("refs/heads/{local}:refs/heads/{remote_branch}");
+        self.run(&["push", remote, &spec])
+    }
+
     pub fn delete_remote_branch(&self, remote: &str, branch: &str) -> Result<String> {
         self.run(&["push", remote, "--delete", branch])
     }

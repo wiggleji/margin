@@ -520,36 +520,39 @@ fn notes(rv: &RepoView, current: Option<&str>, v: &mut Vec<Command>) {
     }
 }
 
-/// Which branches the history graph shows.
+/// Which branches the history graph shows (see also the eye on each branch).
 fn history_filter(rv: &RepoView, current: Option<&str>, branches: &[Item], v: &mut Vec<Command>) {
     use margin_core::history::HistoryFilter;
     let f = rv.graph_filter.clone();
     let set = |f: HistoryFilter| act(move |_| vec![Action::SetGraphFilter(f.clone())]);
-    if !f.is_empty() {
-        v.push(c(Group::Navigate, "Show all branches in history", "", "unhide graph filter", vec![], set(HistoryFilter::default())));
-    }
+    v.push(c(Group::Navigate, "Show all branches in history", "", "unhide graph filter eye", vec![], set(HistoryFilter::reset(true, f.hide_tags))));
+    v.push(c(Group::Navigate, "Show only major branches in history", "main, develop, current", "graph filter eye default", vec![], set(HistoryFilter::reset(false, f.hide_tags))));
     if let Some(cur) = current {
         let mut g = f.clone();
         g.only = Some(cur.to_string());
-        v.push(c(Group::Navigate, "Show only the current branch in history", cur, "solo hide graph filter", vec![], set(g)));
+        v.push(c(Group::Navigate, "Show only the current branch in history", cur, "solo graph filter", vec![], set(g)));
     }
+    let refs = rv.snap.as_ref().map(|s| s.refs.clone()).unwrap_or_default();
     let base = f.clone();
     v.push(c(
         Group::Navigate,
-        "Hide or show a branch in history…",
+        "Show or hide a branch in history…",
         "",
-        "graph filter unhide",
+        "graph filter eye toggle",
         vec![pick("Branch", branches.to_vec())],
         act(move |x| {
             let mut g = base.clone();
-            g.toggle(&x[0], false);
-            vec![Action::SetGraphFilter(g)]
+            let up = margin_core::history::head_upstream(&refs);
+            match refs.iter().find(|r| r.kind == margin_core::git::RefKind::Local && r.name == x[0]) {
+                Some(r) => {
+                    let shown = g.shows(r, up.as_deref());
+                    g.set(r, !shown);
+                    vec![Action::SetGraphFilter(g)]
+                }
+                None => vec![],
+            }
         }),
     ));
-    let mut g = f.clone();
-    g.hide_all_remotes = !g.hide_all_remotes;
-    let t = if f.hide_all_remotes { "Show remote branches in history" } else { "Hide remote branches in history" };
-    v.push(c(Group::Navigate, t, "", "graph filter origin", vec![], set(g)));
     let mut g = f.clone();
     g.hide_tags = !g.hide_tags;
     let t = if f.hide_tags { "Show tags in history" } else { "Hide tags in history" };
