@@ -141,9 +141,15 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                         refs.into_iter().map(|r| (r.name.split_once('/').map_or(r.name.clone(), |(_, b)| b.to_string()), r)).collect(),
                     );
                     render_tree(ui, &tree, remote, 1, &|_| false, &mut |ui, label, depth, r| {
+                        let hidden = rv.graph_filter.hides(&r.name, true);
                         let resp = ui.horizontal(|ui| {
                             gutter(ui, depth, None);
-                            ui.selectable_label(false, label)
+                            let t = if hidden { RichText::new(label).color(theme::TEXT_DIM) } else { RichText::new(label) };
+                            let resp = ui.selectable_label(false, t);
+                            if hidden {
+                                ui.label(RichText::new("hidden").small().color(theme::TEXT_DIM));
+                            }
+                            resp
                         }).inner;
                         if resp.clicked() {
                             actions.push(Action::JumpTo(r.target.clone()));
@@ -156,6 +162,13 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                             }
                             if ui.button("Merge into current branch").clicked() {
                                 actions.push(Action::Confirm { msg: format!("Merge {name}?"), action: Box::new(Action::Merge(name.clone())) });
+                                ui.close();
+                            }
+                            ui.separator();
+                            let mut f = rv.graph_filter.clone();
+                            f.toggle(&name, true);
+                            if ui.button(if hidden { "Show in history" } else { "Hide in history" }).clicked() {
+                                actions.push(Action::SetGraphFilter(f));
                                 ui.close();
                             }
                         });
@@ -467,6 +480,7 @@ impl Badge {
 fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize, isz: f32, actions: &mut Vec<Action>) {
     let task = rv.notes.task_for_branch(&r.name);
     let note = rv.has_note(&NoteTarget::Branch(r.name.clone()));
+    let hidden = rv.graph_filter.hides(&r.name, false);
     // Checked out in another worktree: git refuses to check it out here.
     let elsewhere = rv.snap.as_ref().and_then(|s| s.worktree_for(&r.name)).map(|w| w.wt.path.clone());
     let resp = ui
@@ -479,7 +493,9 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
             let left_w = (ui.available_width() - if bw > 0.0 { bw + 8.0 } else { 0.0 }).max(40.0);
             let h = ui.spacing().interact_size.y;
             // Reserve room for task / note / PR so only the *name* truncates.
-            let extras_w = extras_width(ui, rv, r, &task, note, isz) + if elsewhere.is_some() { isz + ui.spacing().item_spacing.x } else { 0.0 };
+            let small = egui::TextStyle::Small.resolve(ui.style());
+            let hidden_w = if hidden { ui.painter().layout_no_wrap("hidden".into(), small, theme::TEXT_DIM).size().x + ui.spacing().item_spacing.x } else { 0.0 };
+            let extras_w = extras_width(ui, rv, r, &task, note, isz) + hidden_w + if elsewhere.is_some() { isz + ui.spacing().item_spacing.x } else { 0.0 };
             let name_w = (left_w - extras_w).max(40.0);
             let resp = ui
                 .allocate_ui_with_layout(egui::vec2(left_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -487,11 +503,18 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
                     if r.is_head {
                         rt = rt.strong();
                     }
+                    // Upstream deleted (e.g. merged and removed on the server): dimmed.
+                    if r.upstream_gone() || hidden {
+                        rt = rt.color(theme::TEXT_DIM);
+                    }
                     let resp = ui
                         .allocate_ui_with_layout(egui::vec2(name_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.selectable_label(rv.focus_branch.as_deref() == Some(r.name.as_str()), rt).on_hover_text(&r.name)
                         })
                         .inner;
+                    if hidden {
+                        ui.label(RichText::new("hidden").small().color(theme::TEXT_DIM)).on_hover_text("Hidden in the history graph (right-click → Show in history)");
+                    }
                     if let Some(p) = &elsewhere {
                         ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, theme::TEXT_DIM))
                             .on_hover_text(format!("Checked out in worktree {}\nDouble-click to open it", p.display()));
@@ -544,6 +567,16 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
             item(ui, &format!("Open {t}"), Action::FocusTask(t.clone()));
         }
         item(ui, "Rename…", Action::RenameBranchDialog(name.clone()));
+        ui.separator();
+        let mut f = rv.graph_filter.clone();
+        if f.only.is_some() || !hidden {
+            let mut solo = f.clone();
+            solo.only = if f.only.as_deref() == Some(name.as_str()) { None } else { Some(name.clone()) };
+            let label = if solo.only.is_some() { "Show only this branch in history" } else { "Show all branches in history" };
+            item(ui, label, Action::SetGraphFilter(solo));
+        }
+        f.toggle(&name, false);
+        item(ui, if hidden { "Show in history" } else { "Hide in history" }, Action::SetGraphFilter(f));
         item(ui, "Copy name", Action::Copy(name.clone()));
         if !is_head {
             ui.separator();

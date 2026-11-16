@@ -85,6 +85,7 @@ pub fn build(app: &MarginApp) -> Vec<Command> {
     }
     github(rv, current.as_deref(), &mut v);
     notes(rv, current.as_deref(), &mut v);
+    history_filter(rv, current.as_deref(), &local_items(false), &mut v);
     navigate(&all_branch_items, &tag_items, &mut v);
     v
 }
@@ -517,6 +518,42 @@ fn notes(rv: &RepoView, current: Option<&str>, v: &mut Vec<Command>) {
             act(|x| margin_core::notes::NoteTarget::parse(&x[0]).map(|t| vec![Action::OpenNote(t)]).unwrap_or_default()),
         ));
     }
+}
+
+/// Which branches the history graph shows.
+fn history_filter(rv: &RepoView, current: Option<&str>, branches: &[Item], v: &mut Vec<Command>) {
+    use margin_core::history::HistoryFilter;
+    let f = rv.graph_filter.clone();
+    let set = |f: HistoryFilter| act(move |_| vec![Action::SetGraphFilter(f.clone())]);
+    if !f.is_empty() {
+        v.push(c(Group::Navigate, "Show all branches in history", "", "unhide graph filter", vec![], set(HistoryFilter::default())));
+    }
+    if let Some(cur) = current {
+        let mut g = f.clone();
+        g.only = Some(cur.to_string());
+        v.push(c(Group::Navigate, "Show only the current branch in history", cur, "solo hide graph filter", vec![], set(g)));
+    }
+    let base = f.clone();
+    v.push(c(
+        Group::Navigate,
+        "Hide or show a branch in history…",
+        "",
+        "graph filter unhide",
+        vec![pick("Branch", branches.to_vec())],
+        act(move |x| {
+            let mut g = base.clone();
+            g.toggle(&x[0], false);
+            vec![Action::SetGraphFilter(g)]
+        }),
+    ));
+    let mut g = f.clone();
+    g.hide_all_remotes = !g.hide_all_remotes;
+    let t = if f.hide_all_remotes { "Show remote branches in history" } else { "Hide remote branches in history" };
+    v.push(c(Group::Navigate, t, "", "graph filter origin", vec![], set(g)));
+    let mut g = f.clone();
+    g.hide_tags = !g.hide_tags;
+    let t = if f.hide_tags { "Show tags in history" } else { "Hide tags in history" };
+    v.push(c(Group::Navigate, t, "", "graph filter", vec![], set(g)));
 }
 
 fn navigate(branches: &[Item], tags: &[Item], v: &mut Vec<Command>) {

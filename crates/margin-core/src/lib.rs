@@ -21,6 +21,7 @@ pub mod diff;
 pub mod git;
 pub mod github;
 pub mod gitflow;
+pub mod history;
 pub mod journal;
 pub mod license;
 mod http;

@@ -207,21 +207,18 @@ impl Repo {
     /// Commits reachable from all branches, remotes and tags, topo-ordered
     /// (what Sublime Merge shows by default).
     pub fn log(&self, limit: usize, skip: usize) -> Result<Vec<Commit>> {
+        self.log_with(&["--branches".into(), "--remotes".into(), "--tags".into()], limit, skip)
+    }
+
+    /// History from `revs` (e.g. `--branches`, `--exclude=x`) plus HEAD.
+    pub fn log_with(&self, revs: &[String], limit: usize, skip: usize) -> Result<Vec<Commit>> {
         if !self.has_head() && self.run(&["for-each-ref", "--count=1"])?.trim().is_empty() {
             return Ok(vec![]);
         }
         let max = format!("--max-count={limit}");
         let skip = format!("--skip={skip}");
-        let mut args = vec![
-            "log",
-            "--topo-order",
-            "--branches",
-            "--remotes",
-            "--tags",
-            &max,
-            &skip,
-            "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s%x1e",
-        ];
+        let mut args = vec!["log", "--topo-order", &max, &skip, "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s%x1e"];
+        args.extend(revs.iter().map(String::as_str));
         if self.has_head() {
             args.push("HEAD");
         }

@@ -6,7 +6,7 @@ use eframe::egui;
 use margin_core::config::{self, Config, State};
 use margin_core::diff;
 use margin_core::github::{GitHub, PrDetail, PrSummary};
-use margin_core::git::{CommitDetail, FileChange, Repo, ResetMode};
+use margin_core::git::{CommitDetail, FileChange, RefKind, Repo, ResetMode};
 use margin_core::graph::{self, GraphRow};
 use margin_core::notes::{NoteStore, NoteTarget};
 use margin_core::tasks::{self, Task, TaskProvider};
@@ -113,6 +113,8 @@ pub enum Action {
     ToggleAutoFetch,
     /// Move the notes panel between the details and the history column.
     ToggleNotesDock,
+    /// Change which branches the history graph shows (saved per repository).
+    SetGraphFilter(margin_core::history::HistoryFilter),
     /// Reload the shown diff (e.g. after toggling "Ignore whitespace").
     ReloadDiff,
     /// Revert an automatic re-attachment (journal id).
@@ -181,6 +183,8 @@ pub struct RepoView {
     pub limit: usize,
     /// Selection history for the toolbar's back/forward (like a browser).
     pub history: Vec<Sel>,
+    /// Branches hidden from the history graph (per repository, view.json).
+    pub graph_filter: margin_core::history::HistoryFilter,
     pub hist_pos: usize,
     /// Set while navigating back/forward so the move isn't recorded again.
     pub navigating: bool,
@@ -219,7 +223,9 @@ impl RepoView {
     fn new(repo: Repo, notes: NoteStore) -> RepoView {
         let looks_github = repo.remote_url("origin").is_some_and(|u| u.to_lowercase().contains("github"));
         let repo_id = margin_core::sync::repo_id(&repo);
+        let graph_filter = margin_core::history::load(&repo);
         let mut rv = RepoView {
+            graph_filter,
             repo,
             notes,
             snap: None,
@@ -437,12 +443,13 @@ impl MarginApp {
         rv.loading = true;
         let repo = rv.repo.clone();
         let limit = rv.limit;
+        let filter = rv.graph_filter.clone();
         self.jobs.spawn(move || {
             // status (slow in monorepos), log and refs run concurrently.
             let r = std::thread::scope(|s| {
                 let st = s.spawn(|| repo.status());
                 let refs = s.spawn(|| repo.refs());
-                let log = repo.log(limit, 0);
+                let log = margin_core::history::log(&repo, &filter, limit, 0);
                 let status = st.join().unwrap()?;
                 let refs = refs.join().unwrap()?;
                 let commits = log?;
@@ -1236,6 +1243,14 @@ impl MarginApp {
                     None => {}
                 }
             }
+            SetGraphFilter(f) => {
+                let Some(rv) = &mut self.rv else { return };
+                if let Err(e) = margin_core::history::save(&rv.repo, &f) {
+                    return self.err(e);
+                }
+                rv.graph_filter = f;
+                self.refresh();
+            }
             ToggleNotesDock => {
                 self.state.notes_under_history = !self.state.notes_under_history;
                 let _ = config::save_state(&self.state);
@@ -1491,6 +1506,11 @@ impl MarginApp {
                 rv.loading = false;
                 match r {
                     Ok(snap) => {
+                        // Forget hidden branches that no longer exist (deleted / pruned).
+                        let names = |k: RefKind| snap.refs.iter().filter(|r| r.kind == k).map(|r| r.name.as_str()).collect::<Vec<_>>();
+                        if rv.graph_filter.prune(&names(RefKind::Local), &names(RefKind::Remote)) {
+                            let _ = margin_core::history::save(&rv.repo, &rv.graph_filter);
+                        }
                         let (g, _w) = graph::layout(&snap.commits);
                         rv.graph = g;
                         rv.row_of = snap.commits.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();

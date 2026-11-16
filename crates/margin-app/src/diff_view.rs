@@ -3,6 +3,7 @@
 //!
 //! Two layouts, switched from the bar above the diff: inline (unified) and
 //! side by side (old left, new right; removed/added runs paired up).
+//! Long lines wrap onto extra rows (no sideways scrolling).
 //! Within paired changed lines the changed words are highlighted; whitespace
 //! changes can be ignored (git -w); ⌥↑/⌥↓ jump between changes.
 
@@ -32,9 +33,10 @@ pub enum DiffMode {
 enum Row {
     File(usize),
     Hunk(usize, usize),
-    Line(usize, usize, usize),
-    /// Side by side: (file, hunk, old line, new line) — either side may be empty.
-    Pair(usize, usize, Option<usize>, Option<usize>),
+    /// (file, hunk, line, wrapped segment)
+    Line(usize, usize, usize, usize),
+    /// Side by side: (file, hunk, old line, new line, wrapped segment) — either side may be empty.
+    Pair(usize, usize, Option<usize>, Option<usize>, usize),
     Note(usize),
 }
 
@@ -52,7 +54,8 @@ pub struct DiffView {
     pub error: Option<String>,
     collapsed: HashSet<usize>,
     rows: Vec<Row>,
-    max_chars: usize,
+    /// Columns per visual row; longer lines wrap.
+    cols: usize,
     /// Rows are built for this layout.
     split: bool,
     /// Changed byte ranges per (file, hunk, line), for word highlighting.
@@ -95,7 +98,9 @@ impl DiffView {
 
     fn rebuild(&mut self) {
         self.rows.clear();
-        self.max_chars = 40;
+        let cols = self.cols.max(10);
+        // Visual rows a line takes (tabs count as 4 columns).
+        let segs = |t: &str| t.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>().div_ceil(cols).max(1);
         for (fi, f) in self.files.iter().enumerate() {
             self.rows.push(Row::File(fi));
             if self.collapsed.contains(&fi) {
@@ -106,13 +111,16 @@ impl DiffView {
             }
             for (hi, h) in f.hunks.iter().enumerate() {
                 self.rows.push(Row::Hunk(fi, hi));
-                for l in &h.lines {
-                    self.max_chars = self.max_chars.max(l.text.len() + 4 * l.text.matches('\t').count());
-                }
                 if !self.split {
-                    self.rows.extend((0..h.lines.len()).map(|li| Row::Line(fi, hi, li)));
+                    for (li, l) in h.lines.iter().enumerate() {
+                        self.rows.extend((0..segs(&l.text)).map(|sg| Row::Line(fi, hi, li, sg)));
+                    }
                     continue;
                 }
+                let pair = |rows: &mut Vec<Row>, old: Option<usize>, new: Option<usize>| {
+                    let n = [old, new].iter().flatten().map(|&x| segs(&h.lines[x].text)).max().unwrap_or(1);
+                    rows.extend((0..n).map(|sg| Row::Pair(fi, hi, old, new, sg)));
+                };
                 // Side by side: context on both sides; a run of removed lines
                 // followed by added lines is paired up row by row.
                 let lines = &h.lines;
@@ -131,12 +139,12 @@ impl DiffView {
                             for n in 0..(j - i).max(k - j) {
                                 let old = (i + n < j).then_some(i + n);
                                 let new = (j + n < k).then_some(j + n);
-                                self.rows.push(Row::Pair(fi, hi, old, new));
+                                pair(&mut self.rows, old, new);
                             }
                             i = k.max(i + 1);
                         }
                         LineKind::Context | LineKind::NoNewline => {
-                            self.rows.push(Row::Pair(fi, hi, Some(i), Some(i)));
+                            pair(&mut self.rows, Some(i), Some(i));
                             i += 1;
                         }
                     }
@@ -243,6 +251,16 @@ impl DiffView {
         let mut action = None;
         let mut toggle = None;
 
+        // Wrap width in columns (minus room for the scrollbar); rows depend on it.
+        let avail = ui.available_width() - 18.0;
+        let text_w = if self.split { avail / 2.0 - (char_w * 8.0 + 8.0) } else { avail - gutter - char_w * 2.0 };
+        // (one column spare: glyph widths aren't exactly `char_w` in every font)
+        let cols = ((text_w / char_w).floor() as usize).saturating_sub(1).max(10);
+        if cols != self.cols {
+            self.cols = cols;
+            self.rebuild();
+        }
+
         // Next / previous change = the next hunk header below / above the top of the view.
         if nav != 0 {
             let ys = self.rows.iter().enumerate().filter(|(_, r)| matches!(r, Row::Hunk(..))).map(|(i, _)| i as f32 * row_h);
@@ -252,7 +270,7 @@ impl DiffView {
                 self.flash = Some(((y / row_h).round() as usize, ui.input(|i| i.time)));
             }
         }
-        let mut area = egui::ScrollArea::both().id_salt(id).auto_shrink([false, false]);
+        let mut area = egui::ScrollArea::vertical().id_salt(id).auto_shrink([false, false]);
         if let Some(y) = self.jump.take() {
             area = area.vertical_scroll_offset(y);
         }
@@ -265,13 +283,7 @@ impl DiffView {
         });
         let out = area.show_rows(ui, row_h, self.rows.len(), |ui, range| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                let width = if self.split {
-                    // Each half gets half the visible width (long lines are clipped),
-                    // so old and new always sit next to each other.
-                    ui.available_width()
-                } else {
-                    ui.available_width().max(gutter + char_w * (self.max_chars as f32 + 2.0))
-                };
+                let width = ui.available_width();
                 for i in range {
                     let row = self.rows[i];
                     let sense = if matches!(row, Row::File(_)) { Sense::click() } else { Sense::hover() };
@@ -347,7 +359,7 @@ impl DiffView {
                             }
                             p.text(pos2(x + 4.0, rect.center().y), Align2::LEFT_CENTER, &h.header, font.clone(), theme::TEXT_DIM);
                         }
-                        Row::Line(fi, hi, li) => {
+                        Row::Line(fi, hi, li, seg) => {
                             let l = &self.files[fi].hunks[hi].lines[li];
                             let (bg, sign, fg) = match l.kind {
                                 LineKind::Added => (Some(theme::ADDED_BG), "+", theme::TEXT),
@@ -358,22 +370,20 @@ impl DiffView {
                             if let Some(bg) = bg {
                                 p.rect_filled(rect, 0.0, bg);
                             }
-                            let num = |n: Option<u32>| n.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
-                            p.text(
-                                pos2(rect.left() + 4.0, rect.center().y),
-                                Align2::LEFT_CENTER,
-                                format!("{} {}", num(l.old_no), num(l.new_no)),
-                                font.clone(),
-                                theme::TEXT_DIM,
-                            );
-                            let text_x = rect.left() + gutter + char_w * 2.0;
-                            if let Some(sp) = words.get(&(fi, hi, li)) {
-                                paint_words(&p, &l.text, sp, text_x, rect, char_w, l.kind);
+                            if seg == 0 {
+                                let num = |n: Option<u32>| n.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
+                                p.text(
+                                    pos2(rect.left() + 4.0, rect.center().y),
+                                    Align2::LEFT_CENTER,
+                                    format!("{} {}", num(l.old_no), num(l.new_no)),
+                                    font.clone(),
+                                    theme::TEXT_DIM,
+                                );
                             }
-                            let text = format!("{sign} {}", l.text.replace('\t', "    "));
-                            p.text(pos2(rect.left() + gutter, rect.center().y), Align2::LEFT_CENTER, text, font.clone(), fg);
+                            let seg_text = Seg { text: &l.text, seg, cols: self.cols };
+                            seg_text.paint(&p, rect, rect.left() + gutter, sign, words.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
                         }
-                        Row::Pair(fi, hi, old, new) => {
+                        Row::Pair(fi, hi, old, new, seg) => {
                             let lines = &self.files[fi].hunks[hi].lines;
                             let half = rect.width() / 2.0;
                             let sides = [
@@ -388,6 +398,14 @@ impl DiffView {
                                     continue;
                                 };
                                 let l = &lines[li];
+                                let st = Seg { text: &l.text, seg, cols: self.cols };
+                                if seg >= st.count() {
+                                    // the other side wrapped further: keep the line's background
+                                    if let Some(bg) = match l.kind { LineKind::Added => Some(theme::ADDED_BG), LineKind::Removed => Some(theme::REMOVED_BG), _ => None } {
+                                        sp.rect_filled(r, 0.0, bg);
+                                    }
+                                    continue;
+                                }
                                 let (bg, sign, fg) = match l.kind {
                                     LineKind::Added => (Some(theme::ADDED_BG), "+", theme::TEXT),
                                     LineKind::Removed => (Some(theme::REMOVED_BG), "-", theme::TEXT),
@@ -397,15 +415,12 @@ impl DiffView {
                                 if let Some(bg) = bg {
                                     sp.rect_filled(r, 0.0, bg);
                                 }
-                                let n = if is_old { l.old_no } else { l.new_no };
-                                let num = n.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
-                                sp.text(pos2(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, num, font.clone(), theme::TEXT_DIM);
-                                let text_x = r.left() + char_w * 8.0 + 8.0;
-                                if let Some(w) = words.get(&(fi, hi, li)) {
-                                    paint_words(&sp, &l.text, w, text_x, r, char_w, l.kind);
+                                if seg == 0 {
+                                    let n = if is_old { l.old_no } else { l.new_no };
+                                    let num = n.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
+                                    sp.text(pos2(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, num, font.clone(), theme::TEXT_DIM);
                                 }
-                                let text = format!("{sign} {}", l.text.replace('\t', "    "));
-                                sp.text(pos2(r.left() + char_w * 6.0 + 8.0, r.center().y), Align2::LEFT_CENTER, text, font.clone(), fg);
+                                st.paint(&sp, r, r.left() + char_w * 6.0 + 8.0, sign, words.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
                             }
                             p.line_segment([pos2(rect.left() + half, rect.top()), pos2(rect.left() + half, rect.bottom())], Stroke::new(1.0, theme::BG_DARK));
                         }
@@ -458,14 +473,44 @@ fn word_highlights(files: &[FileDiff]) -> HashMap<(usize, usize, usize), Vec<(us
     out
 }
 
-/// Brighter background behind the changed words of a line drawn at `text_x`.
-fn paint_words(p: &egui::Painter, text: &str, spans: &[(usize, usize)], text_x: f32, rect: Rect, char_w: f32, kind: LineKind) {
-    let color = if kind == LineKind::Added { theme::ADDED_WORD_BG } else { theme::REMOVED_WORD_BG };
-    // Column of a byte offset (tabs are drawn as 4 spaces).
-    let col = |b: usize| text[..b].chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>() as f32;
-    for &(s, e) in spans {
-        let r = Rect::from_min_max(pos2(text_x + col(s) * char_w, rect.top() + 1.0), pos2(text_x + col(e) * char_w, rect.bottom() - 1.0));
-        p.rect_filled(r, 2.0, color);
+/// One wrapped segment of a diff line: columns `[seg*cols, (seg+1)*cols)` of
+/// the line with tabs expanded to 4 spaces.
+struct Seg<'a> {
+    text: &'a str,
+    seg: usize,
+    cols: usize,
+}
+
+impl Seg<'_> {
+    fn count(&self) -> usize {
+        self.text.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>().div_ceil(self.cols).max(1)
+    }
+
+    /// Sign (first segment only) at `x`, text after it, changed words highlighted.
+    #[allow(clippy::too_many_arguments)]
+    fn paint(&self, p: &egui::Painter, rect: Rect, x: f32, sign: &str, words: Option<&Vec<(usize, usize)>>, kind: LineKind, font: &FontId, fg: Color32, char_w: f32) {
+        let text_x = x + char_w * 2.0;
+        let (from, to) = (self.seg * self.cols, (self.seg + 1) * self.cols);
+        if let Some(spans) = words {
+            let color = if kind == LineKind::Added { theme::ADDED_WORD_BG } else { theme::REMOVED_WORD_BG };
+            // Column of a byte offset (tabs are drawn as 4 spaces).
+            let col = |b: usize| self.text[..b].chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>();
+            for &(s, e) in spans {
+                let (a, b) = (col(s).max(from), col(e).min(to));
+                if a < b {
+                    let r = Rect::from_min_max(
+                        pos2(text_x + (a - from) as f32 * char_w, rect.top() + 1.0),
+                        pos2(text_x + (b - from) as f32 * char_w, rect.bottom() - 1.0),
+                    );
+                    p.rect_filled(r, 2.0, color);
+                }
+            }
+        }
+        if self.seg == 0 {
+            p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, sign, font.clone(), fg);
+        }
+        let chunk: String = self.text.replace('\t', "    ").chars().skip(from).take(self.cols).collect();
+        p.text(pos2(text_x, rect.center().y), Align2::LEFT_CENTER, chunk, font.clone(), fg);
     }
 }
 

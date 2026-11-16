@@ -16,6 +16,33 @@ const LANE_W: f32 = 12.0;
 const MAX_LANES: usize = 14;
 
 pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
+    // Some branches hidden: say so, with a way back.
+    if !rv.graph_filter.is_empty() {
+        let f = &rv.graph_filter;
+        let what = match &f.only {
+            Some(b) => format!("Showing only {b}"),
+            None => {
+                let mut parts = vec![];
+                let n = f.hidden_branches.len() + f.hidden_remotes.len();
+                if n > 0 {
+                    parts.push(format!("{n} branch{} hidden", if n == 1 { "" } else { "es" }));
+                }
+                if f.hide_all_remotes {
+                    parts.push("remote branches hidden".into());
+                }
+                if f.hide_tags {
+                    parts.push("tags hidden".into());
+                }
+                parts.join(" · ")
+            }
+        };
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(what).small().color(theme::ACCENT));
+            if ui.small_button("Show all").clicked() {
+                actions.push(Action::SetGraphFilter(Default::default()));
+            }
+        });
+    }
     let Some(snap) = rv.snap.as_ref() else {
         ui.centered_and_justified(|ui| ui.spinner());
         return;
