@@ -2058,15 +2058,19 @@ impl eframe::App for MarginApp {
                     crate::notes_panel::show(ui, rv, &self.task_cache, tasks_configured, &license, &task_url, &self.author, state, notes_h, actions);
                 });
             };
+            let diff_split = self.state.diff_split;
             let state = &mut self.state;
             egui::Panel::right("details").resizable(true).default_size(560.0).min_size(360.0).show(ui, |ui| {
                 if !under_history {
                     notes(ui, rv, state, &mut actions);
                 }
                 egui::CentralPanel::default().show(ui, |ui| {
-                    crate::details::show(ui, rv, &mut actions);
+                    crate::details::show(ui, rv, &mut state.diff_split, &mut actions);
                 });
             });
+            if state.diff_split != diff_split {
+                let _ = config::save_state(state);
+            }
             egui::CentralPanel::default().show(ui, |ui| {
                 if under_history {
                     notes(ui, rv, state, &mut actions);

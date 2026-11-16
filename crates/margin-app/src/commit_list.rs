@@ -7,7 +7,11 @@ use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, Ui, pos2,
 use margin_core::git::{Commit, ResetMode};
 use margin_core::notes::NoteTarget;
 
-const ROW_H: f32 = 22.0;
+/// Two text lines per commit (subject / author, see `show`).
+const ROW_H: f32 = 40.0;
+/// Line centres from the row's top / bottom.
+const LINE1: f32 = 12.0;
+const LINE2: f32 = 11.0;
 const LANE_W: f32 = 12.0;
 const MAX_LANES: usize = 14;
 
@@ -96,13 +100,10 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 let st = &snap.status;
                 let staged = st.files.iter().filter(|f| f.is_staged()).count();
                 let unstaged = st.files.iter().filter(|f| f.is_unstaged()).count();
-                let text = if st.files.is_empty() {
-                    "Working directory — clean".to_string()
-                } else {
-                    format!("Working directory — {unstaged} unstaged, {staged} staged")
-                };
+                let detail = if st.files.is_empty() { "clean".to_string() } else { format!("{unstaged} unstaged, {staged} staged") };
                 p.circle_stroke(pos2(rect.left() + 10.0, rect.center().y), 4.0, Stroke::new(1.5, theme::TEXT_DIM));
-                p.text(pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, text, font.clone(), theme::TEXT);
+                p.text(pos2(rect.left() + 24.0, rect.top() + LINE1), Align2::LEFT_CENTER, "Working directory", font.clone(), theme::TEXT);
+                p.text(pos2(rect.left() + 24.0, rect.bottom() - LINE2), Align2::LEFT_CENTER, detail, small.clone(), theme::TEXT_DIM);
                 if resp.clicked() {
                     actions.push(Action::Select(Sel::Working));
                 }
@@ -129,74 +130,118 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 20.0
             };
 
-            // --- right columns
-            // Drop the author column when the list is narrow.
-            let date_w = 82.0;
-            let author_w = if rect.width() > 560.0 { 130.0 } else { 0.0 };
+            // Two lines:
+            //   subject ……………………………………………… [branch] [tag]
+            //   author [note] [branch note] ………… [PR #12] [PROJ-1]  2h ago
+            let (y1, y2) = (rect.top() + LINE1, rect.bottom() - LINE2);
+            let left = rect.left() + graph_w + 4.0;
             let right = rect.right() - 8.0;
-            p.text(pos2(right, rect.center().y), Align2::RIGHT_CENTER, rel_time(now, c.time), small.clone(), theme::TEXT_DIM);
-            let author_rect = Rect::from_min_max(pos2(right - date_w - author_w, rect.top()), pos2(right - date_w - 6.0, rect.bottom()));
-            if author_w > 0.0 {
-                ui.painter_at(author_rect).text(
-                pos2(author_rect.left(), rect.center().y),
-                Align2::LEFT_CENTER,
-                &c.author,
-                small.clone(),
-                theme::TEXT_DIM,
-            );
+            let isz = small.size + 1.0;
+            let tips = rv.tips.get(&c.id);
+            let is_tip = |name: &str| tips.is_some_and(|t| t.iter().any(|x| x == name));
+            let mut hover_extra = String::new();
+
+            // ---- line 1, right: ref labels, right-aligned (at most ~60% of the row)
+            let refs: Vec<(String, Color32)> = c.refs.iter().map(|r| ref_chip(r)).collect();
+            let budget = ((right - left) * 0.6).max(60.0);
+            let mut shown: Vec<(std::sync::Arc<egui::Galley>, Color32)> = vec![];
+            let mut used = 0.0;
+            for (k, (label, color)) in refs.iter().enumerate() {
+                let g = p.layout_no_wrap(label.clone(), small.clone(), Color32::BLACK);
+                let w = g.size().x + 10.0 + 4.0;
+                let rest = refs.len() - k - 1;
+                // keep room for a "+N" label when more follow
+                let reserve = if rest > 0 { 30.0 } else { 0.0 };
+                if used + w + reserve > budget && !shown.is_empty() {
+                    break;
+                }
+                used += w;
+                shown.push((g, *color));
+            }
+            let hidden = refs.len() - shown.len();
+            if hidden > 0 {
+                hover_extra += &format!("\n\nRefs: {}", refs.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join(", "));
+            }
+            let more = (hidden > 0).then(|| p.layout_no_wrap(format!("+{hidden}"), small.clone(), theme::TEXT_DIM));
+            let total = used + more.as_ref().map_or(0.0, |g| g.size().x + 4.0);
+            let mut x = right - total + 4.0;
+            let refs_left = if refs.is_empty() { right } else { x - 4.0 };
+            let rp = ui.painter_at(Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.center().y)));
+            for (g, color) in shown {
+                let chip = Rect::from_min_size(pos2(x, y1 - g.size().y / 2.0 - 1.0), g.size() + vec2(10.0, 2.0));
+                rp.rect_filled(chip, 3.0, color);
+                let w = chip.width();
+                rp.galley(chip.min + vec2(5.0, 1.0), g, Color32::BLACK);
+                x += w + 4.0;
+            }
+            if let Some(g) = more {
+                rp.galley(pos2(x, y1 - g.size().y / 2.0), g, theme::TEXT_DIM);
             }
 
-            // --- refs + subject
-            let mut x = rect.left() + graph_w + 4.0;
-            let subj_clip = Rect::from_min_max(pos2(x, rect.top()), pos2(author_rect.left() - 8.0, rect.bottom()));
-            let sp = ui.painter_at(subj_clip);
-            let isz = small.size + 1.0;
+            // ---- line 1, left: subject (clipped before the labels)
+            let sp = ui.painter_at(Rect::from_min_max(pos2(left, rect.top()), pos2(refs_left - 8.0, rect.center().y)));
+            sp.text(pos2(left + 2.0, y1), Align2::LEFT_CENTER, &c.subject, font.clone(), theme::TEXT);
+
+            // ---- line 2, right (right to left): time, task keys, PR status
+            let mut rx = right;
+            let tg = p.layout_no_wrap(rel_time(now, c.time), small.clone(), theme::TEXT_DIM);
+            rx -= tg.size().x;
+            p.galley(pos2(rx, y2 - tg.size().y / 2.0), tg, theme::TEXT_DIM);
+            rx -= 8.0;
+            // Tasks: keys in the subject, and the task linked to a branch whose tip this is.
+            let mut keys = margin_core::tasks::extract_keys(&c.subject);
+            for b in tips.into_iter().flatten() {
+                if let Some(k) = rv.notes.task_for_branch(b) {
+                    if !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
+            }
+            for k in keys.iter().rev() {
+                rx = outline_chip_right(&p, rx, y2, k, None, theme::lane(0), &small, isz) - 4.0;
+            }
+            for b in tips.into_iter().flatten().rev() {
+                if let Some(pr) = rv.prs.get(b) {
+                    let tone = crate::pr_view::tone_color(pr.readiness().1);
+                    // [GitHub mark] #12 ● (CI) — coloured by merge readiness
+                    let dot_x = rx - 6.0;
+                    p.circle_filled(pos2(dot_x, y2), 2.5, ci_color(pr.ci));
+                    rx = outline_chip_right(&p, rx, y2, &format!("#{}   ", pr.number), Some(Icon::Github), tone, &small, isz) - 4.0;
+                    hover_extra += &format!("\n\n{}", crate::pr_view::hover_summary(pr));
+                }
+            }
+
+            // ---- line 2, left: author, then note markers
+            let lp = ui.painter_at(Rect::from_min_max(pos2(left, rect.center().y), pos2(rx - 6.0, rect.bottom())));
+            let ag = lp.layout_no_wrap(c.author.clone(), small.clone(), theme::TEXT_DIM);
+            let mut lx = left + 2.0 + ag.size().x + 6.0;
+            lp.galley(pos2(left + 2.0, y2 - ag.size().y / 2.0), ag, theme::TEXT_DIM);
             if rv.has_note(&NoteTarget::Commit(c.id.clone())) {
                 // Commit note (bound to this SHA)
-                icons::paint(&sp, Icon::Note, Rect::from_center_size(pos2(x + isz / 2.0, rect.center().y), vec2(isz, isz)), theme::ACCENT);
-                x += isz + 5.0;
-            }
-            let tips = rv.tips.get(&c.id);
-            let mut hover_extra = String::new();
-            for r in &c.refs {
-                let (label, color) = ref_chip(r);
-                let g = sp.layout_no_wrap(label.clone(), small.clone(), Color32::BLACK);
-                let chip = Rect::from_min_size(pos2(x, rect.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(10.0, 2.0));
-                sp.rect_filled(chip, 3.0, color);
-                sp.galley(chip.min + vec2(5.0, 1.0), g, Color32::BLACK);
-                x = chip.right() + 4.0;
-
-                // Local branch tip: show its PR status and its branch note here.
-                // Branch notes are keyed by name, so after rebase/amend they
-                // simply move to the new tip commit.
-                if !tips.is_some_and(|t| t.contains(&label)) {
-                    continue;
+                icons::paint(&lp, Icon::Note, Rect::from_center_size(pos2(lx + isz / 2.0, y2), vec2(isz, isz)), theme::ACCENT);
+                lx += isz + 6.0;
+                if let Some(t) = rv.note_title(&NoteTarget::Commit(c.id.clone())) {
+                    hover_extra += &format!("\n\nCommit note: {t}");
                 }
-                if let Some(pr) = rv.prs.get(&label) {
-                    let tone = crate::pr_view::tone_color(pr.readiness().1);
-                    // [GitHub mark] #12 [CI dot] — mark/text coloured by merge readiness
-                    let g = sp.layout_no_wrap(format!("#{}", pr.number), small.clone(), tone);
-                    let chip = Rect::from_min_size(pos2(x, rect.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(isz + 17.0, 2.0));
-                    sp.rect_stroke(chip, 3.0, Stroke::new(1.0, tone), egui::StrokeKind::Inside);
-                    icons::paint(&sp, Icon::Github, Rect::from_center_size(pos2(chip.left() + 3.0 + isz / 2.0, chip.center().y), vec2(isz, isz)), tone);
-                    sp.galley(chip.min + vec2(isz + 5.0, 1.0), g, tone);
-                    sp.circle_filled(pos2(chip.right() - 6.0, chip.center().y), 2.5, ci_color(pr.ci));
-                    x = chip.right() + 4.0;
-                    hover_extra += &format!("\n\n{}", crate::pr_view::hover_summary(pr));
+            }
+            // Branch notes ride on the branch's tip (they follow rebase/amend).
+            for r in &c.refs {
+                let (label, _) = ref_chip(r);
+                if !is_tip(&label) {
+                    continue;
                 }
                 if let Some(title) = rv.note_title(&NoteTarget::Branch(label.clone())) {
                     let short: String = title.chars().take(32).collect();
                     let short = if short.len() < title.len() { format!("{short}…") } else { short };
-                    let g = sp.layout_no_wrap(short, small.clone(), theme::ACCENT);
-                    let chip = Rect::from_min_size(pos2(x, rect.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(isz + 11.0, 2.0));
-                    sp.rect_stroke(chip, 3.0, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
-                    icons::paint(&sp, Icon::Note, Rect::from_center_size(pos2(chip.left() + 3.0 + isz / 2.0, chip.center().y), vec2(isz, isz)), theme::ACCENT);
-                    sp.galley(chip.min + vec2(isz + 6.0, 1.0), g, theme::ACCENT);
-                    x = chip.right() + 4.0;
+                    let g = lp.layout_no_wrap(short, small.clone(), theme::ACCENT);
+                    let chip = Rect::from_min_size(pos2(lx, y2 - g.size().y / 2.0 - 1.0), g.size() + vec2(isz + 11.0, 2.0));
+                    lp.rect_stroke(chip, 3.0, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
+                    icons::paint(&lp, Icon::Note, Rect::from_center_size(pos2(chip.left() + 3.0 + isz / 2.0, chip.center().y), vec2(isz, isz)), theme::ACCENT);
+                    lp.galley(chip.min + vec2(isz + 6.0, 1.0), g, theme::ACCENT);
+                    lx = chip.right() + 4.0;
                     hover_extra += &format!("\n\nBranch note ({label}): {title}");
                 }
             }
-            sp.text(pos2(x + 2.0, rect.center().y), Align2::LEFT_CENTER, &c.subject, font.clone(), theme::TEXT);
 
             if resp.clicked() {
                 actions.push(Action::Select(Sel::Commit(c.id.clone())));
@@ -205,6 +250,21 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 .context_menu(|ui| commit_menu(ui, c, actions));
         }
     });
+}
+
+/// Outlined label (optional icon + text) whose right edge is `right`; returns its left edge.
+#[allow(clippy::too_many_arguments)]
+fn outline_chip_right(p: &egui::Painter, right: f32, y: f32, text: &str, icon: Option<Icon>, color: Color32, font: &FontId, isz: f32) -> f32 {
+    let g = p.layout_no_wrap(text.to_string(), font.clone(), color);
+    let icon_w = if icon.is_some() { isz + 3.0 } else { 0.0 };
+    let size = g.size() + vec2(icon_w + 10.0, 2.0);
+    let chip = Rect::from_min_size(pos2(right - size.x, y - size.y / 2.0), size);
+    p.rect_stroke(chip, 3.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
+    if let Some(i) = icon {
+        icons::paint(p, i, Rect::from_center_size(pos2(chip.left() + 3.0 + isz / 2.0, chip.center().y), vec2(isz, isz)), color);
+    }
+    p.galley(chip.min + vec2(5.0 + icon_w, 1.0), g, color);
+    chip.left()
 }
 
 fn ci_color(ci: margin_core::github::CiState) -> Color32 {

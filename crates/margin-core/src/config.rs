@@ -99,6 +99,9 @@ pub struct State {
     /// Notes panel under the history (graph) instead of under the commit details.
     #[serde(default)]
     pub notes_under_history: bool,
+    /// Diffs side by side instead of inline.
+    #[serde(default)]
+    pub diff_split: bool,
 }
 
 pub fn config_dir() -> PathBuf {
