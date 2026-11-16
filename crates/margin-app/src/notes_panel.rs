@@ -197,7 +197,7 @@ pub fn show(
     let fit_before = rv.editor.fit_h;
 
     // ---- grip: drag to resize, double-click to collapse / expand
-    grip(ui, rv, prefs, panel_h, compact);
+    grip(ui, prefs, panel_h);
 
     // ---- tab bar (wraps when the panel is narrow)
     let tab_before = rv.editor.tab;
@@ -596,7 +596,8 @@ fn is_compact(rv: &RepoView, pro: bool) -> bool {
 }
 
 /// Thin bar on top of the panel: drag to resize, double-click to collapse.
-fn grip(ui: &mut Ui, rv: &mut RepoView, prefs: &mut margin_core::config::State, panel_h: f32, compact: bool) {
+/// (Resizing never changes the note's mode: Preview stays Preview.)
+fn grip(ui: &mut Ui, prefs: &mut margin_core::config::State, panel_h: f32) {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::click_and_drag());
     let hot = resp.hovered() || resp.dragged();
     if hot {
@@ -609,9 +610,6 @@ fn grip(ui: &mut Ui, rv: &mut RepoView, prefs: &mut margin_core::config::State, 
         if dy != 0.0 {
             prefs.notes_height = Some((panel_h - dy).max(MIN_H));
             prefs.notes_collapsed = false;
-            if compact {
-                rv.editor.preview = false; // dragging an empty note open starts writing
-            }
         }
     }
     if resp.double_clicked() {
