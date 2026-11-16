@@ -145,6 +145,10 @@ pub struct RepoView {
     pub commit_detail: Option<CommitDetail>,
     /// Branches containing the selected commit (commit details).
     pub commit_branches: Vec<String>,
+    /// Commit details shrunk to one line while the diff is scrolled down;
+    /// `header_pinned`: opened by hand while scrolled.
+    pub header_compact: bool,
+    pub header_pinned: bool,
     pub commit_diff: DiffView,
     pub generation: u64,
     pub commit_msg: String,
@@ -245,6 +249,8 @@ impl RepoView {
             work_diff: DiffView::default(),
             commit_detail: None,
             commit_branches: vec![],
+            header_compact: false,
+            header_pinned: false,
             commit_diff: DiffView::default(),
             generation: 0,
             commit_msg: String::new(),

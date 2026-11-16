@@ -106,6 +106,42 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
         ui.spinner();
         return;
     };
+    // Scrolled into the diff: shrink the header to one line (more room for the
+    // code); back at the top it opens again. Hysteresis avoids flicker.
+    let scrolled = rv.commit_diff.scrolled();
+    if scrolled < 2.0 {
+        rv.header_compact = false;
+        rv.header_pinned = false;
+    } else if scrolled > 40.0 && !rv.header_pinned {
+        rv.header_compact = true;
+    }
+    if rv.header_compact {
+        egui::Panel::top("commit_header_compact").show(ui, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                let (subject, _) = split_message(&d.message);
+                let right = ui.spacing().interact_size.x + 40.0;
+                ui.monospace(RichText::new(&d.id[..8.min(d.id.len())]).color(theme::TEXT_DIM));
+                let meta = format!("{} · {}", d.author, crate::commit_list::rel_time(margin_core::time_now(), d.author_time));
+                let small = egui::TextStyle::Small.resolve(ui.style());
+                let meta_w = ui.painter().layout_no_wrap(meta.clone(), small, theme::TEXT_DIM).size().x;
+                let w = (ui.available_width() - meta_w - right - 12.0).max(60.0);
+                ui.allocate_ui_with_layout(egui::vec2(w, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(RichText::new(subject).strong()).truncate());
+                });
+                ui.label(RichText::new(meta).small().color(theme::TEXT_DIM));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Details ▾").on_hover_text("Show the commit's details and message").clicked() {
+                        rv.header_compact = false;
+                        rv.header_pinned = true;
+                    }
+                });
+            });
+            ui.add_space(2.0);
+        });
+        rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff", prefs);
+        return;
+    }
     egui::Panel::top("commit_header").show(ui, |ui| {
         // ---- metadata first
         let when = |t: i64| format!("{} {}", margin_core::format_local(t), margin_core::local_zone(t));

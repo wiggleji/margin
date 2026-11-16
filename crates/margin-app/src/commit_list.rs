@@ -414,7 +414,7 @@ fn ref_chip(r: &str) -> (String, Color32) {
     }
 }
 
-fn rel_time(now: i64, t: i64) -> String {
+pub fn rel_time(now: i64, t: i64) -> String {
     let d = now - t;
     match d {
         _ if d < 60 => "just now".into(),

@@ -248,6 +248,11 @@ impl DiffView {
         out
     }
 
+    /// How far the diff is scrolled down (points; from the last frame).
+    pub fn scrolled(&self) -> f32 {
+        self.offset
+    }
+
     pub fn section(&self, fi: usize) -> Option<Section> {
         self.sections.get(fi).copied()
     }
