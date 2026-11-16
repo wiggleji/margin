@@ -155,9 +155,9 @@ fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: 
     let stuck = title.is_some() && title_a > 0.01;
     ui.horizontal_centered(|ui| {
         if !stuck {
-            ui.label(egui::RichText::new(format!("{n} file{}", if n == 1 { "" } else { "s" })).small().color(theme::TEXT_DIM));
-            ui.label(egui::RichText::new(format!("+{added}")).small().color(theme::ADDED));
-            ui.label(egui::RichText::new(format!("−{removed}")).small().color(theme::REMOVED));
+            ui.label(egui::RichText::new(format!("{n} file{}", if n == 1 { "" } else { "s" })).small().color(theme::TEXT_DIM()));
+            ui.label(egui::RichText::new(format!("+{added}")).small().color(theme::ADDED()));
+            ui.label(egui::RichText::new(format!("−{removed}")).small().color(theme::REMOVED()));
         }
         if n > 1 && !stuck && ui.small_button(if collapsed_all { "Expand all" } else { "Collapse all" }).clicked() {
             out.all = Some(!collapsed_all);
@@ -199,7 +199,7 @@ fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: 
                     ui.add_space(8.0);
                     // left-aligned in the space left of the controls
                     ui.allocate_ui_with_layout(egui::vec2(w, ui.available_height()), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(t).strong().color(theme::TEXT.gamma_multiply(title_a))).truncate());
+                        ui.add(egui::Label::new(egui::RichText::new(t).strong().color(theme::TEXT().gamma_multiply(title_a))).truncate());
                     });
                 }
             }
@@ -449,7 +449,7 @@ impl DiffView {
             return events;
         }
         if let Some(e) = &self.error {
-            ui.colored_label(theme::ERROR, e);
+            ui.colored_label(theme::ERROR(), e);
             return events;
         }
         if self.files.is_empty() {
@@ -468,7 +468,7 @@ impl DiffView {
             self.rebuild();
         }
         if self.truncated {
-            ui.colored_label(theme::ACCENT, "Diff truncated (too large). Use the terminal for the full patch.");
+            ui.colored_label(theme::ACCENT(), "Diff truncated (too large). Use the terminal for the full patch.");
         }
 
         let mut nav: i32 = std::mem::take(&mut self.pending_nav);
@@ -610,9 +610,9 @@ impl DiffView {
                     match row {
                         Row::Section(sec) => {
                             let (title, n) = if sec == Section::Staged { ("STAGED", n_staged) } else { ("UNSTAGED", n_unstaged) };
-                            let g = p.layout_no_wrap(format!("{title} ({n})"), small.clone(), theme::TEXT_DIM);
+                            let g = p.layout_no_wrap(format!("{title} ({n})"), small.clone(), theme::TEXT_DIM());
                             let gw = g.size().x;
-                            p.galley(pos2(rect.left() + 6.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT_DIM);
+                            p.galley(pos2(rect.left() + 6.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT_DIM());
                             let paths = |s: Section| -> Vec<String> {
                                 self.files.iter().zip(&self.sections).filter(|(_, x)| **x == s).map(|(f, _)| f.display_path().to_string()).collect()
                             };
@@ -633,9 +633,9 @@ impl DiffView {
                         Row::File(fi) => {
                             let f = &self.files[fi];
                             let sec = self.sections.get(fi).copied().unwrap_or(Section::Commit);
-                            p.rect_filled(rect, 0.0, theme::BG_DARK);
+                            p.rect_filled(rect, 0.0, theme::BG_DARK());
                             let open = open[fi];
-                            tri(&p, pos2(rect.left() + 10.0, rect.center().y), open, theme::TEXT_DIM);
+                            tri(&p, pos2(rect.left() + 10.0, rect.center().y), open, theme::TEXT_DIM());
                             let label = match (&f.old_path, &f.new_path) {
                                 (Some(o), Some(n)) if o != n => format!("{o} → {n}"),
                                 (None, Some(n)) => format!("{n}  (new)"),
@@ -644,26 +644,26 @@ impl DiffView {
                             };
                             // Status letter: Added / Deleted / Renamed / Modified
                             let (letter, color) = match (&f.old_path, &f.new_path) {
-                                _ if sec == Section::Conflicted => ("U", theme::ERROR),
-                                (None, Some(_)) => ("A", theme::ADDED),
-                                (Some(_), None) => ("D", theme::REMOVED),
+                                _ if sec == Section::Conflicted => ("U", theme::ERROR()),
+                                (None, Some(_)) => ("A", theme::ADDED()),
+                                (Some(_), None) => ("D", theme::REMOVED()),
                                 (Some(o), Some(n)) if o != n => ("R", theme::lane(0)),
-                                _ => ("M", theme::ACCENT),
+                                _ => ("M", theme::ACCENT()),
                             };
                             let lr = Rect::from_center_size(pos2(rect.left() + 28.0, rect.center().y), vec2(char_w + 6.0, row_h - 6.0));
                             p.rect_filled(lr, 3.0, color.gamma_multiply(0.25));
                             p.text(lr.center(), Align2::CENTER_CENTER, letter, font.clone(), color);
-                            let g = p.layout_no_wrap(label, font.clone(), theme::TEXT);
+                            let g = p.layout_no_wrap(label, font.clone(), theme::TEXT());
                             let w = g.size().x;
-                            p.galley(pos2(lr.right() + 6.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
+                            p.galley(pos2(lr.right() + 6.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT());
                             let x = lr.right() + 18.0 + w;
-                            p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, format!("+{}", f.added), font.clone(), theme::ADDED);
+                            p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, format!("+{}", f.added), font.clone(), theme::ADDED());
                             p.text(
                                 pos2(x + char_w * (f.added.to_string().len() as f32 + 2.5), rect.center().y),
                                 Align2::LEFT_CENTER,
                                 format!("-{}", f.removed),
                                 font.clone(),
-                                theme::REMOVED,
+                                theme::REMOVED(),
                             );
                             // Working directory: per-file buttons on the right, and a menu.
                             let path = f.display_path().to_string();
@@ -728,12 +728,12 @@ impl DiffView {
                             } else {
                                 "No content changes (mode / rename only)"
                             };
-                            p.text(pos2(rect.left() + gutter, rect.center().y), Align2::LEFT_CENTER, msg, font.clone(), theme::TEXT_DIM);
+                            p.text(pos2(rect.left() + gutter, rect.center().y), Align2::LEFT_CENTER, msg, font.clone(), theme::TEXT_DIM());
                         }
                         Row::Hunk(fi, hi) => {
-                            p.rect_filled(rect, 0.0, theme::HUNK_BG);
+                            p.rect_filled(rect, 0.0, theme::HUNK_BG());
                             if let Some((_, a)) = flash.filter(|&(r, _)| r == i) {
-                                p.rect_filled(rect, 0.0, theme::ACCENT.gamma_multiply(0.35 * a));
+                                p.rect_filled(rect, 0.0, theme::ACCENT().gamma_multiply(0.35 * a));
                             }
                             let h = &self.files[fi].hunks[hi];
                             let mut x = rect.left() + 6.0;
@@ -754,15 +754,15 @@ impl DiffView {
                                 }
                                 x += bw + 6.0;
                             }
-                            p.text(pos2(x + 4.0, rect.center().y), Align2::LEFT_CENTER, &h.header, font.clone(), theme::TEXT_DIM);
+                            p.text(pos2(x + 4.0, rect.center().y), Align2::LEFT_CENTER, &h.header, font.clone(), theme::TEXT_DIM());
                         }
                         Row::Line(fi, hi, li, seg) => {
                             let l = &self.files[fi].hunks[hi].lines[li];
                             let (bg, fg) = match l.kind {
-                                LineKind::Added => (Some(theme::ADDED_BG), theme::TEXT),
-                                LineKind::Removed => (Some(theme::REMOVED_BG), theme::TEXT),
-                                LineKind::Context => (None, theme::TEXT),
-                                LineKind::NoNewline => (None, theme::TEXT_DIM),
+                                LineKind::Added => (Some(theme::ADDED_BG()), theme::TEXT()),
+                                LineKind::Removed => (Some(theme::REMOVED_BG()), theme::TEXT()),
+                                LineKind::Context => (None, theme::TEXT()),
+                                LineKind::NoNewline => (None, theme::TEXT_DIM()),
                             };
                             // colour only the code, not the line numbers
                             if let Some(bg) = bg {
@@ -775,7 +775,7 @@ impl DiffView {
                                     Align2::LEFT_CENTER,
                                     format!("{} {}", num(l.old_no), num(l.new_no)),
                                     font.clone(),
-                                    theme::TEXT_DIM,
+                                    theme::TEXT_DIM(),
                                 );
                             }
                             let seg_text = Seg { text: &l.text, seg, cols: self.cols };
@@ -792,23 +792,23 @@ impl DiffView {
                                 let sp = ui.painter_at(r);
                                 let Some(li) = li else {
                                     // nothing on this side: dim filler
-                                    sp.rect_filled(r, 0.0, theme::BG_DARK);
+                                    sp.rect_filled(r, 0.0, theme::BG_DARK());
                                     continue;
                                 };
                                 let l = &lines[li];
                                 let st = Seg { text: &l.text, seg, cols: self.cols };
                                 if seg >= st.count() {
                                     // the other side wrapped further: keep the line's background
-                                    if let Some(bg) = match l.kind { LineKind::Added => Some(theme::ADDED_BG), LineKind::Removed => Some(theme::REMOVED_BG), _ => None } {
+                                    if let Some(bg) = match l.kind { LineKind::Added => Some(theme::ADDED_BG()), LineKind::Removed => Some(theme::REMOVED_BG()), _ => None } {
                                         sp.rect_filled(Rect::from_min_max(pos2(r.left() + char_w * 6.0 + 4.0, r.top()), r.max), 0.0, bg);
                                     }
                                     continue;
                                 }
                                 let (bg, fg) = match l.kind {
-                                    LineKind::Added => (Some(theme::ADDED_BG), theme::TEXT),
-                                    LineKind::Removed => (Some(theme::REMOVED_BG), theme::TEXT),
-                                    LineKind::Context => (None, theme::TEXT),
-                                    LineKind::NoNewline => (None, theme::TEXT_DIM),
+                                    LineKind::Added => (Some(theme::ADDED_BG()), theme::TEXT()),
+                                    LineKind::Removed => (Some(theme::REMOVED_BG()), theme::TEXT()),
+                                    LineKind::Context => (None, theme::TEXT()),
+                                    LineKind::NoNewline => (None, theme::TEXT_DIM()),
                                 };
                                 if let Some(bg) = bg {
                                     sp.rect_filled(Rect::from_min_max(pos2(r.left() + char_w * 6.0 + 4.0, r.top()), r.max), 0.0, bg);
@@ -816,11 +816,11 @@ impl DiffView {
                                 if seg == 0 {
                                     let n = if is_old { l.old_no } else { l.new_no };
                                     let num = n.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
-                                    sp.text(pos2(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, num, font.clone(), theme::TEXT_DIM);
+                                    sp.text(pos2(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, num, font.clone(), theme::TEXT_DIM());
                                 }
                                 st.paint(&sp, r, r.left() + char_w * 6.0 + 8.0, words.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
                             }
-                            p.line_segment([pos2(rect.left() + half, rect.top()), pos2(rect.left() + half, rect.bottom())], Stroke::new(1.0, theme::BG_DARK));
+                            p.line_segment([pos2(rect.left() + half, rect.top()), pos2(rect.left() + half, rect.bottom())], Stroke::new(1.0, theme::BG_DARK()));
                         }
                     }
                 }
@@ -896,7 +896,7 @@ impl DiffView {
                         let c1 = if i == b.0 { b.1 } else { t.to - t.from };
                         if c1 > c0 {
                             let r = Rect::from_min_max(pos2(t.text_x + c0 as f32 * char_w, t.rect.top()), pos2(t.text_x + c1 as f32 * char_w, t.rect.bottom()));
-                            ui.painter().rect_filled(r, 0.0, theme::ACCENT.gamma_multiply(0.28));
+                            ui.painter().rect_filled(r, 0.0, theme::ACCENT().gamma_multiply(0.28));
                         }
                     }
                 }
@@ -909,7 +909,7 @@ impl DiffView {
                 page.painter().rect_filled(bar_rect, 0.0, page.visuals().panel_fill);
                 if title_a > 0.0 {
                     // soft edge under the stuck toolbar
-                    page.painter().line_segment([bar_rect.left_bottom(), bar_rect.right_bottom()], Stroke::new(1.0, theme::BG_DARK.gamma_multiply(title_a)));
+                    page.painter().line_segment([bar_rect.left_bottom(), bar_rect.right_bottom()], Stroke::new(1.0, theme::BG_DARK().gamma_multiply(title_a)));
                 }
                 let mut bar_ui = page.new_child(egui::UiBuilder::new().max_rect(bar_rect.shrink2(vec2(0.0, 2.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
                 let title = header.as_ref().map(|h| h.title.as_str());
@@ -1067,7 +1067,7 @@ impl Seg<'_> {
         let text_x = x;
         let (from, to) = wrap_ranges(self.text, self.cols).get(self.seg).copied().unwrap_or((0, 0));
         if let Some(spans) = words {
-            let color = if kind == LineKind::Added { theme::ADDED_WORD_BG } else { theme::REMOVED_WORD_BG };
+            let color = if kind == LineKind::Added { theme::ADDED_WORD_BG() } else { theme::REMOVED_WORD_BG() };
             // Column of a byte offset (tabs are drawn as 4 spaces).
             let col = |b: usize| self.text[..b].chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>();
             for &(s, e) in spans {
@@ -1091,9 +1091,9 @@ fn focus_button(ui: &mut Ui, on: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 18.0), Sense::click());
     let p = ui.painter();
     if on || resp.hovered() {
-        p.rect_filled(rect, 3.0, if on { theme::SELECTED } else { theme::HOVER });
+        p.rect_filled(rect, 3.0, if on { theme::SELECTED() } else { theme::HOVER() });
     }
-    let c = if on || resp.hovered() { theme::TEXT } else { theme::TEXT_DIM };
+    let c = if on || resp.hovered() { theme::TEXT() } else { theme::TEXT_DIM() };
     let st = Stroke::new(1.3, c);
     let b = Rect::from_center_size(rect.center(), vec2(12.0, 10.0));
     let l = 3.5;
@@ -1113,9 +1113,9 @@ fn layout_button(ui: &mut Ui, split: bool, on: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 18.0), Sense::click());
     let p = ui.painter();
     if on || resp.hovered() {
-        p.rect_filled(rect, 3.0, if on { theme::SELECTED } else { theme::HOVER });
+        p.rect_filled(rect, 3.0, if on { theme::SELECTED() } else { theme::HOVER() });
     }
-    let c = if on { theme::TEXT } else { theme::TEXT_DIM };
+    let c = if on { theme::TEXT() } else { theme::TEXT_DIM() };
     let b = Rect::from_center_size(rect.center(), vec2(14.0, 11.0));
     let st = Stroke::new(1.2, c);
     p.rect_stroke(b, 1.5, st, egui::StrokeKind::Inside);

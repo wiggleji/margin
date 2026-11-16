@@ -272,7 +272,7 @@ pub fn search_box(ui: &mut eframe::egui::Ui, rv: &mut crate::app::RepoView, widt
                                     egui::Atoms::new((
                                         s.label.as_str(),
                                         egui::Atom::grow(),
-                                        egui::RichText::new(&s.detail).small().color(crate::theme::TEXT_DIM),
+                                        egui::RichText::new(&s.detail).small().color(crate::theme::TEXT_DIM()),
                                     )),
                                 )
                                 .min_size(egui::vec2(ui.available_width(), 0.0)),

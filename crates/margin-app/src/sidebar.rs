@@ -27,7 +27,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         let repo_note = rv.has_note(&NoteTarget::Repo);
         let mut atoms = egui::Atoms::new("Repository notes");
         if repo_note {
-            atoms.push_right(note_icon(theme::ACCENT));
+            atoms.push_right(note_icon(theme::ACCENT()));
         }
         if ui.selectable_label(false, atoms).clicked() {
             actions.push(Action::ShowNote(NoteTab::Repo));
@@ -64,7 +64,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                     for e in &rv.reattached {
                         let short = |t: &str| t.strip_prefix("commit:").map(|c| c[..7.min(c.len())].to_string()).unwrap_or_else(|| t.to_string());
                         ui.horizontal(|ui| {
-                            let mut atoms = egui::Atoms::new(note_icon(theme::ACCENT));
+                            let mut atoms = egui::Atoms::new(note_icon(theme::ACCENT()));
                             atoms.push_right(format!("{} → {}", short(&e.from), short(&e.to)));
                             let resp = ui.selectable_label(false, atoms).on_hover_text(format!(
                                 "Moved automatically (same change, git patch-id) at {}.\nClick to show the new commit.",
@@ -90,11 +90,11 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         if !rv.detached.is_empty() {
             list_section(ui, &format!("DETACHED NOTES ({})", rv.detached.len()), "detached", true, |ui| {
                     for d in &rv.detached {
-                        let mut atoms = egui::Atoms::new(note_icon(theme::TEXT_DIM));
+                        let mut atoms = egui::Atoms::new(note_icon(theme::TEXT_DIM()));
                         atoms.push_right(crate::notes_panel::short_target(&d.note));
                         if !d.title.is_empty() {
                             let t: String = d.title.chars().take(28).collect();
-                            atoms.push_right(RichText::new(t).small().color(theme::TEXT_DIM));
+                            atoms.push_right(RichText::new(t).small().color(theme::TEXT_DIM()));
                         }
                         let open = rv.pinned_note.as_ref() == Some(&d.note);
                         let resp = ui.selectable_label(open, atoms).on_hover_text(format!(
@@ -148,7 +148,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                         let h = ui.spacing().interact_size.y;
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
                         if resp.hovered() {
-                            ui.painter().rect_filled(rect, 3.0, theme::HOVER);
+                            ui.painter().rect_filled(rect, 3.0, theme::HOVER());
                         }
                         let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
                         gutter(&mut row, depth, None);
@@ -228,7 +228,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                         ui.spinner();
                     }
                     Some(Err(e)) => {
-                        ui.colored_label(theme::ERROR, e);
+                        ui.colored_label(theme::ERROR(), e);
                     }
                     Some(Ok(list)) if list.is_empty() => {
                         ui.weak("Nothing assigned");
@@ -321,7 +321,7 @@ fn toggle_row(ui: &mut Ui, id: egui::Id, depth: usize, default_open: bool, conte
             } else {
                 vec![egui::pos2(c.x - 2.0, c.y - 4.0), egui::pos2(c.x + 3.0, c.y), egui::pos2(c.x - 2.0, c.y + 4.0)]
             };
-            ui.painter().add(egui::Shape::convex_polygon(pts, theme::TEXT_DIM, egui::Stroke::NONE));
+            ui.painter().add(egui::Shape::convex_polygon(pts, theme::TEXT_DIM(), egui::Stroke::NONE));
             // Match the inner padding of the selectable branch labels so group
             // names, headings and branch names share one left edge.
             ui.add_space((ui.spacing().button_padding.x - ui.spacing().item_spacing.x).max(0.0) + 3.0);
@@ -343,7 +343,7 @@ fn toggle_row(ui: &mut Ui, id: egui::Id, depth: usize, default_open: bool, conte
 fn group_row(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, label: &str, count: usize, depth: usize, default_open: bool) -> bool {
     toggle_row(ui, egui::Id::unique(("tree-group", id)), depth, default_open, |ui| {
         ui.label(label);
-        ui.label(RichText::new(count.to_string()).small().color(theme::TEXT_DIM));
+        ui.label(RichText::new(count.to_string()).small().color(theme::TEXT_DIM()));
     })
 }
 
@@ -396,10 +396,10 @@ pub fn render_tree<'a>(
 fn branch_extras(ui: &mut Ui, rv: &RepoView, r: &RefInfo, task: &Option<String>, note: bool, isz: f32) {
     let ctx = ui.ctx().clone();
     if let Some(t) = task {
-        ui.label(RichText::new(t).small().color(theme::ACCENT));
+        ui.label(RichText::new(t).small().color(theme::ACCENT()));
     }
     if note {
-        ui.add(icons::image(&ctx, Icon::Note, isz, theme::ACCENT)).on_hover_text("has a branch note");
+        ui.add(icons::image(&ctx, Icon::Note, isz, theme::ACCENT())).on_hover_text("has a branch note");
     }
     if let Some(pr) = rv.prs.get(&r.name) {
         let tone = crate::pr_view::tone_color(pr.readiness().1);
@@ -413,7 +413,7 @@ fn branch_extras(ui: &mut Ui, rv: &RepoView, r: &RefInfo, task: &Option<String>,
 fn extras_width(ui: &Ui, rv: &RepoView, r: &RefInfo, task: &Option<String>, note: bool, isz: f32) -> f32 {
     let gap = ui.spacing().item_spacing.x;
     let small = egui::TextStyle::Small.resolve(ui.style());
-    let text_w = |t: String| ui.painter().layout_no_wrap(t, small.clone(), theme::TEXT).size().x;
+    let text_w = |t: String| ui.painter().layout_no_wrap(t, small.clone(), theme::TEXT()).size().x;
     let mut w = 0.0;
     if let Some(t) = task {
         w += text_w(t.clone()) + gap;
@@ -460,7 +460,7 @@ impl Badge {
                 .collect()
         };
         let small = egui::TextStyle::Small.resolve(ui.style());
-        let color = if gone { theme::TEXT_DIM } else { theme::TEXT };
+        let color = if gone { theme::TEXT_DIM() } else { theme::TEXT() };
         let segs = segs.into_iter().map(|(t, a)| (ui.painter().layout_no_wrap(t, small.clone(), color), a)).collect();
         Badge { segs, gone, behind, ahead, up: r.upstream.clone().unwrap_or_default() }
     }
@@ -477,7 +477,7 @@ impl Badge {
         }
         let h = self.segs[0].0.size().y + 4.0;
         let (rect, _) = ui.allocate_exact_size(egui::vec2(self.width(), h), egui::Sense::hover());
-        let bg = if self.gone { theme::BADGE.gamma_multiply(0.6) } else { theme::BADGE };
+        let bg = if self.gone { theme::BADGE().gamma_multiply(0.6) } else { theme::BADGE() };
         ui.painter().rect_filled(rect, 3.0, bg);
         let mut x = rect.left();
         let mut clicked = None;
@@ -494,12 +494,12 @@ impl Badge {
                     ne: if i + 1 == n { 3 } else { 0 },
                     se: if i + 1 == n { 3 } else { 0 },
                 };
-                ui.painter().rect_filled(seg, cr, theme::SELECTED);
+                ui.painter().rect_filled(seg, cr, theme::SELECTED());
             }
             if i > 0 {
-                ui.painter().line_segment([egui::pos2(x, rect.top() + 3.0), egui::pos2(x, rect.bottom() - 3.0)], egui::Stroke::new(1.0, theme::BG));
+                ui.painter().line_segment([egui::pos2(x, rect.top() + 3.0), egui::pos2(x, rect.bottom() - 3.0)], egui::Stroke::new(1.0, theme::BG()));
             }
-            ui.painter().galley(egui::pos2(x + Self::PAD, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
+            ui.painter().galley(egui::pos2(x + Self::PAD, rect.center().y - g.size().y / 2.0), g, theme::TEXT());
             let tip = match act {
                 Some(SyncDir::Pull) => format!("{} behind {} — click to pull", self.behind, self.up),
                 Some(SyncDir::Push) => format!("{} ahead of {} — click to push", self.ahead, self.up),
@@ -522,7 +522,7 @@ fn eye(ui: &mut Ui, shown: bool) -> egui::Response {
     let size = ui.spacing().interact_size.y;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     let hot = resp.hovered();
-    let c = if hot { theme::TEXT } else if shown { theme::TEXT_DIM } else { theme::TEXT_DIM.gamma_multiply(0.5) };
+    let c = if hot { theme::TEXT() } else if shown { theme::TEXT_DIM() } else { theme::TEXT_DIM().gamma_multiply(0.5) };
     let p = ui.painter();
     let ctr = rect.center();
     let (w, h) = (6.0, 3.6);
@@ -555,12 +555,12 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
     let focused = rv.focus_branch.as_deref() == Some(r.name.as_str());
     if focused || resp.hovered() {
-        ui.painter().rect_filled(rect, 3.0, if focused { theme::SELECTED } else { theme::HOVER });
+        ui.painter().rect_filled(rect, 3.0, if focused { theme::SELECTED() } else { theme::HOVER() });
     }
     let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
     let ui = &mut row;
     // ● for the current branch sits in the triangle column
-    gutter(ui, depth, r.is_head.then_some(theme::ACCENT));
+    gutter(ui, depth, r.is_head.then_some(theme::ACCENT()));
     let badge = Badge::new(ui, r);
     let bw = badge.width();
     // Right side: [badge] [eye]; the name truncates before them.
@@ -577,13 +577,13 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
         }
         // Only a deleted upstream dims the name (hidden-in-history shows on the eye).
         if r.upstream_gone() {
-            rt = rt.color(theme::TEXT_DIM);
+            rt = rt.color(theme::TEXT_DIM());
         }
         ui.allocate_ui_with_layout(egui::vec2(name_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.add(egui::Label::new(rt).truncate()).on_hover_text(&r.name);
         });
         if let Some(p) = &elsewhere {
-            ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, theme::TEXT_DIM))
+            ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, theme::TEXT_DIM()))
                 .on_hover_text(format!("Checked out in worktree {}\nDouble-click to open it", p.display()));
         }
         branch_extras(ui, rv, r, &task_label, note, isz);
@@ -680,8 +680,8 @@ fn worktree_row(ui: &mut Ui, rv: &RepoView, w: &crate::jobs::WorktreeInfo, isz: 
     };
     let resp = ui
         .horizontal(|ui| {
-            gutter(ui, 0, w.current.then_some(theme::ACCENT));
-            ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, if w.current { theme::ACCENT } else { theme::TEXT_DIM }));
+            gutter(ui, 0, w.current.then_some(theme::ACCENT()));
+            ui.add(icons::image(ui.ctx(), Icon::FileDirectory, isz, if w.current { theme::ACCENT() } else { theme::TEXT_DIM() }));
             let mut detail = folder_extra.clone();
             if wt.prunable {
                 detail = format!("{detail} · missing");
@@ -689,7 +689,7 @@ fn worktree_row(ui: &mut Ui, rv: &RepoView, w: &crate::jobs::WorktreeInfo, isz: 
                 detail = format!("{detail} · locked");
             }
             let small = egui::TextStyle::Small.resolve(ui.style());
-            let dw = ui.painter().layout_no_wrap(detail.clone(), small, theme::TEXT_DIM).size().x;
+            let dw = ui.painter().layout_no_wrap(detail.clone(), small, theme::TEXT_DIM()).size().x;
             let name_w = (ui.available_width() - dw - 12.0).max(40.0);
             let mut rt = RichText::new(&label);
             if w.current {
@@ -702,7 +702,7 @@ fn worktree_row(ui: &mut Ui, rv: &RepoView, w: &crate::jobs::WorktreeInfo, isz: 
                 })
                 .inner;
             if !detail.is_empty() {
-                ui.label(RichText::new(detail).small().color(theme::TEXT_DIM)).on_hover_text(format!("Folder: {folder}"));
+                ui.label(RichText::new(detail).small().color(theme::TEXT_DIM())).on_hover_text(format!("Folder: {folder}"));
             }
             resp
         })

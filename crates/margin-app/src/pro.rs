@@ -13,9 +13,9 @@ pub const HELP_URL: &str = "https://margin.app/help";
 pub const SUPPORT_URL: &str = "https://margin.app/support";
 
 pub fn lock_hint(ui: &mut Ui, feature: &str, status: &Status, actions: &mut Vec<Action>) {
-    egui::Frame::new().fill(theme::HUNK_BG).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
+    egui::Frame::new().fill(theme::HUNK_BG()).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
         ui.label(RichText::new(format!("{feature} is a Margin Pro feature.")).strong());
-        ui.label(RichText::new(status.describe()).small().color(theme::TEXT_DIM));
+        ui.label(RichText::new(status.describe()).small().color(theme::TEXT_DIM()));
         ui.horizontal(|ui| {
             if ui.button("Enter licence key…").clicked() {
                 actions.push(Action::OpenSettings);

@@ -204,13 +204,13 @@ pub fn show(
     ui.horizontal_wrapped(|ui| {
         let chevron = if prefs.notes_collapsed { "▸" } else { "▾" };
         let tip = if prefs.notes_collapsed { "Show the note" } else { "Collapse to this row" };
-        if ui.add(egui::Button::new(RichText::new(chevron).color(theme::TEXT_DIM)).frame(false)).on_hover_text(tip).clicked() {
+        if ui.add(egui::Button::new(RichText::new(chevron).color(theme::TEXT_DIM())).frame(false)).on_hover_text(tip).clicked() {
             prefs.notes_collapsed = !prefs.notes_collapsed;
             let _ = margin_core::config::save_state(prefs);
         }
         // Move the panel to the other column (under the history / under the details).
         let (arrow, tip) = if prefs.notes_under_history { ("⇥", "Move notes under the commit details") } else { ("⇤", "Move notes under the branches and history") };
-        if ui.add(egui::Button::new(RichText::new(arrow).color(theme::TEXT_DIM)).frame(false)).on_hover_text(tip).clicked() {
+        if ui.add(egui::Button::new(RichText::new(arrow).color(theme::TEXT_DIM())).frame(false)).on_hover_text(tip).clicked() {
             actions.push(Action::ToggleNotesDock);
         }
         let ctx = ui.ctx().clone();
@@ -219,7 +219,7 @@ pub fn show(
         let label = |text: String, has: bool, pr: Option<&margin_core::github::PrSummary>| {
             let mut a = egui::Atoms::new(text);
             if has {
-                a.push_right(icons::image(&ctx, Icon::Note, icon_size, theme::ACCENT));
+                a.push_right(icons::image(&ctx, Icon::Note, icon_size, theme::ACCENT()));
             }
             if let Some(pr) = pr {
                 let tone = crate::pr_view::tone_color(pr.readiness().1);
@@ -283,7 +283,7 @@ pub fn show(
             let ed = &mut rv.editor;
             match &ed.target {
                 Some(t) => {
-                    ui.label(RichText::new(format!("No note on {} yet.", short_target(t))).color(theme::TEXT_DIM));
+                    ui.label(RichText::new(format!("No note on {} yet.", short_target(t))).color(theme::TEXT_DIM()));
                     if ui.small_button("Write note").clicked() {
                         ed.preview = false;
                         ui.ctx().memory_mut(|m| m.request_focus(edit_id()));
@@ -294,7 +294,7 @@ pub fn show(
                         NoteTab::Branch => "Detached HEAD — no branch to attach notes to.",
                         NoteTab::Task => "No task linked.",
                         _ => "Nothing selected.",
-                    }).color(theme::TEXT_DIM));
+                    }).color(theme::TEXT_DIM()));
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| link_task(ui, actions));
@@ -382,11 +382,11 @@ pub fn show(
                     use margin_core::sync::RepoSync;
                     let label = match &rv.sync_state {
                         RepoSync::Active { .. } => match &rv.sync.lock().unwrap().last {
-                            Some((_, Err(_))) => Some(("sync failed", theme::ERROR)),
-                            _ => Some(("synced", theme::ADDED)),
+                            Some((_, Err(_))) => Some(("sync failed", theme::ERROR())),
+                            _ => Some(("synced", theme::ADDED())),
                         },
-                        RepoSync::Paused => Some(("sync paused (Pro)", theme::ACCENT)),
-                        RepoSync::NoFolder => Some(("sync: no folder", theme::ACCENT)),
+                        RepoSync::Paused => Some(("sync paused (Pro)", theme::ACCENT())),
+                        RepoSync::NoFolder => Some(("sync: no folder", theme::ACCENT())),
                         RepoSync::Off => None,
                     };
                     if let Some((t, c)) = label {
@@ -398,11 +398,11 @@ pub fn show(
                 }
                 let ed = &mut rv.editor;
                 let (txt, color) = if ed.error.is_some() {
-                    ("error", theme::ERROR)
+                    ("error", theme::ERROR())
                 } else if ed.dirty {
-                    ("unsaved", theme::ACCENT)
+                    ("unsaved", theme::ACCENT())
                 } else {
-                    ("saved", theme::TEXT_DIM)
+                    ("saved", theme::TEXT_DIM())
                 };
                 ui.label(RichText::new(txt).small().color(color));
             }
@@ -418,13 +418,13 @@ pub fn show(
         if let Some(e) = rv.reattached.iter().find(|e| e.to == ts) {
             let from = e.from.strip_prefix("commit:").unwrap_or(&e.from);
             let id = e.id.clone();
-            egui::Frame::new().fill(theme::HUNK_BG).inner_margin(6.0).corner_radius(3.0).show(ui, |ui| {
+            egui::Frame::new().fill(theme::HUNK_BG()).inner_margin(6.0).corner_radius(3.0).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(format!(
                         "Re-attached automatically from {} (same change, git patch-id) · {}.",
                         &from[..8.min(from.len())],
                         margin_core::format_local(e.at)
-                    )).color(theme::TEXT_DIM));
+                    )).color(theme::TEXT_DIM()));
                     if ui.small_button("Undo").on_hover_text("Move the note back to the old commit and restore this one").clicked() {
                         actions.push(Action::UndoReattach(id.clone()));
                     }
@@ -440,14 +440,14 @@ pub fn show(
     if rv.editor.tab == NoteTab::Pinned {
         if let Some(d) = rv.pinned_note.as_ref().and_then(|p| rv.detached.iter().find(|d| &d.note == p)) {
             let from = d.note.clone();
-            egui::Frame::new().fill(theme::HUNK_BG).inner_margin(6.0).corner_radius(3.0).show(ui, |ui| {
+            egui::Frame::new().fill(theme::HUNK_BG()).inner_margin(6.0).corner_radius(3.0).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("Detached: {}.", d.reason.describe())).color(theme::ACCENT));
+                    ui.label(RichText::new(format!("Detached: {}.", d.reason.describe())).color(theme::ACCENT()));
                     if let Some(sj) = &d.subject {
-                        ui.label(RichText::new(format!("Was: “{sj}”")).color(theme::TEXT_DIM));
+                        ui.label(RichText::new(format!("Was: “{sj}”")).color(theme::TEXT_DIM()));
                     }
                     if !d.candidates.is_empty() {
-                        ui.label(RichText::new("Same change found in:").color(theme::TEXT_DIM));
+                        ui.label(RichText::new("Same change found in:").color(theme::TEXT_DIM()));
                         for c in &d.candidates {
                             if ui.small_button(&c[..8.min(c.len())]).on_hover_text("Attach the note to this commit").clicked() {
                                 actions.push(Action::MoveNote { from: from.clone(), to: format!("commit:{c}") });
@@ -499,7 +499,7 @@ pub fn show(
     }
 
     if ed.external {
-        egui::Frame::new().fill(theme::REMOVED_BG).inner_margin(6.0).show(ui, |ui| {
+        egui::Frame::new().fill(theme::REMOVED_BG()).inner_margin(6.0).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label("This note was changed elsewhere (another agent or window) while you were editing.");
                 if ui.button("Load theirs").clicked() {
@@ -513,10 +513,10 @@ pub fn show(
             });
         });
     } else if let Some(e) = &ed.error {
-        ui.colored_label(theme::ERROR, e);
+        ui.colored_label(theme::ERROR(), e);
     }
     for v in &ed.violations {
-        ui.colored_label(theme::ERROR, v.to_string());
+        ui.colored_label(theme::ERROR(), v.to_string());
     }
 
     // ⌘B / ⌘I / ⌘K while typing in the note.
@@ -604,7 +604,7 @@ fn grip(ui: &mut Ui, prefs: &mut margin_core::config::State, panel_h: f32) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
     }
     let pill = egui::Rect::from_center_size(rect.center(), egui::vec2(36.0, 4.0));
-    ui.painter().rect_filled(pill, 2.0, if hot { theme::TEXT_DIM } else { theme::HOVER });
+    ui.painter().rect_filled(pill, 2.0, if hot { theme::TEXT_DIM() } else { theme::HOVER() });
     if resp.dragged() {
         let dy = resp.drag_delta().y;
         if dy != 0.0 {
@@ -627,9 +627,9 @@ fn trash_button(ui: &mut Ui) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(s, s), egui::Sense::click());
     let hot = resp.hovered();
     if hot {
-        ui.painter().rect_filled(rect, 3.0, theme::HOVER);
+        ui.painter().rect_filled(rect, 3.0, theme::HOVER());
     }
-    let c = if hot { theme::ERROR } else { theme::TEXT_DIM };
+    let c = if hot { theme::ERROR() } else { theme::TEXT_DIM() };
     let st = egui::Stroke::new(1.2, c);
     let p = ui.painter();
     let ctr = rect.center();
@@ -726,7 +726,7 @@ fn task_card(
             }
             None => {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(key).color(theme::ACCENT));
+                    ui.label(RichText::new(key).color(theme::ACCENT()));
                     if ui.link(RichText::new("Set the ticket link in Settings to open it").small()).clicked() {
                         actions.push(Action::OpenSettings);
                     }
@@ -748,7 +748,7 @@ fn task_card(
         }
         Some(Err(e)) => {
             ui.horizontal(|ui| {
-                ui.colored_label(theme::ERROR, e);
+                ui.colored_label(theme::ERROR(), e);
                 if ui.small_button("Retry").clicked() {
                     actions.push(Action::FetchTask(key.to_string()));
                 }
@@ -760,17 +760,17 @@ fn task_card(
             });
             ui.horizontal(|ui| {
                 let color = match t.status_category.as_str() {
-                    "done" => theme::ADDED,
+                    "done" => theme::ADDED(),
                     "indeterminate" => theme::lane(0),
-                    _ => theme::TEXT_DIM,
+                    _ => theme::TEXT_DIM(),
                 };
                 ui.label(RichText::new(&t.status).small().color(color));
-                ui.label(RichText::new(&t.issue_type).small().color(theme::TEXT_DIM));
+                ui.label(RichText::new(&t.issue_type).small().color(theme::TEXT_DIM()));
                 if let Some(a) = &t.assignee {
-                    ui.label(RichText::new(a).small().color(theme::TEXT_DIM));
+                    ui.label(RichText::new(a).small().color(theme::TEXT_DIM()));
                 }
                 if let Some(p) = &t.priority {
-                    ui.label(RichText::new(p).small().color(theme::TEXT_DIM));
+                    ui.label(RichText::new(p).small().color(theme::TEXT_DIM()));
                 }
                 if ui.small_button("Open").clicked() {
                     actions.push(Action::OpenUrl(t.url.clone()));

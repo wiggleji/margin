@@ -128,6 +128,83 @@ pub enum Action {
     JumpTo(String),
 }
 
+/// Sections of the Settings window.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    Appearance,
+    Pro,
+    Sync,
+    Fetch,
+    Tasks,
+    Diffs,
+}
+
+impl SettingsTab {
+    const ALL: [SettingsTab; 6] = [SettingsTab::Appearance, SettingsTab::Pro, SettingsTab::Sync, SettingsTab::Fetch, SettingsTab::Tasks, SettingsTab::Diffs];
+    fn label(self) -> &'static str {
+        match self {
+            SettingsTab::Appearance => "Appearance",
+            SettingsTab::Pro => "Margin Pro",
+            SettingsTab::Sync => "Notes sync",
+            SettingsTab::Fetch => "Fetch",
+            SettingsTab::Tasks => "Tasks",
+            SettingsTab::Diffs => "Diffs",
+        }
+    }
+    fn intro(self) -> &'static str {
+        match self {
+            SettingsTab::Appearance => "How Margin looks. Themes apply right away.",
+            SettingsTab::Pro => "GitHub PR status, Jira ticket details and My tasks, and notes sync for more than one repository.",
+            SettingsTab::Sync => "Keep notes in a folder that iCloud Drive, Dropbox or Google Drive already syncs, so they follow you to other computers.",
+            SettingsTab::Fetch => "Keep remote branches up to date in the background.",
+            SettingsTab::Tasks => "Where task keys such as PROJ-123 link to.",
+            SettingsTab::Diffs => "How diffs open.",
+        }
+    }
+}
+
+/// One setting: a title, its control(s), and a short explanation underneath.
+fn setting(ui: &mut egui::Ui, title: &str, help: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ui.label(egui::RichText::new(title).strong());
+    ui.add_space(4.0);
+    add(ui);
+    if !help.is_empty() {
+        ui.add_space(3.0);
+        ui.label(egui::RichText::new(help).small().color(theme::TEXT_DIM()));
+    }
+    ui.add_space(16.0);
+}
+
+/// A clickable preview card for a theme.
+fn theme_card(ui: &mut egui::Ui, p: &theme::Palette, selected: bool) -> egui::Response {
+    let size = egui::vec2(122.0, 96.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let painter = ui.painter();
+    let preview = egui::Rect::from_min_size(rect.min, egui::vec2(size.x, 70.0));
+    painter.rect_filled(preview, 6.0, p.bg);
+    // a sidebar strip, two text lines, a diff line pair and an accent dot
+    let side = egui::Rect::from_min_size(preview.min, egui::vec2(30.0, preview.height()));
+    painter.rect_filled(side, egui::CornerRadius { nw: 6, sw: 6, ne: 0, se: 0 }, p.bg_dark);
+    let line = |y: f32, w: f32, _c: egui::Color32| egui::Rect::from_min_size(preview.min + egui::vec2(38.0, y), egui::vec2(w, 4.0));
+    painter.rect_filled(line(10.0, 60.0, p.text), 2.0, p.text);
+    painter.rect_filled(line(19.0, 42.0, p.text_dim), 2.0, p.text_dim);
+    let diff = |y: f32, _bg: egui::Color32| egui::Rect::from_min_size(preview.min + egui::vec2(34.0, y), egui::vec2(size.x - 40.0, 9.0));
+    painter.rect_filled(diff(32.0, p.removed_bg), 1.0, p.removed_bg);
+    painter.rect_filled(diff(43.0, p.added_bg), 1.0, p.added_bg);
+    painter.rect_filled(line(34.5, 34.0, p.removed), 2.0, p.removed);
+    painter.rect_filled(line(45.5, 48.0, p.added), 2.0, p.added);
+    for (i, k) in [0u16, 1, 2].into_iter().enumerate() {
+        painter.circle_filled(side.left_top() + egui::vec2(15.0, 14.0 + i as f32 * 14.0), 3.5, p.lanes[k as usize]);
+    }
+    painter.circle_filled(preview.right_bottom() + egui::vec2(-10.0, -9.0), 4.0, p.accent);
+    let border = if selected { egui::Stroke::new(2.0, theme::ACCENT()) } else if resp.hovered() { egui::Stroke::new(1.0, theme::TEXT_DIM()) } else { egui::Stroke::new(1.0, theme::HOVER()) };
+    painter.rect_stroke(preview, 6.0, border, egui::StrokeKind::Outside);
+    let name = if selected { egui::RichText::new(p.name).strong() } else { egui::RichText::new(p.name) };
+    let galley = painter.layout_no_wrap(name.text().to_string(), egui::TextStyle::Small.resolve(ui.style()), if selected { theme::TEXT() } else { theme::TEXT_DIM() });
+    painter.galley(egui::pos2(rect.left() + 2.0, preview.bottom() + 7.0), galley, theme::TEXT());
+    resp
+}
+
 pub enum Dialog {
     Confirm { msg: String, action: Action },
     NewBranch { name: String, start: Option<String>, switch: bool },
@@ -360,6 +437,7 @@ pub struct MarginApp {
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub sync_folder_input: String,
     pub show_settings: bool,
+    pub settings_tab: SettingsTab,
     pub jobs: Jobs,
     /// The active tab. Other open repositories live in `others`; the visual
     /// order is others[..active_pos] + rv + others[active_pos..].
@@ -390,13 +468,16 @@ pub struct MarginApp {
 impl MarginApp {
     pub fn new(ctx: &egui::Context, repo: Option<PathBuf>) -> Self {
         let cfg = config::load_config();
+        let settings = config::load_settings();
+        theme::set(settings.theme.as_deref());
         theme::apply(ctx, cfg.font_size.unwrap_or(13.0));
         let tasks = tasks::provider_from_config(&cfg).map(Arc::from);
         let mut app = MarginApp {
             author: cfg.note_author.clone().unwrap_or_default(),
             state: config::load_state(),
             cfg: cfg.clone(),
-            settings: config::load_settings(),
+            settings,
+            settings_tab: SettingsTab::Appearance,
             license: margin_core::license::current(now_unix()),
             license_input: String::new(),
             license_error: None,
@@ -1652,7 +1733,7 @@ impl MarginApp {
                         _ => ("OK", false),
                     };
                     ui.horizontal(|ui| {
-                        let text = if danger { egui::RichText::new(label).color(theme::ERROR) } else { egui::RichText::new(label) };
+                        let text = if danger { egui::RichText::new(label).color(theme::ERROR()) } else { egui::RichText::new(label) };
                         if ui.button(text).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             run = Some(action.clone());
                             close = true;
@@ -1796,10 +1877,10 @@ impl MarginApp {
             // Directory menu: open tabs (switch / ×), recent, open, reveal, close.
             let mut title = egui::text::LayoutJob::default();
             let body = egui::TextStyle::Body.resolve(left.style());
-            title.append(&rv.repo.name(), 0.0, egui::TextFormat { font_id: body, color: theme::TEXT, ..Default::default() });
+            title.append(&rv.repo.name(), 0.0, egui::TextFormat { font_id: body, color: theme::TEXT(), ..Default::default() });
             let menu = left.menu_button(title, |ui| {
                 ui.set_min_width(260.0);
-                ui.label(egui::RichText::new("OPEN").small().strong().color(theme::TEXT_DIM));
+                ui.label(egui::RichText::new("OPEN").small().strong().color(theme::TEXT_DIM()));
                 for (i, (path, name, active)) in tabs.iter().enumerate() {
                     let (mut switch, mut close) = (false, false);
                     egui::Sides::new().show(
@@ -1828,7 +1909,7 @@ impl MarginApp {
                 }
                 if !recent.is_empty() {
                     ui.separator();
-                    ui.label(egui::RichText::new("RECENT").small().strong().color(theme::TEXT_DIM));
+                    ui.label(egui::RichText::new("RECENT").small().strong().color(theme::TEXT_DIM()));
                 }
                 for r in &recent {
                     let name = std::path::Path::new(r).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1860,7 +1941,7 @@ impl MarginApp {
             menu.response.on_hover_text("Switch directory (Ctrl+Tab, or ⌘P → Change directory)");
             if let Some(snap) = &rv.snap {
                 let branch = snap.status.branch.clone().unwrap_or_else(|| "(detached HEAD)".into());
-                left.menu_button(egui::RichText::new(&branch).color(theme::ACCENT), |ui| {
+                left.menu_button(egui::RichText::new(&branch).color(theme::ACCENT()), |ui| {
                     ui.set_min_width(220.0);
                     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                         // Same prefix groups as the sidebar; groups are submenus.
@@ -1882,7 +1963,7 @@ impl MarginApp {
                 .response
                 .on_hover_text("Switch branch");
                 if let Some(op) = snap.pending_op {
-                    let r = left.add(egui::Button::new(egui::RichText::new(format!("{op} in progress")).color(theme::ERROR)).small());
+                    let r = left.add(egui::Button::new(egui::RichText::new(format!("{op} in progress")).color(theme::ERROR())).small());
                     if r.on_hover_text("Continue / skip / abort").clicked() {
                         actions.push(Action::OpenPaletteWith(op.to_string()));
                     }
@@ -1990,7 +2071,7 @@ impl MarginApp {
                 }
                 if let Some((m, err)) = &self.status_line {
                     let first = m.lines().next().unwrap_or("");
-                    let color = if *err { theme::ERROR } else { theme::TEXT_DIM };
+                    let color = if *err { theme::ERROR() } else { theme::TEXT_DIM() };
                     let resp = st
                         .add(egui::Label::new(egui::RichText::new(first).color(color)).truncate().sense(egui::Sense::click()))
                         .on_hover_text(format!("{m}\n\n(click to dismiss)"));
@@ -2006,12 +2087,12 @@ impl MarginApp {
                     _ => None,
                 };
                 if let Some(r) = reminder {
-                    if st.small_button(egui::RichText::new(r).color(theme::ACCENT)).on_hover_text(self.license.describe()).clicked() {
+                    if st.small_button(egui::RichText::new(r).color(theme::ACCENT())).on_hover_text(self.license.describe()).clicked() {
                         actions.push(Action::OpenSettings);
                     }
                 }
                 if let Some(b) = &busy {
-                    st.label(egui::RichText::new(format!("{b}…")).color(theme::TEXT_DIM));
+                    st.label(egui::RichText::new(format!("{b}…")).color(theme::TEXT_DIM()));
                     st.spinner();
                 } else if working {
                     st.spinner();
@@ -2265,118 +2346,55 @@ impl MarginApp {
         }
         let mut changed = false;
         let mut close = false;
-        let last = self.rv.as_ref().and_then(|rv| rv.last_fetch).map(ago);
         let modal = egui::Modal::new(egui::Id::unique("settings")).show(ctx, |ui| {
-            ui.set_width(420.0);
-            ui.heading("Settings");
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("MARGIN PRO").small().strong().color(theme::TEXT_DIM));
-            ui.separator();
-            let color = if self.license.is_pro() { theme::ADDED } else { theme::ACCENT };
-            ui.label(egui::RichText::new(self.license.describe()).color(color));
-            ui.label(egui::RichText::new("Pro: GitHub PR status, Jira ticket details & My tasks.").small().color(theme::TEXT_DIM));
-            if margin_core::license::is_dev_build() {
-                ui.label(egui::RichText::new("Development build: accepts development keys only.").small().color(theme::TEXT_DIM));
-            }
-            if matches!(self.license, margin_core::license::Status::Pro(_)) {
-                if ui.small_button("Remove licence from this computer").clicked() {
-                    actions.push(Action::RemoveLicense);
-                }
-            } else {
-                ui.add(egui::TextEdit::multiline(&mut self.license_input).hint_text("Paste your licence key (MARGIN1.…)").desired_rows(2).desired_width(f32::INFINITY));
-                if let Some(e) = &self.license_error {
-                    ui.colored_label(theme::ERROR, e);
-                }
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(!self.license_input.trim().is_empty(), egui::Button::new("Activate")).clicked() {
-                        actions.push(Action::InstallLicense(self.license_input.clone()));
+            ui.set_width(720.0);
+            ui.horizontal(|ui| {
+                ui.heading("Settings");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Close").clicked() {
+                        close = true;
                     }
-                    if ui.button("Buy Margin Pro").clicked() {
-                        actions.push(Action::OpenUrl(crate::pro::PURCHASE_URL.into()));
-                    }
+                    ui.label(egui::RichText::new("Saved automatically").small().color(theme::TEXT_DIM()))
+                        .on_hover_text(config::config_dir().join("settings.json").display().to_string());
                 });
-            }
-            ui.add_space(10.0);
-            self.sync_settings(ui, actions);
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new("FETCH").small().strong().color(theme::TEXT_DIM));
+            });
+            ui.add_space(6.0);
             ui.separator();
-            changed |= ui.checkbox(&mut self.settings.auto_fetch, "Fetch automatically in the background").changed();
-            ui.add_enabled_ui(self.settings.auto_fetch, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space(24.0);
-                    ui.label("Every");
-                    changed |= ui
-                        .add(egui::DragValue::new(&mut self.settings.auto_fetch_minutes).range(1..=1440).speed(0.2).suffix(" min"))
-                        .changed();
-                    for m in [5, 15, 30, 60] {
-                        if ui.selectable_label(self.settings.auto_fetch_minutes == m, format!("{m}")).clicked() {
-                            self.settings.auto_fetch_minutes = m;
-                            changed = true;
+            ui.add_space(6.0);
+            ui.horizontal_top(|ui| {
+                // ---- sections
+                ui.vertical(|ui| {
+                    ui.set_width(150.0);
+                    ui.style_mut().interaction.selectable_labels = false;
+                    for t in SettingsTab::ALL {
+                        let on = self.settings_tab == t;
+                        let text = if on { egui::RichText::new(t.label()).strong() } else { egui::RichText::new(t.label()) };
+                        if ui.add(egui::Button::selectable(on, text).min_size(egui::vec2(146.0, 26.0))).clicked() {
+                            self.settings_tab = t;
                         }
                     }
                 });
-            });
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(
-                    "Fetches all remotes (with prune) for the open repository. Uses your git credential \
-                     helper / SSH agent and never prompts; failures are shown in the toolbar.",
-                )
-                .small()
-                .color(theme::TEXT_DIM),
-            );
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("Last fetched: {}", last.clone().unwrap_or_else(|| "never".into()))).small());
-                if self.rv.is_some() && ui.small_button("Fetch now").clicked() {
-                    actions.push(Action::Fetch);
-                }
-            });
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new("TASKS").small().strong().color(theme::TEXT_DIM));
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Ticket link");
-                let mut t = self.settings.ticket_url.clone().unwrap_or_default();
-                if ui.add(egui::TextEdit::singleline(&mut t).hint_text("https://yourcompany.atlassian.net").desired_width(260.0)).changed() {
-                    self.settings.ticket_url = Some(t.trim().to_string()).filter(|t| !t.is_empty());
-                    changed = true;
-                }
-            });
-            let example = self.settings.ticket_url.as_deref().and_then(|t| tasks::ticket_link(t, "PROJ-123"));
-            ui.label(
-                egui::RichText::new(match &example {
-                    Some(u) => format!("PROJ-123 → {u}"),
-                    None => "Task keys (PROJ-123) in branch names and commit messages link here. A Jira site adds /browse/KEY; for other trackers use a template with {key}.".into(),
-                })
-                .small()
-                .color(theme::TEXT_DIM),
-            );
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new("DIFFS").small().strong().color(theme::TEXT_DIM));
-            ui.separator();
-            ui.label("Show files expanded by default:");
-            let st = &mut self.state;
-            let mut commits = !st.diff_collapse_commits;
-            let mut staged = !st.diff_collapse_staged;
-            let mut view_changed = false;
-            ui.horizontal(|ui| {
-                view_changed |= ui.checkbox(&mut commits, "Commits").changed();
-                view_changed |= ui.checkbox(&mut staged, "Staged").changed();
-                view_changed |= ui.checkbox(&mut st.diff_expand_unstaged, "Unstaged").changed();
-            });
-            ui.label(egui::RichText::new("Click a file header to expand or collapse it; that choice is kept while you work.").small().color(theme::TEXT_DIM));
-            if view_changed {
-                st.diff_collapse_commits = !commits;
-                st.diff_collapse_staged = !staged;
-                let _ = config::save_state(st);
-            }
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button("Close").clicked() {
-                    close = true;
-                }
-                ui.weak("Changes are saved automatically").on_hover_text(config::config_dir().join("settings.json").display().to_string());
+                ui.separator();
+                // ---- the selected section
+                ui.vertical(|ui| {
+                    ui.set_width(540.0);
+                    let tab = self.settings_tab;
+                    ui.label(egui::RichText::new(tab.label()).size(ui.style().text_styles[&egui::TextStyle::Heading].size - 1.0).strong());
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(tab.intro()).color(theme::TEXT_DIM()));
+                    ui.add_space(14.0);
+                    egui::ScrollArea::vertical().id_salt("settings_scroll").max_height(440.0).min_scrolled_height(440.0).auto_shrink([false, false]).show(ui, |ui| {
+                        ui.set_width(526.0);
+                        match tab {
+                            SettingsTab::Appearance => changed |= self.settings_appearance(ui),
+                            SettingsTab::Pro => self.settings_pro(ui, actions),
+                            SettingsTab::Sync => self.sync_settings(ui, actions),
+                            SettingsTab::Fetch => changed |= self.settings_fetch(ui, actions),
+                            SettingsTab::Tasks => changed |= self.settings_tasks(ui),
+                            SettingsTab::Diffs => self.settings_diffs(ui),
+                        }
+                    });
+                });
             });
         });
         if changed {
@@ -2389,40 +2407,156 @@ impl MarginApp {
             self.show_settings = false;
         }
     }
-}
 
-fn branch_menu(ui: &mut egui::Ui, nodes: &[crate::branch_tree::Node<&margin_core::git::RefInfo>], actions: &mut Vec<Action>) {
-    for n in nodes {
-        match n {
-            crate::branch_tree::Node::Leaf { label, item: r } => {
-                let text = if r.is_head { format!("● {label}") } else { format!("   {label}") };
-                if ui.add_enabled(!r.is_head, egui::Button::new(text)).on_hover_text(&r.name).clicked() {
-                    actions.push(Action::Checkout(r.name.clone()));
-                    ui.close();
+    /// Appearance: theme picker. Returns whether settings changed.
+    fn settings_appearance(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        let current = self.settings.theme.clone().unwrap_or_else(|| "margin".into());
+        for (title, dark) in [("Dark themes", true), ("Light themes", false)] {
+            setting(ui, title, "", |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
+                    for p in theme::THEMES.iter().filter(|p| p.dark == dark) {
+                        if theme_card(ui, p, p.id == current).clicked() && p.id != current {
+                            self.settings.theme = Some(p.id.to_string());
+                            theme::set(Some(p.id));
+                            theme::apply(ui.ctx(), self.cfg.font_size.unwrap_or(13.0));
+                            changed = true;
+                        }
+                    }
+                });
+            });
+        }
+        ui.label(
+            egui::RichText::new("Material themes follow the Material Theme palettes (Material, Darker, Palenight, Ocean, Lighter); Solarized uses Ethan Schoonover's palette.")
+                .small()
+                .color(theme::TEXT_DIM()),
+        );
+        changed
+    }
+
+    fn settings_pro(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let color = if self.license.is_pro() { theme::ADDED() } else { theme::ACCENT() };
+        setting(ui, "Status", if margin_core::license::is_dev_build() { "Development build: accepts development keys only." } else { "" }, |ui| {
+            ui.label(egui::RichText::new(self.license.describe()).color(color));
+        });
+        if matches!(self.license, margin_core::license::Status::Pro(_)) {
+            setting(ui, "This computer", "Frees the licence for use on another computer.", |ui| {
+                if ui.button("Remove licence from this computer").clicked() {
+                    actions.push(Action::RemoveLicense);
                 }
+            });
+            return;
+        }
+        setting(ui, "Licence key", "Paste the key from your purchase email (it starts with MARGIN1.).", |ui| {
+            ui.add(egui::TextEdit::multiline(&mut self.license_input).hint_text("MARGIN1.…").desired_rows(3).desired_width(f32::INFINITY));
+            if let Some(e) = &self.license_error {
+                ui.colored_label(theme::ERROR(), e);
             }
-            crate::branch_tree::Node::Group { label, children, count, .. } => {
-                let has_head = crate::branch_tree::any(children, &|r: &&margin_core::git::RefInfo| r.is_head);
-                let text = format!("{}{label}  ({count})", if has_head { "● " } else { "   " });
-                ui.menu_button(text, |ui| branch_menu(ui, children, actions));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!self.license_input.trim().is_empty(), egui::Button::new("Activate")).clicked() {
+                    actions.push(Action::InstallLicense(self.license_input.clone()));
+                }
+                if ui.button("Buy Margin Pro").clicked() {
+                    actions.push(Action::OpenUrl(crate::pro::PURCHASE_URL.into()));
+                }
+            });
+        });
+    }
+
+    fn settings_fetch(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) -> bool {
+        let mut changed = false;
+        let last = self.rv.as_ref().and_then(|rv| rv.last_fetch).map(ago);
+        setting(
+            ui,
+            "Automatic fetch",
+            "Fetches all remotes (with prune) for the open repository, using your git credential helper or SSH agent. It never prompts; failures show in the toolbar.",
+            |ui| {
+                changed |= ui.checkbox(&mut self.settings.auto_fetch, "Fetch in the background").changed();
+                ui.add_enabled_ui(self.settings.auto_fetch, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0);
+                        ui.label("Every");
+                        changed |= ui.add(egui::DragValue::new(&mut self.settings.auto_fetch_minutes).range(1..=1440).speed(0.2).suffix(" min")).changed();
+                        for m in [5, 15, 30, 60] {
+                            if ui.selectable_label(self.settings.auto_fetch_minutes == m, format!("{m} min")).clicked() {
+                                self.settings.auto_fetch_minutes = m;
+                                changed = true;
+                            }
+                        }
+                    });
+                });
+            },
+        );
+        setting(ui, "Last fetch", "", |ui| {
+            ui.horizontal(|ui| {
+                ui.label(last.clone().unwrap_or_else(|| "never".into()));
+                if self.rv.is_some() && ui.small_button("Fetch now").clicked() {
+                    actions.push(Action::Fetch);
+                }
+            });
+        });
+        changed
+    }
+
+    fn settings_tasks(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        let example = self.settings.ticket_url.as_deref().and_then(|t| tasks::ticket_link(t, "PROJ-123"));
+        let help = match &example {
+            Some(u) => format!("PROJ-123 opens {u}"),
+            None => "A Jira site such as https://yourcompany.atlassian.net (keys open /browse/KEY), or for other trackers a link with {key}, e.g. https://linear.app/acme/issue/{key}.".into(),
+        };
+        setting(ui, "Ticket link", &help, |ui| {
+            let mut t = self.settings.ticket_url.clone().unwrap_or_default();
+            if ui.add(egui::TextEdit::singleline(&mut t).hint_text("https://yourcompany.atlassian.net").desired_width(f32::INFINITY)).changed() {
+                self.settings.ticket_url = Some(t.trim().to_string()).filter(|t| !t.is_empty());
+                changed = true;
+            }
+        });
+        changed
+    }
+
+    fn settings_diffs(&mut self, ui: &mut egui::Ui) {
+        let st = &mut self.state;
+        let mut commits = !st.diff_collapse_commits;
+        let mut staged = !st.diff_collapse_staged;
+        let mut view_changed = false;
+        setting(ui, "Files expanded when a diff opens", "Click a file's header to expand or collapse it; that choice is kept while you work.", |ui| {
+            view_changed |= ui.checkbox(&mut commits, "In commits").changed();
+            view_changed |= ui.checkbox(&mut staged, "Staged changes").changed();
+            view_changed |= ui.checkbox(&mut st.diff_expand_unstaged, "Unstaged changes").changed();
+        });
+        let mut ws = st.diff_ignore_ws;
+        let mut split = st.diff_split;
+        setting(ui, "Layout", "Also switchable from the icons above every diff.", |ui| {
+            ui.horizontal(|ui| {
+                view_changed |= ui.radio_value(&mut split, false, "Inline").changed();
+                view_changed |= ui.radio_value(&mut split, true, "Side by side").changed();
+            });
+        });
+        setting(ui, "Whitespace", "Hide changes that only touch spaces, tabs or indentation (git diff -w). Staging single hunks is off while this is on.", |ui| {
+            view_changed |= ui.checkbox(&mut ws, "Ignore whitespace changes").changed();
+        });
+        if view_changed {
+            st.diff_collapse_commits = !commits;
+            st.diff_collapse_staged = !staged;
+            st.diff_split = split;
+            let reload = st.diff_ignore_ws != ws;
+            st.diff_ignore_ws = ws;
+            let _ = config::save_state(st);
+            if reload {
+                self.handle(Action::ReloadDiff);
             }
         }
     }
-}
 
-impl MarginApp {
-    /// Settings → Notes sync.
     fn sync_settings(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         use margin_core::sync::{FREE_REPOS, RepoSync};
-        ui.label(egui::RichText::new("NOTES SYNC").small().strong().color(theme::TEXT_DIM));
-        ui.separator();
-        ui.label(
-            egui::RichText::new(format!(
-                "Mirror notes through a folder iCloud Drive, Dropbox or Google Drive already syncs. Free: {FREE_REPOS} repository · Margin Pro: unlimited."
-            ))
-            .small()
-            .color(theme::TEXT_DIM),
-        );
+        ui.label(egui::RichText::new(format!("Free: {FREE_REPOS} repository · Margin Pro: unlimited.")).small().color(theme::TEXT_DIM()));
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Sync folder").strong());
+        ui.add_space(4.0);
         // Folder
         ui.horizontal_wrapped(|ui| {
             ui.label("Folder:");
@@ -2458,8 +2592,11 @@ impl MarginApp {
                 }
             }
         });
+        ui.add_space(16.0);
         // This repository
         let Some(rv) = &self.rv else { return };
+        ui.label(egui::RichText::new("This repository").strong());
+        ui.add_space(4.0);
         let on = self.settings.synced_repos.contains(&rv.repo_id);
         let mut want = on;
         if ui.checkbox(&mut want, format!("Sync notes for {}", rv.repo.name())).changed() {
@@ -2479,7 +2616,7 @@ impl MarginApp {
         }
         let n = self.settings.synced_repos.len();
         if n > 0 {
-            ui.label(egui::RichText::new(format!("{n} repositor{} with sync on", if n == 1 { "y" } else { "ies" })).small().color(theme::TEXT_DIM));
+            ui.label(egui::RichText::new(format!("{n} repositor{} with sync on", if n == 1 { "y" } else { "ies" })).small().color(theme::TEXT_DIM()));
         }
     }
 }
@@ -2488,13 +2625,13 @@ impl MarginApp {
 pub fn sync_status_text(rv: &RepoView) -> (String, egui::Color32) {
     use margin_core::sync::RepoSync;
     match &rv.sync_state {
-        RepoSync::Off => (String::new(), theme::TEXT_DIM),
-        RepoSync::NoFolder => ("Sync is on, but no sync folder is set (or it's not available)".into(), theme::ACCENT),
-        RepoSync::Paused => ("Sync paused — this repository is over the free limit".into(), theme::ACCENT),
+        RepoSync::Off => (String::new(), theme::TEXT_DIM()),
+        RepoSync::NoFolder => ("Sync is on, but no sync folder is set (or it's not available)".into(), theme::ACCENT()),
+        RepoSync::Paused => ("Sync paused — this repository is over the free limit".into(), theme::ACCENT()),
         RepoSync::Active { remote } => match &rv.sync.lock().unwrap().last {
-            None => (format!("Syncing with {}", remote.display()), theme::TEXT_DIM),
-            Some((t, Ok(_))) => (format!("Synced {} · {}", ago(*t), remote.display()), theme::ADDED),
-            Some((_, Err(e))) => (format!("Sync failed: {e}"), theme::ERROR),
+            None => (format!("Syncing with {}", remote.display()), theme::TEXT_DIM()),
+            Some((t, Ok(_))) => (format!("Synced {} · {}", ago(*t), remote.display()), theme::ADDED()),
+            Some((_, Err(e))) => (format!("Sync failed: {e}"), theme::ERROR()),
         },
     }
 }
@@ -2557,5 +2694,25 @@ fn open_url(url: &str, app: &mut MarginApp) {
     let r = std::process::Command::new("explorer").arg(url).spawn();
     if let Err(e) = r {
         app.err(format!("open {url}: {e}"));
+    }
+}
+
+
+fn branch_menu(ui: &mut egui::Ui, nodes: &[crate::branch_tree::Node<&margin_core::git::RefInfo>], actions: &mut Vec<Action>) {
+    for n in nodes {
+        match n {
+            crate::branch_tree::Node::Leaf { label, item: r } => {
+                let text = if r.is_head { format!("● {label}") } else { format!("   {label}") };
+                if ui.add_enabled(!r.is_head, egui::Button::new(text)).on_hover_text(&r.name).clicked() {
+                    actions.push(Action::Checkout(r.name.clone()));
+                    ui.close();
+                }
+            }
+            crate::branch_tree::Node::Group { label, children, count, .. } => {
+                let has_head = crate::branch_tree::any(children, &|r: &&margin_core::git::RefInfo| r.is_head);
+                let text = format!("{}{label}  ({count})", if has_head { "● " } else { "   " });
+                ui.menu_button(text, |ui| branch_menu(ui, children, actions));
+            }
+        }
     }
 }

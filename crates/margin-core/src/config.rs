@@ -167,6 +167,9 @@ pub struct Settings {
     /// `https://acme.atlassian.net` (→ /browse/KEY) or a template with `{key}`.
     #[serde(default)]
     pub ticket_url: Option<String>,
+    /// Colour theme id (Settings → Appearance); `None` = Margin.
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 fn default_fetch_minutes() -> u32 {
@@ -175,7 +178,7 @@ fn default_fetch_minutes() -> u32 {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None }
+        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None }
     }
 }
 

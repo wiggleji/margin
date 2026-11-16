@@ -252,9 +252,9 @@ impl Palette {
                             View::List => "",
                         };
                         ui.horizontal(|ui| {
-                            ui.add(icons::image(ui.ctx(), c.group.icon(), 13.0, theme::ACCENT));
-                            ui.label(RichText::new(format!("{} › {}", c.group.label(), c.title)).small().color(theme::ACCENT));
-                            ui.label(RichText::new(format!("— {p}")).small().color(theme::TEXT_DIM));
+                            ui.add(icons::image(ui.ctx(), c.group.icon(), 13.0, theme::ACCENT()));
+                            ui.label(RichText::new(format!("{} › {}", c.group.label(), c.title)).small().color(theme::ACCENT()));
+                            ui.label(RichText::new(format!("— {p}")).small().color(theme::TEXT_DIM()));
                         });
                     }
                     if let View::Confirm(msg) = &view {
@@ -326,8 +326,8 @@ impl Palette {
                                     None => (Icon::History, "Recent"),
                                 };
                                 ui.horizontal(|ui| {
-                                    ui.add(icons::image(ui.ctx(), icon, 13.0, theme::TEXT_DIM));
-                                    ui.label(RichText::new(name.to_uppercase()).small().strong().color(theme::TEXT_DIM));
+                                    ui.add(icons::image(ui.ctx(), icon, 13.0, theme::TEXT_DIM()));
+                                    ui.label(RichText::new(name.to_uppercase()).small().strong().color(theme::TEXT_DIM()));
                                 });
                                 last_header = Some(h);
                             }
@@ -335,7 +335,7 @@ impl Palette {
                             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
                             let selected = row == self.sel;
                             if selected || resp.hovered() {
-                                ui.painter().rect_filled(rect, 3.0, if selected { theme::SELECTED } else { theme::HOVER });
+                                ui.painter().rect_filled(rect, 3.0, if selected { theme::SELECTED() } else { theme::HOVER() });
                             }
                             if selected && (up || down) {
                                 resp.scroll_to_me(None);
@@ -343,10 +343,10 @@ impl Palette {
                             let font = egui::TextStyle::Body.resolve(ui.style());
                             let indent = if header.is_some() { 22.0 } else { 8.0 };
                             let p = ui.painter_at(rect);
-                            p.text(rect.left_center() + vec2(indent, 0.0), Align2::LEFT_CENTER, &label, font, theme::TEXT);
+                            p.text(rect.left_center() + vec2(indent, 0.0), Align2::LEFT_CENTER, &label, font, theme::TEXT());
                             if !detail.is_empty() {
                                 let small = egui::TextStyle::Small.resolve(ui.style());
-                                p.text(rect.right_center() - vec2(8.0, 0.0), Align2::RIGHT_CENTER, &detail, small, theme::TEXT_DIM);
+                                p.text(rect.right_center() - vec2(8.0, 0.0), Align2::RIGHT_CENTER, &detail, small, theme::TEXT_DIM());
                             }
                             if resp.clicked() {
                                 self.sel = row;

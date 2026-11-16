@@ -77,7 +77,7 @@ pub fn render(ui: &mut Ui, src: &str) -> Option<MdAction> {
             Event::End(TagEnd::CodeBlock) => {
                 if let Some(c) = code.take() {
                     egui::Frame::new()
-                        .fill(theme::BG_DARK)
+                        .fill(theme::BG_DARK())
                         .inner_margin(6.0)
                         .corner_radius(3.0)
                         .show(ui, |ui| {
@@ -186,7 +186,7 @@ fn flush(ui: &mut Ui, cx: &mut Ctx, runs: &mut Vec<Run>, prefix: Option<Prefix>,
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.add_space(indent);
         if quote > 0 {
-            ui.label(RichText::new("│ ").color(theme::TEXT_DIM));
+            ui.label(RichText::new("│ ").color(theme::TEXT_DIM()));
         }
         match prefix {
             Some(Prefix::Bullet) => {
@@ -221,12 +221,12 @@ fn flush(ui: &mut Ui, cx: &mut Ctx, runs: &mut Vec<Run>, prefix: Option<Prefix>,
                 rt = rt.code();
             }
             if quote > 0 {
-                rt = rt.color(theme::TEXT_DIM);
+                rt = rt.color(theme::TEXT_DIM());
             }
             match r.link {
                 Some(url) => {
                     let ok = markdown::link_allowed(&url);
-                    let color = if ok { ui.visuals().hyperlink_color } else { theme::ERROR };
+                    let color = if ok { ui.visuals().hyperlink_color } else { theme::ERROR() };
                     let resp = ui
                         .add(Label::new(rt.color(color).underline()).sense(Sense::click()))
                         .on_hover_text(&url);

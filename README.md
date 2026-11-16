@@ -15,6 +15,10 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 
 ## What it does
 
+**Settings (⌘,)**: sections for Appearance, Margin Pro, Notes sync, Fetch, Tasks, and Diffs, each setting with a short explanation. Changes save automatically.
+
+**Themes** (Settings → Appearance, applied right away): Margin (default), Material, Material Darker, Material Palenight, Material Ocean, Material Lighter, Solarized Dark, and Solarized Light. Each is built from its palette's base colours; diff backgrounds, selection, and graph lanes are mixed from them.
+
 **Command palette (⌘P)**: every action, fuzzy-searchable and grouped with icons. The groups are *In progress* (continue/abort), Repository, Remote, Commit, Branch, Tag, Stash, Worktree, Git Flow, Submodule, GitHub, Notes, and Go to. Commands that need input ask for it inside the palette: pick a branch, type a name, or confirm. ↑/↓ move, ↵ runs, and Esc steps back. With an empty search, the **5 most recently run commands** are listed first under *Recent* (remembered across restarts).
 
 **Menu bar (macOS):** Margin, File (Open Folder… ⌘O, Open Recent, Save Note ⌘S, Close Tab ⌘W), Edit (undo, copy/paste, Find Commits… ⌘F), Repository (fetch, pull, push, commit, stash, branch, merge, rebase, tag, worktree, Git Flow, Refresh ⌘R), Navigate (Command Palette ⌘P, Back ⌘[, Forward ⌘], Go to…), Window (tabs ⌃Tab / ⌃⇧Tab), and Help.

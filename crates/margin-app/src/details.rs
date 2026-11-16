@@ -68,7 +68,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             let n = summary.chars().count();
             if n > 0 {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let color = if n > 72 { theme::ERROR } else if n > 50 { theme::ACCENT } else { theme::TEXT_DIM };
+                    let color = if n > 72 { theme::ERROR() } else if n > 50 { theme::ACCENT() } else { theme::TEXT_DIM() };
                     ui.label(RichText::new(format!("{n}")).small().color(color))
                         .on_hover_text("Summary length. Keep it under 50 characters if you can (72 at most).");
                 });
@@ -160,7 +160,7 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                     }
                     let more = branches.len().saturating_sub(SHOW);
                     if more > 0 {
-                        ui.label(RichText::new(format!("+{more} more")).small().color(theme::TEXT_DIM)).on_hover_text(&all);
+                        ui.label(RichText::new(format!("+{more} more")).small().color(theme::TEXT_DIM())).on_hover_text(&all);
                     }
                 });
                 ui.end_row();
@@ -172,8 +172,8 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 ui.weak("Changes");
                 ui.horizontal(|ui| {
                     ui.label(format!("{} file{}", files.len(), if files.len() == 1 { "" } else { "s" }));
-                    ui.label(RichText::new(format!("+{a}")).color(theme::ADDED));
-                    ui.label(RichText::new(format!("−{r}")).color(theme::REMOVED));
+                    ui.label(RichText::new(format!("+{a}")).color(theme::ADDED()));
+                    ui.label(RichText::new(format!("−{r}")).color(theme::REMOVED()));
                 });
                 ui.end_row();
             }
@@ -183,7 +183,7 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 ui.weak("Tasks");
                 ui.horizontal_wrapped(|ui| {
                     for k in keys {
-                        if ui.link(RichText::new(&k).color(theme::ACCENT)).on_hover_text("Show the task's notes").clicked() {
+                        if ui.link(RichText::new(&k).color(theme::ACCENT())).on_hover_text("Show the task's notes").clicked() {
                             actions.push(Action::FocusTask(k.clone()));
                         }
                         if let Some(u) = task_url(&k) {
@@ -208,7 +208,7 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
         let body = body.trim_end();
         if !body.is_empty() {
             ui.add_space(6.0);
-            ui.add(egui::Label::new(RichText::new(body).color(theme::TEXT).line_height(Some(size * 1.55))).selectable(true).wrap());
+            ui.add(egui::Label::new(RichText::new(body).color(theme::TEXT()).line_height(Some(size * 1.55))).selectable(true).wrap());
 
         }
         ui.add_space(4.0);

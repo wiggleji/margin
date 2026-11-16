@@ -9,10 +9,10 @@ use margin_core::github::{CiState, CommentKind, PrSummary, Tone};
 
 pub fn tone_color(t: Tone) -> egui::Color32 {
     match t {
-        Tone::Good => theme::ADDED,
-        Tone::Warn => theme::ACCENT,
-        Tone::Bad => theme::ERROR,
-        Tone::Neutral => theme::TEXT_DIM,
+        Tone::Good => theme::ADDED(),
+        Tone::Warn => theme::ACCENT(),
+        Tone::Bad => theme::ERROR(),
+        Tone::Neutral => theme::TEXT_DIM(),
     }
 }
 
@@ -31,7 +31,7 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
     if rv.github.is_none() {
         // Not a GitHub remote: show nothing, unless connecting failed.
         if let Some(e) = &rv.github_error {
-            ui.colored_label(theme::ERROR, e);
+            ui.colored_label(theme::ERROR(), e);
             ui.separator();
         }
         return;
@@ -44,7 +44,7 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
             }
         });
         if let Some(e) = &rv.github_error {
-            ui.colored_label(theme::ERROR, e);
+            ui.colored_label(theme::ERROR(), e);
         }
         ui.separator();
         return;
@@ -53,7 +53,7 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
     // ---- header: number/title (links out), readiness, CI, review
     ui.horizontal_wrapped(|ui| {
         let sz = ui.text_style_height(&egui::TextStyle::Body);
-        ui.add(crate::icons::image(ui.ctx(), crate::icons::Icon::Github, sz, theme::TEXT));
+        ui.add(crate::icons::image(ui.ctx(), crate::icons::Icon::Github, sz, theme::TEXT()));
         let link = ui
             .add(egui::Label::new(RichText::new(format!("#{} {}", pr.number, pr.title)).strong().color(ui.visuals().hyperlink_color)).sense(egui::Sense::click()))
             .on_hover_text("Open on GitHub");
@@ -93,7 +93,7 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
             });
         }
         Some(Err(e)) => {
-            ui.colored_label(theme::ERROR, e);
+            ui.colored_label(theme::ERROR(), e);
         }
         Some(Ok(d)) => {
             let failing = d.checks.iter().filter(|c| c.state == CiState::Failure).count();
@@ -112,10 +112,10 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
                         for c in &d.checks {
                             ui.horizontal(|ui| {
                                 let color = match c.state {
-                                    CiState::Success => theme::ADDED,
-                                    CiState::Failure => theme::ERROR,
-                                    CiState::Pending => theme::ACCENT,
-                                    CiState::None => theme::TEXT_DIM,
+                                    CiState::Success => theme::ADDED(),
+                                    CiState::Failure => theme::ERROR(),
+                                    CiState::Pending => theme::ACCENT(),
+                                    CiState::None => theme::TEXT_DIM(),
                                 };
                                 ui.label(RichText::new("●").small().color(color));
                                 match &c.url {
@@ -128,7 +128,7 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
                                         ui.label(&c.name);
                                     }
                                 }
-                                ui.label(RichText::new(c.detail.to_lowercase().replace('_', " ")).small().color(theme::TEXT_DIM));
+                                ui.label(RichText::new(c.detail.to_lowercase().replace('_', " ")).small().color(theme::TEXT_DIM()));
                             });
                         }
                     });
@@ -153,9 +153,9 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
                                 CommentKind::Comment => {}
                                 CommentKind::Review { state } => {
                                     let (t, col) = match state.as_str() {
-                                        "APPROVED" => ("approved", theme::ADDED),
-                                        "CHANGES_REQUESTED" => ("requested changes", theme::ERROR),
-                                        _ => ("reviewed", theme::TEXT_DIM),
+                                        "APPROVED" => ("approved", theme::ADDED()),
+                                        "CHANGES_REQUESTED" => ("requested changes", theme::ERROR()),
+                                        _ => ("reviewed", theme::TEXT_DIM()),
                                     };
                                     ui.label(RichText::new(t).small().color(col));
                                 }
@@ -164,13 +164,13 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
                                         Some(l) => format!("{path}:{l}"),
                                         None => path.clone(),
                                     };
-                                    ui.label(RichText::new(loc).small().monospace().color(theme::ACCENT));
+                                    ui.label(RichText::new(loc).small().monospace().color(theme::ACCENT()));
                                     if *replies > 0 {
-                                        ui.label(RichText::new(format!("+{replies} replies")).small().color(theme::TEXT_DIM));
+                                        ui.label(RichText::new(format!("+{replies} replies")).small().color(theme::TEXT_DIM()));
                                     }
                                 }
                             }
-                            ui.label(RichText::new(c.created_at.get(..16).unwrap_or(&c.created_at).replace('T', " ")).small().color(theme::TEXT_DIM));
+                            ui.label(RichText::new(c.created_at.get(..16).unwrap_or(&c.created_at).replace('T', " ")).small().color(theme::TEXT_DIM()));
                             if !c.url.is_empty() && ui.small_button("Open").clicked() {
                                 actions.push(Action::OpenUrl(c.url.clone()));
                             }
