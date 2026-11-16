@@ -55,22 +55,36 @@ fn working(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
         // ---- commit box
         ui.separator();
         let task = rv.current_branch().and_then(|b| rv.notes.task_for_branch(b));
+        let enter = if cfg!(target_os = "macos") { "⌘↵" } else { "Ctrl+↵" };
         let hint = match &task {
-            Some(t) => format!("{t}: summary of the change   (⌘↵ to commit)"),
-            None => "Commit message   (⌘↵ to commit)".into(),
+            Some(t) => format!("{t}: summary   ({enter} to commit)"),
+            None => format!("Summary   ({enter} to commit)"),
         };
-        let edit = ui.add(
-            egui::TextEdit::multiline(&mut rv.commit_msg)
-                .hint_text(hint)
+        let (sum_id, body_id) = (egui::Id::unique("commit_summary"), egui::Id::unique("commit_body"));
+        // ⌘↵ from either field commits (checked before the fields use the key).
+        let typing = ui.memory(|m| m.has_focus(sum_id) || m.has_focus(body_id));
+        if typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)) {
+            actions.push(Action::Commit);
+        }
+        // One message, edited as a summary line + description.
+        let (mut summary, mut body) = split_message(&rv.commit_msg);
+        let s = ui.add(egui::TextEdit::singleline(&mut summary).hint_text(hint).desired_width(f32::INFINITY).id(sum_id));
+        let b = ui.add(
+            egui::TextEdit::multiline(&mut body)
+                .hint_text("Description (optional)")
                 .desired_rows(3)
                 .desired_width(f32::INFINITY)
-                .id_salt("commit_msg"),
+                .id(body_id),
         );
-        if std::mem::take(&mut rv.focus_commit_msg) {
-            edit.request_focus();
+        if s.changed() || b.changed() {
+            rv.commit_msg = join_message(&summary, &body);
         }
-        if edit.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)) {
-            actions.push(Action::Commit);
+        // ↵ in the summary moves on to the description.
+        if s.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.command) {
+            b.request_focus();
+        }
+        if std::mem::take(&mut rv.focus_commit_msg) {
+            s.request_focus();
         }
         ui.horizontal(|ui| {
             let can = (!staged.is_empty() || rv.amend) && !rv.commit_msg.trim().is_empty();
@@ -84,6 +98,15 @@ fn working(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 if !rv.commit_msg.contains(t.as_str()) && ui.small_button(format!("Insert {t}")).clicked() {
                     rv.commit_msg = format!("{t}: {}", rv.commit_msg);
                 }
+            }
+            // Summary length: git convention is ≤ 50 (soft) and ≤ 72 (hard).
+            let n = summary.chars().count();
+            if n > 0 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let color = if n > 72 { theme::ERROR } else if n > 50 { theme::ACCENT } else { theme::TEXT_DIM };
+                    ui.label(RichText::new(format!("{n}")).small().color(color))
+                        .on_hover_text("Summary length. Keep it under 50 characters if you can (72 at most).");
+                });
             }
         });
         ui.separator();
@@ -168,11 +191,17 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
         return;
     };
     egui::Panel::top("commit_header").show(ui, |ui| {
-        let mut lines = d.message.lines();
-        ui.label(RichText::new(lines.next().unwrap_or("")).strong().size(ui.style().text_styles[&egui::TextStyle::Body].size + 2.0));
-        let body: String = lines.collect::<Vec<_>>().join("\n");
-        if !body.trim().is_empty() {
-            ui.label(body.trim());
+        // Full message: subject, then the body (selectable; scrolls when long).
+        let (subject, body) = split_message(&d.message);
+        let big = ui.style().text_styles[&egui::TextStyle::Body].size + 2.0;
+        ui.add(egui::Label::new(RichText::new(subject).strong().size(big)).selectable(true).wrap());
+        let body = body.trim_end();
+        if !body.is_empty() {
+            ui.add_space(2.0);
+            let max = (ui.ctx().content_rect().height() * 0.3).max(80.0);
+            egui::ScrollArea::vertical().id_salt("commit_body_scroll").max_height(max).auto_shrink([false, true]).show(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(body).color(theme::TEXT)).selectable(true).wrap());
+            });
         }
         ui.add_space(4.0);
         egui::Grid::new("commit_meta").num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
@@ -219,4 +248,32 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
         ui.add_space(4.0);
     });
     rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff");
+}
+
+/// "Summary\n\nBody" → ("Summary", "Body").
+pub fn split_message(m: &str) -> (String, String) {
+    match m.split_once('\n') {
+        Some((s, rest)) => (s.to_string(), rest.trim_start_matches(['\n', '\r']).to_string()),
+        None => (m.to_string(), String::new()),
+    }
+}
+
+/// Inverse of `split_message`: a blank line between summary and body.
+pub fn join_message(summary: &str, body: &str) -> String {
+    if body.is_empty() { summary.to_string() } else { format!("{summary}\n\n{body}") }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{join_message, split_message};
+
+    #[test]
+    fn message_round_trip() {
+        for m in ["Fix login", "Fix login\n\nRaised the timeout.\n\n- tested", "Subject\n\n"] {
+            let (s, b) = split_message(m);
+            assert_eq!(split_message(&join_message(&s, &b)), (s, b));
+        }
+        assert_eq!(split_message("A\nB"), ("A".into(), "B".into()));
+        assert_eq!(join_message("A", "B"), "A\n\nB");
+    }
 }

@@ -10,6 +10,7 @@ mod diff_view;
 mod jobs;
 mod markdown_view;
 mod menu_bar;
+mod note_format;
 mod notes_panel;
 mod palette;
 mod pro;

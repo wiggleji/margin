@@ -88,6 +88,17 @@ pub struct State {
     /// Command palette: recently run commands (`Group/Title`), newest first.
     #[serde(default)]
     pub recent_commands: Vec<String>,
+    /// Notes panel: height chosen by dragging, collapsed to its tab row, and
+    /// editing side by side with the preview ("Split").
+    #[serde(default)]
+    pub notes_height: Option<f32>,
+    #[serde(default)]
+    pub notes_collapsed: bool,
+    #[serde(default)]
+    pub notes_split: bool,
+    /// Notes panel under the history (graph) instead of under the commit details.
+    #[serde(default)]
+    pub notes_under_history: bool,
 }
 
 pub fn config_dir() -> PathBuf {

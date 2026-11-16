@@ -1,5 +1,10 @@
 //! Notes panel: Markdown notes for the selected commit, branch, task or repo.
 //! Autosaves when valid; detects edits made concurrently by MCP agents.
+//!
+//! Layout: a grip on top (drag to resize, double-click to collapse), the tab
+//! row, then the note. Empty notes shrink the panel to one line ("Write
+//! note"); a collapsed panel shows only the tab row. Notes open in Preview;
+//! Edit and Split (editor + live preview) have a formatting toolbar.
 
 use crate::app::{Action, RepoView, Sel};
 use crate::icons::{self, Icon};
@@ -36,6 +41,19 @@ pub struct NoteEditor {
     violations: Vec<markdown::Violation>,
     last_edit: f64,
     requested_tasks: HashSet<String>,
+    /// Height of the content when the panel is fitted to it (collapsed, or an
+    /// empty note); `None` when it uses the dragged height. Read by the layout.
+    pub fit_h: Option<f32>,
+    /// Last editor selection (char indices), for the formatting toolbar.
+    sel: (usize, usize),
+}
+
+/// Smallest height for the notes panel when it shows a note.
+pub const MIN_H: f32 = 140.0;
+pub const DEFAULT_H: f32 = 300.0;
+
+fn edit_id() -> egui::Id {
+    egui::Id::unique("margin_note_edit")
 }
 
 impl NoteEditor {
@@ -52,7 +70,9 @@ impl NoteEditor {
             }
             Err(e) => self.error = Some(e.0),
         }
-        self.preview = !self.text.trim().is_empty();
+        // Always open in Preview; an empty note shows a one-line "Write note".
+        self.preview = true;
+        self.sel = (0, 0);
         self.target = Some(t);
         self.dirty = false;
         self.external = false;
@@ -127,6 +147,7 @@ impl NoteEditor {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     rv: &mut RepoView,
@@ -135,9 +156,12 @@ pub fn show(
     license: &margin_core::license::Status,
     task_url: &dyn Fn(&str) -> Option<String>,
     author: &str,
+    prefs: &mut margin_core::config::State,
+    panel_h: f32,
     actions: &mut Vec<Action>,
 ) {
     let pro = license.is_pro();
+    let top = ui.cursor().top();
     let commit_id = match &rv.sel {
         Sel::Commit(id) => Some(id.clone()),
         Sel::Working => None,
@@ -156,10 +180,26 @@ pub fn show(
     };
     rv.editor.sync(desired, &rv.notes);
     let now = ui.input(|i| i.time);
+    let compact = is_compact(rv, pro);
+    let fit_before = rv.editor.fit_h;
+
+    // ---- grip: drag to resize, double-click to collapse / expand
+    grip(ui, rv, prefs, panel_h, compact);
 
     // ---- tab bar (wraps when the panel is narrow)
-    ui.add_space(4.0);
+    let tab_before = rv.editor.tab;
     ui.horizontal_wrapped(|ui| {
+        let chevron = if prefs.notes_collapsed { "▸" } else { "▾" };
+        let tip = if prefs.notes_collapsed { "Show the note" } else { "Collapse to this row" };
+        if ui.add(egui::Button::new(RichText::new(chevron).color(theme::TEXT_DIM)).frame(false)).on_hover_text(tip).clicked() {
+            prefs.notes_collapsed = !prefs.notes_collapsed;
+            let _ = margin_core::config::save_state(prefs);
+        }
+        // Move the panel to the other column (under the history / under the details).
+        let (arrow, tip) = if prefs.notes_under_history { ("⇥", "Move notes under the commit details") } else { ("⇤", "Move notes under the history") };
+        if ui.add(egui::Button::new(RichText::new(arrow).color(theme::TEXT_DIM)).frame(false)).on_hover_text(tip).clicked() {
+            actions.push(Action::ToggleNotesDock);
+        }
         let ctx = ui.ctx().clone();
         let icon_size = ui.text_style_height(&egui::TextStyle::Body) - 1.0;
         // Tab label: text, then a note icon if the note exists, then a GitHub icon + PR number.
@@ -185,18 +225,9 @@ pub fn show(
             ui.selectable_value(&mut rv.editor.tab, NoteTab::Branch, label(format!("Branch {b}"), has, rv.prs.get(b)))
                 .on_hover_text("Bound to the branch name. Shown on the branch's top commit and follows it through rebase/amend/rename.");
         }
-        match &task {
-            Some(k) => {
-                let has = rv.has_note(&NoteTarget::Task(k.clone()));
-                ui.selectable_value(&mut rv.editor.tab, NoteTab::Task, label(format!("Task {k}"), has, None));
-            }
-            None => {
-                if let Some(b) = &branch {
-                    if ui.small_button("Link task…").clicked() {
-                        actions.push(Action::LinkTaskDialog { branch: b.clone() });
-                    }
-                }
-            }
+        if let Some(k) = &task {
+            let has = rv.has_note(&NoteTarget::Task(k.clone()));
+            ui.selectable_value(&mut rv.editor.tab, NoteTab::Task, label(format!("Task {k}"), has, None));
         }
         let has = rv.has_note(&NoteTarget::Repo);
         ui.selectable_value(&mut rv.editor.tab, NoteTab::Repo, label("Repo".into(), has, None));
@@ -212,16 +243,98 @@ pub fn show(
             }
         }
     });
-    // Second row: editor controls (kept separate so long branch names never overlap them).
-    ui.horizontal(|ui| {
+    // Clicking a tab while collapsed opens the panel again.
+    if prefs.notes_collapsed && rv.editor.tab != tab_before {
+        prefs.notes_collapsed = false;
+        let _ = margin_core::config::save_state(prefs);
+    }
+    if prefs.notes_collapsed {
+        rv.editor.fit_h = Some(ui.cursor().top() - top);
+        if rv.editor.fit_h != fit_before {
+            ui.ctx().request_repaint();
+        }
+        return;
+    }
+    // "Link task…" for a branch without one (an action, so not shaped like a tab).
+    let link_task = |ui: &mut Ui, actions: &mut Vec<Action>| {
+        if let (None, Some(b)) = (&task, &branch) {
+            if ui.link(RichText::new("Link task…").small()).on_hover_text("Link a Jira / Linear / Asana task to this branch").clicked() {
+                actions.push(Action::LinkTaskDialog { branch: b.clone() });
+            }
+        }
+    };
+
+    // ---- empty note: one line instead of a big empty editor
+    if compact {
+        ui.horizontal(|ui| {
+            let ed = &mut rv.editor;
+            match &ed.target {
+                Some(t) => {
+                    ui.label(RichText::new(format!("No note on {} yet.", short_target(t))).color(theme::TEXT_DIM));
+                    if ui.small_button("Write note").clicked() {
+                        ed.preview = false;
+                        ui.ctx().memory_mut(|m| m.request_focus(edit_id()));
+                    }
+                }
+                None => {
+                    ui.label(RichText::new(match ed.tab {
+                        NoteTab::Branch => "Detached HEAD — no branch to attach notes to.",
+                        NoteTab::Task => "No task linked.",
+                        _ => "Nothing selected.",
+                    }).color(theme::TEXT_DIM));
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| link_task(ui, actions));
+        });
+        ui.add_space(2.0);
+        rv.editor.fit_h = Some(ui.cursor().top() - top);
+        if rv.editor.fit_h != fit_before {
+            ui.ctx().request_repaint();
+        }
+        return;
+    }
+    rv.editor.fit_h = None;
+    if fit_before.is_some() {
+        ui.ctx().request_repaint();
+    }
+
+    // Second row: Edit / Split / Preview, formatting, + Entry, save state; Link task on the right.
+    let mut fmt: Option<crate::note_format::Fmt> = None;
+    // Wraps in a narrow panel (e.g. under the history).
+    ui.horizontal_wrapped(|ui| {
         {
             let ed = &mut rv.editor;
             if ed.target.is_some() {
-                if ui.selectable_label(!ed.preview, "Edit").clicked() {
+                let editing = !ed.preview;
+                if ui.selectable_label(editing && !prefs.notes_split, "Edit").clicked() {
                     ed.preview = false;
+                    prefs.notes_split = false;
+                    let _ = margin_core::config::save_state(prefs);
+                }
+                if ui.selectable_label(editing && prefs.notes_split, "Split").on_hover_text("Editor and live preview side by side").clicked() {
+                    ed.preview = false;
+                    prefs.notes_split = true;
+                    let _ = margin_core::config::save_state(prefs);
                 }
                 if ui.selectable_label(ed.preview, "Preview").clicked() {
                     ed.preview = true;
+                }
+                if editing {
+                    ui.separator();
+                    for f in crate::note_format::Fmt::ALL {
+                        let (l, tip) = f.label();
+                        let mut t = RichText::new(l);
+                        t = match f {
+                            crate::note_format::Fmt::Bold => t.strong(),
+                            crate::note_format::Fmt::Italic => t.italics(),
+                            crate::note_format::Fmt::Code => t.monospace(),
+                            _ => t,
+                        };
+                        if ui.add(egui::Button::new(t).frame(false).min_size(egui::vec2(18.0, 0.0))).on_hover_text(tip).clicked() {
+                            fmt = Some(f);
+                        }
+                    }
+                    ui.separator();
                 }
                 if ui.small_button("+ Entry").on_hover_text("Append a timestamped entry").clicked() {
                     let mut t = ed.text.trim_end().to_string();
@@ -270,6 +383,8 @@ pub fn show(
                 ui.label(RichText::new(txt).small().color(color));
             }
         }
+        ui.add_space(6.0);
+        link_task(ui, actions);
     });
     ui.separator();
 
@@ -380,44 +495,52 @@ pub fn show(
         ui.colored_label(theme::ERROR, v.to_string());
     }
 
-    egui::ScrollArea::vertical().id_salt("note_scroll").auto_shrink([false, false]).show(ui, |ui| {
-        if ed.preview {
+    // ⌘B / ⌘I / ⌘K while typing in the note.
+    if !ed.preview && ui.memory(|m| m.has_focus(edit_id())) {
+        use crate::note_format::Fmt;
+        let key = ui.input_mut(|i| {
+            [(egui::Key::B, Fmt::Bold), (egui::Key::I, Fmt::Italic), (egui::Key::K, Fmt::Link)]
+                .into_iter()
+                .find(|(k, _)| i.consume_key(egui::Modifiers::COMMAND, *k))
+                .map(|(_, f)| f)
+        });
+        fmt = fmt.or(key);
+    }
+    if let Some(f) = fmt {
+        apply_format(ui.ctx(), ed, f, now);
+    }
+
+    if ed.preview {
+        egui::ScrollArea::vertical().id_salt("note_scroll").auto_shrink([false, false]).show(ui, |ui| {
             if ed.text.trim().is_empty() {
                 if ui.link("Empty note — click to write").clicked() {
                     ed.preview = false;
                 }
                 return;
             }
-            let resp = ui.scope(|ui| markdown_view::render(ui, &ed.text));
-            match resp.inner {
-                Some(MdAction::Link(url)) => actions.push(Action::OpenUrl(url)),
-                Some(MdAction::ToggleTask { offset, checked }) => {
-                    markdown_view::toggle_task(&mut ed.text, offset, checked);
-                    ed.dirty = true;
-                    ed.save(&rv.notes);
-                }
-                None => {}
-            }
-            if resp.response.interact(egui::Sense::click()).double_clicked() {
+            let resp = preview(ui, ed, &rv.notes, actions);
+            if resp.interact(egui::Sense::click()).double_clicked() {
                 ed.preview = false;
             }
-        } else {
-            let r = ui.add(
-                egui::TextEdit::multiline(&mut ed.text)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(12)
-                    .lock_focus(true)
-                    .hint_text("Markdown. Links OK, images/HTML not allowed. Agents can edit this via MCP.")
-                    .id_salt("note_edit"),
-            );
-            if r.changed() {
-                ed.dirty = true;
-                ed.last_edit = now;
-                ed.violations = markdown::validate(&ed.text).err().unwrap_or_default();
-            }
-        }
-    });
+        });
+    } else if prefs.notes_split {
+        ui.columns(2, |cols| {
+            egui::ScrollArea::vertical().id_salt("note_edit_scroll").auto_shrink([false, false]).show(&mut cols[0], |ui| {
+                editor(ui, ed, now);
+            });
+            egui::ScrollArea::vertical().id_salt("note_split_preview").auto_shrink([false, false]).show(&mut cols[1], |ui| {
+                if ed.text.trim().is_empty() {
+                    ui.weak("Preview");
+                } else {
+                    preview(ui, ed, &rv.notes, actions);
+                }
+            });
+        });
+    } else {
+        egui::ScrollArea::vertical().id_salt("note_edit_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            editor(ui, ed, now);
+        });
+    }
 
     // Autosave 1.5 s after the last keystroke, if the content is valid.
     if ed.dirty && !ed.external && ed.violations.is_empty() {
@@ -428,6 +551,106 @@ pub fn show(
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(400));
         }
     }
+}
+
+/// The note would be an empty editor: show one line instead (and shrink the panel).
+fn is_compact(rv: &RepoView, pro: bool) -> bool {
+    let ed = &rv.editor;
+    if ed.tab == NoteTab::Task || ed.tab == NoteTab::Pinned || ed.dirty || ed.external || ed.error.is_some() {
+        return false;
+    }
+    if ed.tab == NoteTab::Branch {
+        // The PR card (or its Pro hint) lives in the branch tab.
+        if let Some(b) = rv.note_branch() {
+            if rv.prs.contains_key(&b) || (!pro && rv.looks_github) {
+                return false;
+            }
+        }
+    }
+    let banner = ed.target.as_ref().is_some_and(|t| rv.reattached.iter().any(|e| e.to == t.to_string()));
+    !banner && ed.preview && ed.text.trim().is_empty()
+}
+
+/// Thin bar on top of the panel: drag to resize, double-click to collapse.
+fn grip(ui: &mut Ui, rv: &mut RepoView, prefs: &mut margin_core::config::State, panel_h: f32, compact: bool) {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::click_and_drag());
+    let hot = resp.hovered() || resp.dragged();
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    let pill = egui::Rect::from_center_size(rect.center(), egui::vec2(36.0, 4.0));
+    ui.painter().rect_filled(pill, 2.0, if hot { theme::TEXT_DIM } else { theme::HOVER });
+    if resp.dragged() {
+        let dy = resp.drag_delta().y;
+        if dy != 0.0 {
+            prefs.notes_height = Some((panel_h - dy).max(MIN_H));
+            prefs.notes_collapsed = false;
+            if compact {
+                rv.editor.preview = false; // dragging an empty note open starts writing
+            }
+        }
+    }
+    if resp.double_clicked() {
+        prefs.notes_collapsed = !prefs.notes_collapsed;
+    }
+    if resp.drag_stopped() || resp.double_clicked() {
+        let _ = margin_core::config::save_state(prefs);
+    }
+    resp.on_hover_text("Drag to resize · double-click to collapse");
+}
+
+/// The Markdown editor, filling the space it's given.
+fn editor(ui: &mut Ui, ed: &mut NoteEditor, now: f64) {
+    let out = egui::TextEdit::multiline(&mut ed.text)
+        .font(egui::TextStyle::Monospace)
+        .desired_width(f32::INFINITY)
+        .min_size(ui.available_size())
+        .lock_focus(true)
+        .hint_text("Markdown. Links OK, images/HTML not allowed. Agents can edit this via MCP.")
+        .id(edit_id())
+        .show(ui);
+    if let Some(r) = out.cursor_range {
+        let [a, b] = r.sorted_cursors();
+        ed.sel = (a.index.0, b.index.0);
+    }
+    if out.response.changed() {
+        ed.dirty = true;
+        ed.last_edit = now;
+        ed.violations = markdown::validate(&ed.text).err().unwrap_or_default();
+    }
+}
+
+/// Rendered note; checkboxes toggle and save, links open.
+fn preview(ui: &mut Ui, ed: &mut NoteEditor, notes: &NoteStore, actions: &mut Vec<Action>) -> egui::Response {
+    let resp = ui.scope(|ui| markdown_view::render(ui, &ed.text));
+    match resp.inner {
+        Some(MdAction::Link(url)) => actions.push(Action::OpenUrl(url)),
+        Some(MdAction::ToggleTask { offset, checked }) => {
+            markdown_view::toggle_task(&mut ed.text, offset, checked);
+            ed.dirty = true;
+            ed.save(notes);
+        }
+        None => {}
+    }
+    resp.response
+}
+
+/// Apply a toolbar format to the editor's selection and put the cursor back.
+fn apply_format(ctx: &egui::Context, ed: &mut NoteEditor, f: crate::note_format::Fmt, now: f64) {
+    let (a, b) = ed.sel;
+    let (text, na, nb) = crate::note_format::apply(&ed.text, a, b, f);
+    ed.text = text;
+    ed.sel = (na, nb);
+    ed.dirty = true;
+    ed.last_edit = now;
+    ed.violations = markdown::validate(&ed.text).err().unwrap_or_default();
+    let id = edit_id();
+    if let Some(mut st) = egui::text_edit::TextEditState::load(ctx, id) {
+        let range = egui::text::CCursorRange::two(egui::text::CCursor::new(na), egui::text::CCursor::new(nb));
+        st.cursor.set_char_range(Some(range));
+        st.store(ctx, id);
+    }
+    ctx.memory_mut(|m| m.request_focus(id));
 }
 
 /// "commit 1a2b3c4" / "branch feat/x" / "task PROJ-1".

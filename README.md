@@ -66,7 +66,9 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 - **Undo for automatic re-attach.** Every automatic move can be reverted from the toolbar message ("Undo"), the sidebar's **Re-attached** list, or the banner on the note itself. Undo puts the note back on the old commit and restores the destination exactly, including a note that was there before a merge. If you edited the re-attached note afterwards, your edits are kept. An undone move is never applied automatically again. **Keep** confirms a move and clears it from the list.
 - **Detached notes.** Commit notes whose commit is no longer on any branch, tag, or remote, and branch notes whose branch was deleted, are listed in the sidebar. Open one to see why it's detached. If the same change exists in several commits, each one is a one-click target. **Re-attach…** suggests the rewritten commit (patch-id match, else same subject), or you can delete it. Moving onto an existing note appends instead of overwriting.
 - Markdown with tables, task lists, and links. **Images, raw HTML, and unsafe link schemes are rejected** on every write, from both the GUI and MCP.
-- Edit and preview modes, autosave, and clickable task checkboxes. Internal links like `margin:commit:abc123` and `margin:task:PROJ-42` navigate inside the app.
+- **Notes panel:** drag the grip on top to resize it, double-click the grip (or click ▾) to collapse it to its tab row, and click ⇤ / ⇥ to move it under the history or under the commit details (also ⌘P → *Move notes…*). These choices are remembered. An empty note shrinks the panel to one line with a **Write note** button.
+- **Preview, Edit, and Split** (editor and live preview side by side). Notes open in Preview. Edit and Split have a formatting toolbar: heading, **bold** (⌘B), *italic* (⌘I), code, link (⌘K), bullet, checklist, and quote. It wraps the selection, or toggles the prefix on the selected lines.
+- Autosave, and clickable task checkboxes. Internal links like `margin:commit:abc123` and `margin:task:PROJ-42` navigate inside the app.
 - Concurrency-safe: versioned writes. If an agent edits the note you're editing, you get a *Load theirs / Keep mine* choice.
 
 **GitHub pull requests** (github.com and Enterprise Server). Display-only, so everything links out to GitHub.
@@ -78,6 +80,7 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 **Tasks (Jira Cloud and Data Center)**
 - The task key is inferred from the branch name (`feature/PROJ-42-login` → `PROJ-42`), or you can link it explicitly.
 - The task card shows status, assignee, priority, and description. "My tasks" can create a branch from a ticket. The commit box offers an "Insert PROJ-42" button.
+- **Commit box:** a summary line (↵ moves to the description; a counter turns amber past 50 characters and red past 72) and an optional description. ⌘↵ commits from either. Commit details show the full message, selectable and scrollable when long.
 
 **MCP (for agents)**: 18 tools. `get_context`, `git_status`, `git_log`, `git_show`, and `list_branches` read git. `read_note`, `write_note`, `append_note`, `list_notes`, `search_notes`, and `link_task` work on notes. `get_task`, `search_tasks`, and `my_tasks` read Jira. `get_pr` gives agents the PR's readiness, failing checks, and review comments, so they can address feedback. `list_detached_notes`, `move_note`, and `undo_reattach` let agents tidy notes after a rebase. Git access is **read-only** for agents.
 

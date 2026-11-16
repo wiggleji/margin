@@ -111,6 +111,8 @@ pub enum Action {
     /// Close the tab at a visual index.
     CloseTab(usize),
     ToggleAutoFetch,
+    /// Move the notes panel between the details and the history column.
+    ToggleNotesDock,
     /// Revert an automatic re-attachment (journal id).
     UndoReattach(String),
     /// Confirm an automatic re-attachment (stop offering undo).
@@ -791,6 +793,14 @@ impl MarginApp {
                 Ok(repo) => {
                     // Already open in a tab? Just switch to it.
                     if let Some(i) = self.tab_index_of(&repo.workdir) {
+                        // The active tab itself (e.g. `margin .` on the tab restored
+                        // as active at startup): make sure it was set up.
+                        if i == self.active_pos {
+                            if self.rv.as_ref().is_some_and(|rv| !rv.activated) {
+                                self.activate();
+                            }
+                            return;
+                        }
                         return self.handle(SwitchTab(i));
                     }
                     let notes = match NoteStore::for_repo(&repo) {
@@ -1214,6 +1224,10 @@ impl MarginApp {
                     }
                     Err(e) => self.err(e),
                 }
+            }
+            ToggleNotesDock => {
+                self.state.notes_under_history = !self.state.notes_under_history;
+                let _ = config::save_state(&self.state);
             }
             OpenFolderDialog => {
                 #[cfg(target_os = "macos")]
@@ -2028,19 +2042,40 @@ impl eframe::App for MarginApp {
                 ui.set_min_width(ui.available_width());
                 crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &mut actions);
             });
-            egui::Panel::right("details").resizable(true).default_size(560.0).min_size(360.0).show(ui, |ui| {
-                egui::Panel::bottom("notes").resizable(true).default_size(300.0).min_size(120.0).show(ui, |ui| {
-                    // Fill the panel so it keeps its size instead of shrinking to content.
-                    ui.set_min_height(ui.available_height());
-                    let task_url = |k: &str| tasks::task_url(&self.cfg, self.tasks.as_deref(), k);
-                    crate::notes_panel::show(ui, rv, &self.task_cache, tasks_configured, &license, &task_url, &self.author, &mut actions);
+            // Notes sit at the bottom of the details column or of the history
+            // column (Notes → "Move notes…"); same panel either way.
+            let under_history = self.state.notes_under_history;
+            let task_url = |k: &str| tasks::task_url(&self.cfg, self.tasks.as_deref(), k);
+            let notes = |ui: &mut egui::Ui, rv: &mut RepoView, state: &mut State, actions: &mut Vec<Action>| {
+                // The dragged height, or fitted to the content when collapsed /
+                // empty (see notes_panel). The panel draws its own grip.
+                let max_h = (ui.available_height() - 160.0).max(crate::notes_panel::MIN_H);
+                let notes_h = match rv.editor.fit_h {
+                    Some(fit) => fit + 6.0,
+                    None => state.notes_height.unwrap_or(crate::notes_panel::DEFAULT_H).clamp(crate::notes_panel::MIN_H, max_h),
+                };
+                egui::Panel::bottom("notes").exact_size(notes_h).show(ui, |ui| {
+                    crate::notes_panel::show(ui, rv, &self.task_cache, tasks_configured, &license, &task_url, &self.author, state, notes_h, actions);
                 });
+            };
+            let state = &mut self.state;
+            egui::Panel::right("details").resizable(true).default_size(560.0).min_size(360.0).show(ui, |ui| {
+                if !under_history {
+                    notes(ui, rv, state, &mut actions);
+                }
                 egui::CentralPanel::default().show(ui, |ui| {
                     crate::details::show(ui, rv, &mut actions);
                 });
             });
             egui::CentralPanel::default().show(ui, |ui| {
-                crate::commit_list::show(ui, rv, &mut actions);
+                if under_history {
+                    notes(ui, rv, state, &mut actions);
+                    egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
+                        crate::commit_list::show(ui, rv, &mut actions);
+                    });
+                } else {
+                    crate::commit_list::show(ui, rv, &mut actions);
+                }
             });
         }
         self.auto_fetch_tick(&ctx);
