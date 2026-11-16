@@ -51,7 +51,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
     // Filter cache
     let filter = rv.filter.trim().to_lowercase();
     if !filter.is_empty() && rv.filtered.as_ref().is_none_or(|(f, _)| *f != filter) {
-        let idx = snap
+        let idx: Vec<usize> = snap
             .commits
             .iter()
             .enumerate()
@@ -63,6 +63,8 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             })
             .map(|(i, _)| i)
             .collect();
+        // While searching, a task label sits on the newest *matching* commit.
+        rv.filtered_tasks = task_rows(idx.iter().map(|&i| &snap.commits[i]), &rv.tips, &rv.notes);
         rv.filtered = Some((filter.clone(), idx));
     }
     let visible: Option<&Vec<usize>> = if filter.is_empty() { None } else { rv.filtered.as_ref().map(|(_, v)| v) };
@@ -220,7 +222,8 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             rx -= 8.0;
             // Task: one label, on the newest commit of that ticket only (see
             // `row_tasks`); "+N" when this commit starts more than one.
-            if let Some(keys) = rv.row_tasks.get(&c.id) {
+            let row_tasks = if visible.is_some() { &rv.filtered_tasks } else { &rv.row_tasks };
+            if let Some(keys) = row_tasks.get(&c.id) {
                 if keys.len() > 1 {
                     let g = p.layout_no_wrap(format!("+{}", keys.len() - 1), small.clone(), theme::TEXT_DIM);
                     rx -= g.size().x;
@@ -295,6 +298,28 @@ fn outline_chip_right(p: &egui::Painter, right: f32, y: f32, text: &str, icon: O
     }
     p.galley(chip.min + vec2(5.0 + icon_w, 1.0), g, color);
     chip.left()
+}
+
+/// Task keys per commit, each key only on the first (newest) commit that has
+/// it: keys in the subject, plus the task linked to a branch whose tip it is.
+pub fn task_rows<'a>(
+    commits: impl Iterator<Item = &'a Commit>,
+    tips: &std::collections::HashMap<String, Vec<String>>,
+    notes: &margin_core::notes::NoteStore,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut out = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for c in commits {
+        let mut keys = margin_core::tasks::extract_keys(&c.subject);
+        for b in tips.get(&c.id).into_iter().flatten() {
+            keys.extend(notes.task_for_branch(b));
+        }
+        let fresh: Vec<String> = keys.into_iter().filter(|k| seen.insert(k.clone())).collect();
+        if !fresh.is_empty() {
+            out.insert(c.id.clone(), fresh);
+        }
+    }
+    out
 }
 
 fn ci_color(ci: margin_core::github::CiState) -> Color32 {

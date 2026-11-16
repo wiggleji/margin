@@ -158,6 +158,8 @@ pub struct RepoView {
     /// Task keys shown on each history row: a key appears only on its latest
     /// (topmost) commit, so a ticket spanning many commits shows once.
     pub row_tasks: HashMap<String, Vec<String>>,
+    /// The same for the commits matching the history search.
+    pub filtered_tasks: HashMap<String, Vec<String>>,
     pub github: Option<Arc<GitHub>>,
     pub github_error: Option<String>,
     /// Local branch → its latest PR.
@@ -245,6 +247,7 @@ impl RepoView {
             note_index: HashMap::new(),
             tips: HashMap::new(),
             row_tasks: HashMap::new(),
+            filtered_tasks: HashMap::new(),
             github: None,
             github_error: None,
             prs: HashMap::new(),
@@ -1526,18 +1529,7 @@ impl MarginApp {
                         }
                         // Each task key on its newest commit only (subject keys, plus the
                         // task linked to a branch whose tip this is).
-                        rv.row_tasks.clear();
-                        let mut seen = std::collections::HashSet::new();
-                        for c in &snap.commits {
-                            let mut keys = margin_core::tasks::extract_keys(&c.subject);
-                            for b in rv.tips.get(&c.id).into_iter().flatten() {
-                                keys.extend(rv.notes.task_for_branch(b));
-                            }
-                            let fresh: Vec<String> = keys.into_iter().filter(|k| seen.insert(k.clone())).collect();
-                            if !fresh.is_empty() {
-                                rv.row_tasks.insert(c.id.clone(), fresh);
-                            }
-                        }
+                        rv.row_tasks = crate::commit_list::task_rows(snap.commits.iter(), &rv.tips, &rv.notes);
                         rv.filtered = None;
                         rv.snap = Some(snap);
                         if rv.amend && rv.commit_msg.is_empty() {
