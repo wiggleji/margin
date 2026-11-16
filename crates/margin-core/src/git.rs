@@ -275,20 +275,27 @@ impl Repo {
 
     /// Patch of a commit vs its first parent (root commits diff against empty).
     pub fn commit_diff(&self, id: &str) -> Result<String> {
-        self.run(&[
-            "show",
-            "--format=",
-            "--no-color",
-            "--no-ext-diff",
-            "-M",
-            "--diff-merges=first-parent",
-            "--patch",
-            id,
-        ])
+        self.commit_diff_opts(id, false)
+    }
+
+    /// `commit_diff`, optionally ignoring whitespace changes (`git -w`).
+    pub fn commit_diff_opts(&self, id: &str, ignore_ws: bool) -> Result<String> {
+        let mut args = vec!["show", "--format=", "--no-color", "--no-ext-diff", "-M", "--diff-merges=first-parent", "--patch"];
+        if ignore_ws {
+            args.push("-w");
+        }
+        args.push(id);
+        self.run(&args)
     }
 
     /// Working-tree diff for one file. `staged` = index vs HEAD.
     pub fn file_diff(&self, change: &FileChange, staged: bool) -> Result<String> {
+        self.file_diff_opts(change, staged, false)
+    }
+
+    /// `file_diff`, optionally ignoring whitespace changes (`git -w`). Hunks
+    /// from such a diff can't be staged: they don't match the real file.
+    pub fn file_diff_opts(&self, change: &FileChange, staged: bool, ignore_ws: bool) -> Result<String> {
         if !staged && change.is_untracked() {
             // `--no-index` exits 1 when files differ.
             return self.run_ok_codes(
@@ -299,6 +306,9 @@ impl Repo {
         let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-M"];
         if staged {
             args.push("--cached");
+        }
+        if ignore_ws {
+            args.push("-w");
         }
         args.push("--");
         if let Some(o) = &change.orig_path {

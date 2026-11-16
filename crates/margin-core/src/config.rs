@@ -102,6 +102,9 @@ pub struct State {
     /// Diffs side by side instead of inline.
     #[serde(default)]
     pub diff_split: bool,
+    /// Diffs ignore whitespace-only changes (git diff -w).
+    #[serde(default)]
+    pub diff_ignore_ws: bool,
 }
 
 pub fn config_dir() -> PathBuf {

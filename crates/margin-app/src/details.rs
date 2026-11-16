@@ -6,15 +6,15 @@ use crate::theme;
 use eframe::egui::{self, RichText, Ui};
 use margin_core::git::FileChange;
 
-/// `split`: show diffs side by side (the diff bar toggles it).
-pub fn show(ui: &mut Ui, rv: &mut RepoView, split: &mut bool, actions: &mut Vec<Action>) {
+/// `prefs`: diff layout and whitespace (the diff bar changes them).
+pub fn show(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>) {
     match rv.sel.clone() {
-        Sel::Working => working(ui, rv, split, actions),
-        Sel::Commit(_) => commit(ui, rv, split, actions),
+        Sel::Working => working(ui, rv, prefs, actions),
+        Sel::Commit(_) => commit(ui, rv, prefs, actions),
     }
 }
 
-fn working(ui: &mut Ui, rv: &mut RepoView, split: &mut bool, actions: &mut Vec<Action>) {
+fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>) {
     let Some(snap) = rv.snap.as_ref() else { return };
     let files = snap.status.files.clone();
     let unstaged: Vec<&FileChange> = files.iter().filter(|f| f.is_unstaged()).collect();
@@ -121,7 +121,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, split: &mut bool, actions: &mut Vec<A
         ui.weak("Select a file to see its diff.");
         return;
     }
-    if let Some(a) = rv.work_diff.show(ui, mode, "workdiff", split) {
+    if let Some(a) = rv.work_diff.show(ui, mode, "workdiff", prefs) {
         let action = Action::Hunk { file: a.file, hunk: a.hunk, op: a.op, staged_view: mode == DiffMode::Staged };
         if a.op == crate::app::HunkOp::Discard {
             actions.push(Action::Confirm { msg: "Discard this hunk? This cannot be undone.".into(), action: Box::new(action) });
@@ -186,7 +186,7 @@ fn file_row(ui: &mut Ui, f: &FileChange, staged: bool, sel: Option<&(String, boo
     });
 }
 
-fn commit(ui: &mut Ui, rv: &mut RepoView, split: &mut bool, actions: &mut Vec<Action>) {
+fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>) {
     let Some(d) = rv.commit_detail.clone() else {
         ui.spinner();
         return;
@@ -248,7 +248,7 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, split: &mut bool, actions: &mut Vec<Ac
         });
         ui.add_space(4.0);
     });
-    rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff", split);
+    rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff", prefs);
 }
 
 /// "Summary\n\nBody" → ("Summary", "Body").

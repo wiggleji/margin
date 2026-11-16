@@ -14,6 +14,9 @@ pub const ADDED_BG: Color32 = Color32::from_rgb(0x23, 0x3d, 0x2b);
 pub const REMOVED_BG: Color32 = Color32::from_rgb(0x46, 0x26, 0x2a);
 pub const ADDED: Color32 = Color32::from_rgb(0x8f, 0xd1, 0x8f);
 pub const REMOVED: Color32 = Color32::from_rgb(0xf0, 0x8c, 0x8c);
+/// Word-level changes inside a changed line (brighter than the line).
+pub const ADDED_WORD_BG: Color32 = Color32::from_rgb(0x2f, 0x6a, 0x3e);
+pub const REMOVED_WORD_BG: Color32 = Color32::from_rgb(0x7a, 0x34, 0x3b);
 pub const HUNK_BG: Color32 = Color32::from_rgb(0x2a, 0x30, 0x3c);
 pub const ERROR: Color32 = Color32::from_rgb(0xff, 0x7a, 0x7a);
 

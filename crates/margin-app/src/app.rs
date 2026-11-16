@@ -113,6 +113,8 @@ pub enum Action {
     ToggleAutoFetch,
     /// Move the notes panel between the details and the history column.
     ToggleNotesDock,
+    /// Reload the shown diff (e.g. after toggling "Ignore whitespace").
+    ReloadDiff,
     /// Revert an automatic re-attachment (journal id).
     UndoReattach(String),
     /// Confirm an automatic re-attachment (stop offering undo).
@@ -482,10 +484,11 @@ impl MarginApp {
         rv.work_diff.loading = true;
         let generation = rv.generation;
         let repo = rv.repo.clone();
+        let ignore_ws = self.state.diff_ignore_ws;
         self.jobs.spawn(move || Msg::WorkDiff {
             workdir: repo.workdir.clone(),
             generation,
-            result: repo.file_diff(&change, staged).map(|t| diff::parse(&t)).map_err(|e| e.0),
+            result: repo.file_diff_opts(&change, staged, ignore_ws).map(|t| diff::parse(&t)).map_err(|e| e.0),
         });
     }
 
@@ -496,10 +499,11 @@ impl MarginApp {
         rv.commit_diff.files.clear();
         let generation = rv.generation;
         let repo = rv.repo.clone();
+        let ignore_ws = self.state.diff_ignore_ws;
         self.jobs.spawn(move || {
             let r = (|| {
                 let d = repo.commit_detail(&id)?;
-                let (files, trunc) = diff::parse(&repo.commit_diff(&id)?);
+                let (files, trunc) = diff::parse(&repo.commit_diff_opts(&id, ignore_ws)?);
                 Ok::<_, margin_core::Error>((d, files, trunc))
             })();
             Msg::CommitLoaded { workdir: repo.workdir.clone(), generation, result: r.map_err(|e| e.0) }
@@ -1223,6 +1227,13 @@ impl MarginApp {
                         }
                     }
                     Err(e) => self.err(e),
+                }
+            }
+            ReloadDiff => {
+                match self.rv.as_ref().map(|rv| rv.sel.clone()) {
+                    Some(Sel::Commit(id)) => self.load_commit(id),
+                    Some(Sel::Working) => self.load_work_diff(),
+                    None => {}
                 }
             }
             ToggleNotesDock => {
@@ -2058,18 +2069,24 @@ impl eframe::App for MarginApp {
                     crate::notes_panel::show(ui, rv, &self.task_cache, tasks_configured, &license, &task_url, &self.author, state, notes_h, actions);
                 });
             };
-            let diff_split = self.state.diff_split;
+            let before = crate::diff_view::DiffPrefs { split: self.state.diff_split, ignore_ws: self.state.diff_ignore_ws };
+            let mut diff_prefs = before;
             let state = &mut self.state;
             egui::Panel::right("details").resizable(true).default_size(560.0).min_size(360.0).show(ui, |ui| {
                 if !under_history {
                     notes(ui, rv, state, &mut actions);
                 }
                 egui::CentralPanel::default().show(ui, |ui| {
-                    crate::details::show(ui, rv, &mut state.diff_split, &mut actions);
+                    crate::details::show(ui, rv, &mut diff_prefs, &mut actions);
                 });
             });
-            if state.diff_split != diff_split {
+            if diff_prefs != before {
+                state.diff_split = diff_prefs.split;
+                state.diff_ignore_ws = diff_prefs.ignore_ws;
                 let _ = config::save_state(state);
+                if diff_prefs.ignore_ws != before.ignore_ws {
+                    actions.push(Action::ReloadDiff);
+                }
             }
             egui::CentralPanel::default().show(ui, |ui| {
                 if under_history {

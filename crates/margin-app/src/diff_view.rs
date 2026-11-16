@@ -3,12 +3,23 @@
 //!
 //! Two layouts, switched from the bar above the diff: inline (unified) and
 //! side by side (old left, new right; removed/added runs paired up).
+//! Within paired changed lines the changed words are highlighted; whitespace
+//! changes can be ignored (git -w); ⌥↑/⌥↓ jump between changes.
 
 use crate::app::HunkOp;
 use crate::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 use margin_core::diff::{FileDiff, LineKind};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+/// Diff display options (remembered in state.json).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub struct DiffPrefs {
+    /// Side by side instead of inline.
+    pub split: bool,
+    /// `git diff -w`: hide whitespace-only changes.
+    pub ignore_ws: bool,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DiffMode {
@@ -44,6 +55,13 @@ pub struct DiffView {
     max_chars: usize,
     /// Rows are built for this layout.
     split: bool,
+    /// Changed byte ranges per (file, hunk, line), for word highlighting.
+    words: HashMap<(usize, usize, usize), Vec<(usize, usize)>>,
+    /// Scroll position (for next / previous change) and a pending jump.
+    offset: f32,
+    jump: Option<f32>,
+    /// Hunk row briefly highlighted after a jump (row, start time).
+    flash: Option<(usize, f64)>,
 }
 
 impl DiffView {
@@ -57,6 +75,9 @@ impl DiffView {
         self.truncated = truncated;
         self.loading = false;
         self.error = None;
+        self.words = word_highlights(&self.files);
+        self.offset = 0.0;
+        self.jump = Some(0.0);
         self.rebuild();
     }
 
@@ -124,8 +145,9 @@ impl DiffView {
         }
     }
 
-    /// `split`: side-by-side layout (toggled from the bar above the diff).
-    pub fn show(&mut self, ui: &mut Ui, mode: DiffMode, id: &str, split: &mut bool) -> Option<DiffAction> {
+    /// `prefs` are changed from the bar above the diff (layout, whitespace);
+    /// the caller reloads the diff when `ignore_ws` changes.
+    pub fn show(&mut self, ui: &mut Ui, mode: DiffMode, id: &str, prefs: &mut DiffPrefs) -> Option<DiffAction> {
         if self.loading && self.files.is_empty() {
             ui.weak("Loading diff…");
             return None;
@@ -135,15 +157,24 @@ impl DiffView {
             return None;
         }
         if self.files.is_empty() {
-            ui.weak("No changes.");
+            ui.horizontal(|ui| {
+                ui.weak(if prefs.ignore_ws { "No changes (ignoring whitespace)." } else { "No changes." });
+                if prefs.ignore_ws && ui.small_button("Show whitespace changes").clicked() {
+                    prefs.ignore_ws = false;
+                }
+            });
             return None;
         }
+        let split = &mut prefs.split;
         if self.truncated {
             ui.colored_label(theme::ACCENT, "Diff truncated (too large). Use the terminal for the full patch.");
         }
 
-        // ---- bar: file count, collapse/expand all, layout
+        // ---- bar: file count, collapse/expand all, next/previous change, whitespace, layout
         let mut all = None;
+        let mut nav: i32 = 0;
+        let mut ws = None;
+        let ignore_ws = prefs.ignore_ws;
         ui.horizontal(|ui| {
             let (a, r) = self.files.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
             let n = self.files.len();
@@ -163,8 +194,36 @@ impl DiffView {
                 if layout_button(ui, false, !*split).on_hover_text("Inline").clicked() {
                     *split = false;
                 }
+                ui.add_space(6.0);
+                let t = egui::RichText::new("Ignore whitespace").small();
+                if ui.selectable_label(ignore_ws, t).on_hover_text("Hide changes that only touch spaces, tabs or indentation (git diff -w)").clicked() {
+                    ws = Some(!ignore_ws);
+                }
+                ui.add_space(4.0);
+                let alt = if cfg!(target_os = "macos") { "⌥" } else { "Alt+" };
+                if ui.small_button("↓").on_hover_text(format!("Next change ({alt}↓)")).clicked() {
+                    nav = 1;
+                }
+                if ui.small_button("↑").on_hover_text(format!("Previous change ({alt}↑)")).clicked() {
+                    nav = -1;
+                }
             });
         });
+        if let Some(w) = ws {
+            prefs.ignore_ws = w;
+        }
+        let split = &mut prefs.split;
+        // ⌥↓ / ⌥↑ when no text field has focus
+        if ui.memory(|m| m.focused().is_none()) {
+            ui.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowDown) {
+                    nav = 1;
+                }
+                if i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowUp) {
+                    nav = -1;
+                }
+            });
+        }
         if let Some(collapse) = all {
             self.collapsed.clear();
             if collapse {
@@ -184,10 +243,27 @@ impl DiffView {
         let mut action = None;
         let mut toggle = None;
 
-        egui::ScrollArea::both()
-            .id_salt(id)
-            .auto_shrink([false, false])
-            .show_rows(ui, row_h, self.rows.len(), |ui, range| {
+        // Next / previous change = the next hunk header below / above the top of the view.
+        if nav != 0 {
+            let ys = self.rows.iter().enumerate().filter(|(_, r)| matches!(r, Row::Hunk(..))).map(|(i, _)| i as f32 * row_h);
+            let target = if nav > 0 { ys.clone().find(|&y| y > self.offset + 1.0) } else { ys.filter(|&y| y < self.offset - 1.0).last() };
+            if let Some(y) = target {
+                self.jump = Some(y);
+                self.flash = Some(((y / row_h).round() as usize, ui.input(|i| i.time)));
+            }
+        }
+        let mut area = egui::ScrollArea::both().id_salt(id).auto_shrink([false, false]);
+        if let Some(y) = self.jump.take() {
+            area = area.vertical_scroll_offset(y);
+        }
+        let ws_on = prefs.ignore_ws && mode != DiffMode::Commit;
+        let words = &self.words;
+        let now = ui.input(|i| i.time);
+        let flash = self.flash.filter(|&(_, t)| now - t < 0.8).map(|(r, t)| {
+            ui.ctx().request_repaint();
+            (r, 1.0 - ((now - t) / 0.8) as f32)
+        });
+        let out = area.show_rows(ui, row_h, self.rows.len(), |ui, range| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let width = if self.split {
                     // Each half gets half the visible width (long lines are clipped),
@@ -246,9 +322,14 @@ impl DiffView {
                         }
                         Row::Hunk(fi, hi) => {
                             p.rect_filled(rect, 0.0, theme::HUNK_BG);
+                            if let Some((_, a)) = flash.filter(|&(r, _)| r == i) {
+                                p.rect_filled(rect, 0.0, theme::ACCENT.gamma_multiply(0.35 * a));
+                            }
                             let h = &self.files[fi].hunks[hi];
                             let mut x = rect.left() + 6.0;
+                            // Hunks of a `-w` diff don't match the file: no staging from them.
                             let ops: &[(HunkOp, &str)] = match mode {
+                                _ if ws_on => &[],
                                 DiffMode::Unstaged => &[(HunkOp::Stage, "Stage hunk"), (HunkOp::Discard, "Discard")],
                                 DiffMode::Staged => &[(HunkOp::Unstage, "Unstage hunk")],
                                 DiffMode::Commit => &[],
@@ -285,6 +366,10 @@ impl DiffView {
                                 font.clone(),
                                 theme::TEXT_DIM,
                             );
+                            let text_x = rect.left() + gutter + char_w * 2.0;
+                            if let Some(sp) = words.get(&(fi, hi, li)) {
+                                paint_words(&p, &l.text, sp, text_x, rect, char_w, l.kind);
+                            }
                             let text = format!("{sign} {}", l.text.replace('\t', "    "));
                             p.text(pos2(rect.left() + gutter, rect.center().y), Align2::LEFT_CENTER, text, font.clone(), fg);
                         }
@@ -315,6 +400,10 @@ impl DiffView {
                                 let n = if is_old { l.old_no } else { l.new_no };
                                 let num = n.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
                                 sp.text(pos2(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, num, font.clone(), theme::TEXT_DIM);
+                                let text_x = r.left() + char_w * 8.0 + 8.0;
+                                if let Some(w) = words.get(&(fi, hi, li)) {
+                                    paint_words(&sp, &l.text, w, text_x, r, char_w, l.kind);
+                                }
                                 let text = format!("{sign} {}", l.text.replace('\t', "    "));
                                 sp.text(pos2(r.left() + char_w * 6.0 + 8.0, r.center().y), Align2::LEFT_CENTER, text, font.clone(), fg);
                             }
@@ -324,6 +413,7 @@ impl DiffView {
                 }
             });
 
+        self.offset = out.state.clamped_offset().y;
         if let Some(fi) = toggle {
             if !self.collapsed.remove(&fi) {
                 self.collapsed.insert(fi);
@@ -331,6 +421,51 @@ impl DiffView {
             self.rebuild();
         }
         action
+    }
+}
+
+/// Word changes for each removed/added line pair (runs paired in order, as
+/// in the side-by-side layout).
+fn word_highlights(files: &[FileDiff]) -> HashMap<(usize, usize, usize), Vec<(usize, usize)>> {
+    let mut out = HashMap::new();
+    for (fi, f) in files.iter().enumerate() {
+        for (hi, h) in f.hunks.iter().enumerate() {
+            let lines = &h.lines;
+            let mut i = 0;
+            while i < lines.len() {
+                if lines[i].kind != LineKind::Removed {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i;
+                while j < lines.len() && lines[j].kind == LineKind::Removed {
+                    j += 1;
+                }
+                let mut k = j;
+                while k < lines.len() && lines[k].kind == LineKind::Added {
+                    k += 1;
+                }
+                for n in 0..(j - i).min(k - j) {
+                    if let Some((a, b)) = margin_core::diff::word_changes(&lines[i + n].text, &lines[j + n].text) {
+                        out.insert((fi, hi, i + n), a);
+                        out.insert((fi, hi, j + n), b);
+                    }
+                }
+                i = k.max(i + 1);
+            }
+        }
+    }
+    out
+}
+
+/// Brighter background behind the changed words of a line drawn at `text_x`.
+fn paint_words(p: &egui::Painter, text: &str, spans: &[(usize, usize)], text_x: f32, rect: Rect, char_w: f32, kind: LineKind) {
+    let color = if kind == LineKind::Added { theme::ADDED_WORD_BG } else { theme::REMOVED_WORD_BG };
+    // Column of a byte offset (tabs are drawn as 4 spaces).
+    let col = |b: usize| text[..b].chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>() as f32;
+    for &(s, e) in spans {
+        let r = Rect::from_min_max(pos2(text_x + col(s) * char_w, rect.top() + 1.0), pos2(text_x + col(e) * char_w, rect.bottom() - 1.0));
+        p.rect_filled(r, 2.0, color);
     }
 }
 

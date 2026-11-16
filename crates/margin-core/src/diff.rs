@@ -193,6 +193,88 @@ fn parse_hunk_header(h: &str) -> (u32, u32) {
     (old, new)
 }
 
+/// Byte ranges within a line.
+pub type Spans = Vec<(usize, usize)>;
+
+/// Word-level changes between a removed line and the added line that
+/// replaced it: the byte ranges that differ on each side. `None` when the
+/// lines are too different (highlighting would just be noise) or too long.
+pub fn word_changes(old: &str, new: &str) -> Option<(Spans, Spans)> {
+    let (a, b) = (tokens(old), tokens(new));
+    if a.is_empty() || b.is_empty() || a.len() * b.len() > 250_000 {
+        return None;
+    }
+    let (ta, tb): (Vec<&str>, Vec<&str>) = (a.iter().map(|&(s, e)| &old[s..e]).collect(), b.iter().map(|&(s, e)| &new[s..e]).collect());
+    // Longest common subsequence of tokens.
+    let (n, m) = (ta.len(), tb.len());
+    let mut dp = vec![0u32; (n + 1) * (m + 1)];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            dp[i * (m + 1) + j] = if ta[i] == tb[j] {
+                dp[(i + 1) * (m + 1) + j + 1] + 1
+            } else {
+                dp[(i + 1) * (m + 1) + j].max(dp[i * (m + 1) + j + 1])
+            };
+        }
+    }
+    let (mut keep_a, mut keep_b) = (vec![false; n], vec![false; m]);
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if ta[i] == tb[j] {
+            keep_a[i] = true;
+            keep_b[j] = true;
+            i += 1;
+            j += 1;
+        } else if dp[(i + 1) * (m + 1) + j] >= dp[i * (m + 1) + j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    // Mostly rewritten lines: no word highlight (the whole line is the change).
+    let same: usize = ta.iter().zip(&keep_a).filter(|(t, k)| **k && !t.trim().is_empty()).map(|(t, _)| t.len()).sum();
+    let longest = old.trim().len().max(new.trim().len()).max(1);
+    if same * 10 < longest * 3 {
+        return None;
+    }
+    let spans = |toks: &[(usize, usize)], keep: &[bool]| -> Spans {
+        let mut out: Spans = vec![];
+        for (k, &(s, e)) in toks.iter().enumerate() {
+            if keep[k] {
+                continue;
+            }
+            match out.last_mut() {
+                Some(last) if last.1 == s => last.1 = e,
+                _ => out.push((s, e)),
+            }
+        }
+        out
+    };
+    Some((spans(&a, &keep_a), spans(&b, &keep_b)))
+}
+
+/// Words (letters, digits, `_`), whitespace runs, and single other characters.
+fn tokens(s: &str) -> Vec<(usize, usize)> {
+    let class = |c: char| if c.is_alphanumeric() || c == '_' { 1 } else if c.is_whitespace() { 2 } else { 0 };
+    let mut out = vec![];
+    let mut start: Option<(usize, u8)> = None;
+    for (i, c) in s.char_indices() {
+        let k = class(c);
+        match start {
+            Some((_, sk)) if sk == k && k != 0 => continue,
+            Some((st, _)) => {
+                out.push((st, i));
+                start = Some((i, k));
+            }
+            None => start = Some((i, k)),
+        }
+    }
+    if let Some((st, _)) = start {
+        out.push((st, s.len()));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +308,20 @@ index 111..222 100644
         assert!(p.starts_with("diff --git a/src/x.rs b/src/x.rs\nindex"));
         assert!(p.contains("+++ b/src/x.rs\n@@ -10,2 +10,3 @@\n x\n+y\n z\n"));
         assert!(!p.contains("-b"));
+    }
+
+    #[test]
+    fn word_changes_mark_only_what_changed() {
+        let (a, b) = super::word_changes("    let timeout = 10;", "    let timeout = 30;").unwrap();
+        assert_eq!(a, vec![(18, 20)]);
+        assert_eq!(b, vec![(18, 20)]);
+        let (a, b) = super::word_changes("connect(user, timeout);", "connect_with_retry(user, timeout, retries);").unwrap();
+        assert_eq!(&"connect(user, timeout);"[a[0].0..a[0].1], "connect");
+        assert!(b.iter().any(|&(s, e)| &"connect_with_retry(user, timeout, retries);"[s..e] == "connect_with_retry"));
+        // completely different lines: no word highlight
+        assert!(super::word_changes("log(\"done\");", "let retries = 1;").is_none());
+        // non-ASCII stays on char boundaries
+        let (a, _) = super::word_changes("이름 = 홍길동", "이름 = 김철수").unwrap();
+        assert_eq!(&"이름 = 홍길동"[a[0].0..a[0].1], "홍길동");
     }
 }
