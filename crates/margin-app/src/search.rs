@@ -109,6 +109,230 @@ impl Query {
     }
 }
 
+// ------------------------------------------------------------ autocomplete
+
+/// One dropdown entry: shown as `label` (+ dim `detail`); choosing it
+/// replaces the word being typed with `insert`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Suggestion {
+    pub label: String,
+    pub detail: String,
+    pub insert: String,
+}
+
+/// What the dropdown can offer, from the loaded history.
+#[derive(Default)]
+pub struct Data {
+    /// Most frequent first.
+    pub authors: Vec<String>,
+    pub branches: Vec<String>,
+    pub tags: Vec<String>,
+    pub tasks: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+const KEYS: &[(&str, &str)] = &[
+    ("author:", "name or email"),
+    ("title:", "words in the commit title"),
+    ("commit:", "start of the SHA"),
+    ("branch:", "branch name"),
+    ("tag:", "tag name"),
+    ("task:", "task key, e.g. PROJ-123"),
+    ("note:", "note title"),
+    ("after:", "date: 2026-11-01, 7d, today"),
+    ("before:", "date: 2026-11-15, yesterday"),
+];
+
+/// Suggestions for the word at the end of `input`: filter names while typing a
+/// word, values after `key:`. Returns where that word starts (byte offset).
+pub fn suggest(input: &str, d: &Data) -> Option<(usize, Vec<Suggestion>)> {
+    // start of the last word (spaces inside quotes don't split)
+    let mut start = 0;
+    let mut quoted = false;
+    for (i, ch) in input.char_indices() {
+        if ch == '"' {
+            quoted = !quoted;
+        } else if ch.is_whitespace() && !quoted {
+            start = i + ch.len_utf8();
+        }
+    }
+    let word = &input[start..];
+    if word.is_empty() {
+        return None;
+    }
+    let out: Vec<Suggestion> = match word.split_once(':') {
+        None => {
+            let w = word.to_lowercase();
+            KEYS.iter()
+                .filter(|(k, _)| k.starts_with(&w))
+                .map(|(k, det)| Suggestion { label: k.to_string(), detail: det.to_string(), insert: k.to_string() })
+                .collect()
+        }
+        Some((key, value)) => {
+            let key = key.to_lowercase();
+            let value = value.trim_matches('"').to_lowercase();
+            let dates = ["today", "yesterday", "7d", "2w", "1m", "3m"].map(String::from).to_vec();
+            let (pool, what): (Vec<&String>, &str) = match key.as_str() {
+                "author" | "by" => (d.authors.iter().collect(), "author"),
+                "branch" => (d.branches.iter().collect(), "branch"),
+                "tag" => (d.tags.iter().collect(), "tag"),
+                "ref" => (d.branches.iter().chain(&d.tags).collect(), "ref"),
+                "task" | "ticket" | "issue" => (d.tasks.iter().collect(), "task"),
+                "note" | "notes" => (d.notes.iter().collect(), "note"),
+                "after" | "before" | "since" | "until" => return Some((start, date_suggestions(&key, &value, &dates))),
+                _ => return None,
+            };
+            // prefix matches first, then other matches; nothing when already complete
+            let lc: Vec<(String, &String)> = pool.into_iter().map(|p| (p.to_lowercase(), p)).collect();
+            if lc.iter().any(|(l, _)| *l == value) {
+                return None;
+            }
+            let pre = lc.iter().filter(|(l, _)| l.starts_with(&value));
+            let mid = lc.iter().filter(|(l, _)| !l.starts_with(&value) && l.contains(&value));
+            pre.chain(mid)
+                .take(8)
+                .map(|(_, p)| Suggestion { label: p.to_string(), detail: what.into(), insert: format!("{key}:{} ", quote(p)) })
+                .collect()
+        }
+    };
+    (!out.is_empty()).then_some((start, out))
+}
+
+fn date_suggestions(key: &str, value: &str, dates: &[String]) -> Vec<Suggestion> {
+    let detail = |v: &str| match v {
+        "today" | "yesterday" => v.to_string(),
+        _ => {
+            let (n, u) = v.split_at(v.len() - 1);
+            let unit = match u {
+                "d" => "day",
+                "w" => "week",
+                _ => "month",
+            };
+            format!("{n} {unit}{} ago", if n == "1" { "" } else { "s" })
+        }
+    };
+    dates
+        .iter()
+        .filter(|v| v.starts_with(value) && v.as_str() != value)
+        .map(|v| Suggestion { label: v.clone(), detail: detail(v), insert: format!("{key}:{v} ") })
+        .collect()
+}
+
+fn quote(v: &str) -> String {
+    if v.contains(char::is_whitespace) { format!("\"{v}\"") } else { v.to_string() }
+}
+
+/// The history search box with its autocomplete dropdown.
+/// ↑/↓ pick, Tab or ↵ insert, Esc closes the dropdown (a second Esc leaves the box).
+pub fn search_box(ui: &mut eframe::egui::Ui, rv: &mut crate::app::RepoView, width: f32, hint: &str) -> eframe::egui::Response {
+    use eframe::egui::{self, Key, Modifiers};
+    let id = egui::Id::unique("commit_search");
+    let focused = ui.memory(|m| m.has_focus(id));
+    let sugg = if focused && !rv.search_hidden { suggest(&rv.filter, &data(rv)) } else { None };
+    let mut accept = None;
+    if let Some((_, list)) = &sugg {
+        let n = list.len();
+        rv.search_sel = rv.search_sel.min(n - 1);
+        ui.input_mut(|i| {
+            if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+                rv.search_sel = (rv.search_sel + 1) % n;
+            }
+            if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
+                rv.search_sel = (rv.search_sel + n - 1) % n;
+            }
+            if i.consume_key(Modifiers::NONE, Key::Tab) || i.consume_key(Modifiers::NONE, Key::Enter) {
+                accept = Some(rv.search_sel);
+            }
+            if i.consume_key(Modifiers::NONE, Key::Escape) {
+                rv.search_hidden = true;
+            }
+        });
+    }
+    // While the dropdown is open, Tab / Esc / ↑↓ belong to it (not to focus navigation).
+    let open = sugg.is_some();
+    let filter = egui::EventFilter { tab: open, escape: open, vertical_arrows: open, horizontal_arrows: true };
+    let resp = ui.add(egui::TextEdit::singleline(&mut rv.filter).id(id).hint_text(hint).desired_width(width).event_filter(filter));
+    if resp.changed() {
+        rv.search_hidden = false;
+        rv.search_sel = 0;
+    }
+    if let Some((start, list)) = &sugg {
+        if accept.is_none() && !rv.search_hidden {
+            egui::Area::new(id.with("dropdown"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(resp.rect.left_bottom() + egui::vec2(0.0, 2.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_width(resp.rect.width() - 12.0);
+                        ui.style_mut().interaction.selectable_labels = false;
+                        for (k, s) in list.iter().enumerate() {
+                            let r = ui.add(
+                                egui::Button::selectable(
+                                    k == rv.search_sel,
+                                    egui::Atoms::new((
+                                        s.label.as_str(),
+                                        egui::Atom::grow(),
+                                        egui::RichText::new(&s.detail).small().color(crate::theme::TEXT_DIM),
+                                    )),
+                                )
+                                .min_size(egui::vec2(ui.available_width(), 0.0)),
+                            );
+                            if r.hovered() {
+                                rv.search_sel = k;
+                            }
+                            if r.clicked() {
+                                accept = Some(k);
+                            }
+                        }
+                    });
+                });
+        }
+        if let Some(k) = accept {
+            rv.filter = format!("{}{}", &rv.filter[..*start], list[k].insert);
+            rv.search_sel = 0;
+            // caret to the end, keep typing
+            let end = rv.filter.chars().count();
+            if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), id) {
+                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(end))));
+                st.store(ui.ctx(), id);
+            }
+            ui.memory_mut(|m| m.request_focus(id));
+        }
+    }
+    resp
+}
+
+/// Autocomplete values from the loaded history and notes.
+fn data(rv: &crate::app::RepoView) -> Data {
+    use margin_core::git::RefKind;
+    let mut d = Data::default();
+    let Some(snap) = rv.snap.as_ref() else { return d };
+    let mut count: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for c in &snap.commits {
+        *count.entry(c.author.as_str()).or_default() += 1;
+    }
+    let mut authors: Vec<(&str, usize)> = count.into_iter().collect();
+    authors.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    d.authors = authors.into_iter().map(|(a, _)| a.to_string()).collect();
+    for r in &snap.refs {
+        match r.kind {
+            RefKind::Local | RefKind::Remote => d.branches.push(r.name.clone()),
+            RefKind::Tag => d.tags.push(r.name.clone()),
+        }
+    }
+    // tasks: newest first (row_tasks follows history order)
+    for c in &snap.commits {
+        if let Some(keys) = rv.row_tasks.get(&c.id) {
+            d.tasks.extend(keys.iter().cloned());
+        }
+    }
+    let mut notes: Vec<String> = rv.note_index.values().filter(|t| !t.is_empty()).cloned().collect();
+    notes.sort();
+    notes.dedup();
+    d.notes = notes;
+    d
+}
+
 /// Start of the day (local midnight, by `tz`) a date names: `2026-11-01`,
 /// `2026-11` (first of the month), `today`, `yesterday`, `7d` / `2w` / `3m` ago.
 fn day_start(v: &str, now: i64, tz: &dyn Fn(i64) -> i64) -> Option<i64> {
@@ -250,5 +474,34 @@ mod tests {
         c.time = at(2026, 11, 9, 16); // 2026-11-10 01:00 KST
         assert!(Query::parse_at("after:2026-11-10", now, &kst).matches(&c, &[]));
         assert!(!Query::parse_at("after:2026-11-10", now, &|_| 0).matches(&c, &[]));
+    }
+
+    #[test]
+    fn autocomplete() {
+        use super::{Data, suggest};
+        let d = Data {
+            authors: vec!["Sungmin Park".into(), "jihyung".into()],
+            branches: vec!["develop".into(), "feature/SER-6114".into(), "origin/develop".into()],
+            tags: vec!["26.47.0".into()],
+            tasks: vec!["SER-6114".into(), "SER-6284".into()],
+            notes: vec!["Rollout plan".into()],
+        };
+        let labels = |q: &str| suggest(q, &d).map(|(s, v)| (s, v.into_iter().map(|x| x.label).collect::<Vec<_>>()));
+        // filter names while typing a word
+        assert_eq!(labels("au"), Some((0, vec!["author:".to_string()])));
+        assert_eq!(labels("fix t").unwrap().1, vec!["title:", "tag:", "task:"]);
+        assert_eq!(labels("fix t").unwrap().0, 4);
+        // values after key:
+        let (start, v) = suggest("x author:sung", &d).unwrap();
+        assert_eq!(start, 2);
+        assert_eq!(v[0].insert, "author:\"Sungmin Park\" ");
+        assert_eq!(labels("branch:dev").unwrap().1, vec!["develop", "origin/develop"]); // prefix first
+        assert_eq!(labels("task:6284").unwrap().1, vec!["SER-6284"]);
+        assert_eq!(labels("note:roll").unwrap().1, vec!["Rollout plan"]);
+        assert_eq!(labels("after:").unwrap().1, vec!["today", "yesterday", "7d", "2w", "1m", "3m"]);
+        // nothing to offer
+        assert!(suggest("hello ", &d).is_none());
+        assert!(suggest("title:abc", &d).is_none());
+        assert!(suggest("branch:develop", &d).is_none()); // already complete
     }
 }

@@ -152,6 +152,9 @@ pub struct RepoView {
     pub focus_commit_msg: bool,
     pub amend: bool,
     pub filter: String,
+    /// Search autocomplete: highlighted entry, and dropdown closed with Esc.
+    pub search_sel: usize,
+    pub search_hidden: bool,
     pub filtered: Option<(String, Vec<usize>)>,
     /// Existing notes → first line (title).
     pub note_index: HashMap<NoteTarget, String>,
@@ -248,6 +251,8 @@ impl RepoView {
             focus_commit_msg: false,
             amend: false,
             filter: String::new(),
+            search_sel: 0,
+            search_hidden: false,
             filtered: None,
             note_index: HashMap::new(),
             tips: HashMap::new(),
@@ -1217,6 +1222,9 @@ impl MarginApp {
                 let Some(rv) = &mut self.rv else { return };
                 match rv.notes.delete(&t) {
                     Ok(()) => {
+                        if rv.editor.target.as_ref() == Some(&t) {
+                            rv.editor.forget();
+                        }
                         if rv.pinned_note.as_ref() == Some(&t) {
                             rv.pinned_note = None;
                             rv.editor.tab = crate::notes_panel::NoteTab::Branch;
@@ -1628,8 +1636,17 @@ impl MarginApp {
                 Dialog::Confirm { msg, action } => {
                     ui.label(msg.as_str());
                     ui.add_space(8.0);
+                    // Name the button after what it does; destructive ones in red.
+                    let (label, danger) = match action {
+                        Action::DeleteNote(_) | Action::DeleteBranch { .. } | Action::StashDrop(_) => ("Delete", true),
+                        Action::Discard(_) => ("Discard", true),
+                        Action::Hunk { op: HunkOp::Discard, .. } => ("Discard", true),
+                        Action::Reset(_, ResetMode::Hard) => ("Reset", true),
+                        _ => ("OK", false),
+                    };
                     ui.horizontal(|ui| {
-                        if ui.button("OK").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        let text = if danger { egui::RichText::new(label).color(theme::ERROR) } else { egui::RichText::new(label) };
+                        if ui.button(text).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             run = Some(action.clone());
                             close = true;
                         }
@@ -1949,8 +1966,7 @@ impl MarginApp {
             {
                 actions.push(Action::OpenPalette);
             }
-            let search = center
-                .add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Search commits…  author: title: commit: task: note: after:").desired_width(search_w))
+            let search = crate::search::search_box(&mut center, rv, search_w, "Search commits…  author: title: commit: task: note: after:")
                 .on_hover_text(crate::search::HELP);
             if std::mem::take(&mut self.focus_search) {
                 search.request_focus();

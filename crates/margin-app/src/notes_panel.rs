@@ -2,8 +2,10 @@
 //! Autosaves when valid; detects edits made concurrently by MCP agents.
 //!
 //! Layout: a grip on top (drag to resize, double-click to collapse), the tab
-//! row, then the note. Empty notes shrink the panel to one line ("Write
-//! note"); a collapsed panel shows only the tab row. Notes open in Preview;
+//! row, then the note. The height is whatever the user dragged it to (it
+//! never changes by itself); a collapsed panel shows only the tab row. An
+//! empty note shows a one-line "Write note". The trash button deletes a note
+//! after a confirmation (it goes to the notes trash folder). Notes open in Preview;
 //! Edit and Split (editor + live preview) have a formatting toolbar.
 
 use crate::app::{Action, RepoView, Sel};
@@ -77,6 +79,17 @@ impl NoteEditor {
         self.dirty = false;
         self.external = false;
         self.violations.clear();
+    }
+
+    /// The note was deleted: show it as empty (nothing to save).
+    pub fn forget(&mut self) {
+        self.text.clear();
+        self.base_version.clear();
+        self.dirty = false;
+        self.external = false;
+        self.error = None;
+        self.violations.clear();
+        self.preview = true;
     }
 
     pub fn save(&mut self, notes: &NoteStore) -> bool {
@@ -286,9 +299,9 @@ pub fn show(
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| link_task(ui, actions));
         });
-        ui.add_space(2.0);
-        rv.editor.fit_h = Some(ui.cursor().top() - top);
-        if rv.editor.fit_h != fit_before {
+        // Same height as any other note: switching notes never resizes the panel.
+        rv.editor.fit_h = None;
+        if fit_before.is_some() {
             ui.ctx().request_repaint();
         }
         return;
@@ -335,6 +348,21 @@ pub fn show(
                         }
                     }
                     ui.separator();
+                }
+                // Delete (with confirmation) when there's a saved note.
+                if ed.target.is_some() && !ed.base_version.is_empty() {
+                    if let Some(t) = ed.target.clone() {
+                        if trash_button(ui).on_hover_text("Delete this note…").clicked() {
+                            actions.push(Action::Confirm {
+                                msg: format!(
+                                    "Delete the note on {}?\n\nIt's moved to the notes trash folder ({}), so it can still be recovered from there.",
+                                    short_target(&t),
+                                    ".git/margin/notes/.trash"
+                                ),
+                                action: Box::new(Action::DeleteNote(t)),
+                            });
+                        }
+                    }
                 }
                 if ui.small_button("+ Entry").on_hover_text("Append a timestamped entry").clicked() {
                     let mut t = ed.text.trim_end().to_string();
@@ -593,6 +621,28 @@ fn grip(ui: &mut Ui, rv: &mut RepoView, prefs: &mut margin_core::config::State, 
         let _ = margin_core::config::save_state(prefs);
     }
     resp.on_hover_text("Drag to resize · double-click to collapse");
+}
+
+/// Small trash-can icon button.
+fn trash_button(ui: &mut Ui) -> egui::Response {
+    let s = ui.spacing().interact_size.y;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(s, s), egui::Sense::click());
+    let hot = resp.hovered();
+    if hot {
+        ui.painter().rect_filled(rect, 3.0, theme::HOVER);
+    }
+    let c = if hot { theme::ERROR } else { theme::TEXT_DIM };
+    let st = egui::Stroke::new(1.2, c);
+    let p = ui.painter();
+    let ctr = rect.center();
+    // lid, handle, can, two ribs
+    p.line_segment([ctr + egui::vec2(-5.0, -3.5), ctr + egui::vec2(5.0, -3.5)], st);
+    p.line_segment([ctr + egui::vec2(-1.5, -5.0), ctr + egui::vec2(1.5, -5.0)], st);
+    let can = [ctr + egui::vec2(-3.8, -3.5), ctr + egui::vec2(-3.0, 5.0), ctr + egui::vec2(3.0, 5.0), ctr + egui::vec2(3.8, -3.5)];
+    p.add(egui::Shape::line(can.to_vec(), st));
+    p.line_segment([ctr + egui::vec2(-1.0, -1.5), ctr + egui::vec2(-1.0, 3.0)], egui::Stroke::new(1.0, c));
+    p.line_segment([ctr + egui::vec2(1.0, -1.5), ctr + egui::vec2(1.0, 3.0)], egui::Stroke::new(1.0, c));
+    resp
 }
 
 /// The Markdown editor, filling the space it's given.

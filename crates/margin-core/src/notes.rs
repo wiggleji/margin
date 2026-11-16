@@ -211,11 +211,22 @@ impl NoteStore {
         bail!("could not append: note keeps changing")
     }
 
+    /// Delete a note: it's moved to `.trash/<time>/<path>` in the notes folder
+    /// (like notes sync does), so a mistaken delete can be recovered by hand.
     pub fn delete(&self, t: &NoteTarget) -> Result<()> {
-        match fs::remove_file(self.root.join(t.rel_path())) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-            _ => Ok(()),
+        let from = self.root.join(t.rel_path());
+        if !from.exists() {
+            return Ok(());
         }
+        let stamp = crate::format_utc(crate::time::now_unix()).replace([' ', ':'], "-");
+        let to = self.root.join(".trash").join(stamp).join(t.rel_path());
+        if let Some(d) = to.parent() {
+            fs::create_dir_all(d)?;
+        }
+        // a second delete in the same minute: keep both
+        let to = if to.exists() { to.with_extension(format!("{}.md", crate::time::now_unix())) } else { to };
+        fs::rename(&from, &to)?;
+        Ok(())
     }
 
     /// Move a note to another target. If the destination already has a note,
@@ -236,7 +247,12 @@ impl NoteStore {
                 self.write(to, &merged, Some(&dst.version))?
             }
         };
-        self.delete(from)?;
+        // the text now lives at `to`: remove the old file (no trash copy)
+        if let Err(e) = fs::remove_file(self.root.join(from.rel_path())) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(e.into());
+            }
+        }
         Ok(note)
     }
 
@@ -439,6 +455,26 @@ mod tests {
         let d = std::env::temp_dir().join(format!("margin-notes-test-{}-{}", std::process::id(), crate::time::now_unix()));
         let _ = fs::remove_dir_all(&d);
         NoteStore::at(d).unwrap()
+    }
+
+    #[test]
+    fn delete_moves_to_trash() {
+        let d = std::env::temp_dir().join(format!("margin-trash-{}-{}", std::process::id(), crate::time::now_unix()));
+        let store = NoteStore::at(d.clone()).unwrap();
+        let t = NoteTarget::Branch("feature/x".into());
+        store.write(&t, "# Plan\nkeep me", None).unwrap();
+        store.delete(&t).unwrap();
+        assert!(store.read(&t).unwrap().is_none());
+        assert!(store.list().unwrap().is_empty()); // trash isn't listed
+        let mut found = vec![];
+        let mut stack = vec![d.join(".trash")];
+        while let Some(p) = stack.pop() {
+            for e in fs::read_dir(&p).unwrap().flatten() {
+                if e.path().is_dir() { stack.push(e.path()) } else { found.push(fs::read_to_string(e.path()).unwrap()) }
+            }
+        }
+        assert_eq!(found, vec!["# Plan\nkeep me".to_string()]);
+        store.delete(&t).unwrap(); // already gone: fine
     }
 
     #[test]
