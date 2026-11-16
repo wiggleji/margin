@@ -1,7 +1,7 @@
 //! History search: free words, plus filters like Sublime Merge / GitHub.
 //!
 //!   commit:3c7d469   author:sungmin   title:"merge pull"   branch:develop
-//!   tag:26.47        task:SER-6114
+//!   tag:26.47        task:SER-6114    note:"rollout plan"
 //!
 //! Terms are combined with AND; quotes allow spaces. Matching is
 //! case-insensitive; `commit:` matches the start of the SHA.
@@ -16,10 +16,12 @@ enum Field {
     Title,
     Ref,
     Task,
+    /// Title of the commit's note, or of a branch note on a branch tip.
+    Note,
 }
 
 /// Filters for the search box's hint / tooltip.
-pub const HELP: &str = "Filters (combine freely):\n  commit:<sha>    author:<name or email>\n  title:<words>   branch:<name>   tag:<name>\n  task:<KEY-123>\nUse quotes for spaces: title:\"merge pull\"";
+pub const HELP: &str = "Filters (combine freely):\n  commit:<sha>    author:<name or email>\n  title:<words>   branch:<name>   tag:<name>\n  task:<KEY-123>   note:<note title>\nUse quotes for spaces: title:\"merge pull\"";
 
 #[derive(Debug, PartialEq)]
 pub struct Query(Vec<(Field, String)>);
@@ -35,6 +37,7 @@ impl Query {
                     "title" | "message" | "msg" | "subject" => (Field::Title, v),
                     "branch" | "tag" | "ref" => (Field::Ref, v),
                     "task" | "ticket" | "issue" => (Field::Task, v),
+                    "note" | "notes" => (Field::Note, v),
                     _ => (Field::Any, tok.as_str()),
                 },
                 None => (Field::Any, tok.as_str()),
@@ -51,7 +54,9 @@ impl Query {
         self.0.is_empty()
     }
 
-    pub fn matches(&self, c: &Commit) -> bool {
+    /// `notes`: titles of the notes on this commit (its own, and branch notes
+    /// of branches whose tip it is).
+    pub fn matches(&self, c: &Commit, notes: &[&str]) -> bool {
         let lc = |s: &str| s.to_lowercase();
         self.0.iter().all(|(f, v)| {
             let v = v.as_str();
@@ -62,6 +67,7 @@ impl Query {
                 Field::Title => lc(&c.subject).contains(v),
                 Field::Ref => refs(),
                 Field::Task => margin_core::tasks::extract_keys(&c.subject).iter().any(|k| lc(k).contains(v)),
+                Field::Note => notes.iter().any(|t| lc(t).contains(v)),
                 Field::Any => lc(&c.subject).contains(v) || lc(&c.author).contains(v) || c.id.starts_with(v) || refs(),
             }
         })
@@ -113,7 +119,7 @@ mod tests {
     #[test]
     fn filters() {
         let c = commit("3c7d4690abc", "Sungmin Park", "[SER-6284] 상호 검색 merge pull fix", &["origin/develop", "tag: 26.47.0"]);
-        let m = |q: &str| Query::parse(q).matches(&c);
+        let m = |q: &str| Query::parse(q).matches(&c, &["Rollout Plan"]);
         assert!(m("commit:3c7d"));
         assert!(!m("commit:7d46"));
         assert!(m("author:sungmin"));
@@ -127,5 +133,8 @@ mod tests {
         assert!(!m("검색 author:kim"));
         assert!(m("foo:bar") == false); // unknown key = plain word "foo:bar"
         assert!(Query::parse("author:").is_empty());
+        assert!(m("note:rollout"));
+        assert!(m("note:\"rollout plan\" author:park"));
+        assert!(!Query::parse("note:rollout").matches(&c, &[]));
     }
 }

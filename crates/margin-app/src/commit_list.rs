@@ -58,7 +58,14 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             .commits
             .iter()
             .enumerate()
-            .filter(|(_, c)| query.matches(c))
+            .filter(|(_, c)| {
+                // note titles: the commit's own note, and branch notes on its tips
+                let mut notes: Vec<&str> = rv.note_title(&NoteTarget::Commit(c.id.clone())).into_iter().collect();
+                for b in rv.tips.get(&c.id).into_iter().flatten() {
+                    notes.extend(rv.note_title(&NoteTarget::Branch(b.clone())));
+                }
+                query.matches(c, &notes)
+            })
             .map(|(i, _)| i)
             .collect();
         // While searching, a task label sits on the newest *matching* commit.
