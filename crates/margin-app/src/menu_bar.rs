@@ -44,6 +44,7 @@ pub enum Cmd {
     Back,
     Forward,
     WorkingDirectory,
+    FocusDiff,
     // Window
     NextTab,
     PrevTab,
@@ -216,6 +217,7 @@ mod mac {
                     &b.repo("Forward", Some("cmd+BracketRight"), Cmd::Forward),
                     &sep(),
                     &b.repo("Working Directory", None, Cmd::WorkingDirectory),
+                    &b.repo("Focus on Diff", Some("shift+cmd+Enter"), Cmd::FocusDiff),
                     &b.repo("Go to Branch…", None, Cmd::Palette("Go to/Go to branch…")),
                     &b.repo("Go to Tag…", None, Cmd::Palette("Go to/Go to tag…")),
                     &b.repo("Go to Commit…", None, Cmd::Palette("Go to/Go to commit…")),

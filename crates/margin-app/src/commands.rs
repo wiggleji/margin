@@ -112,6 +112,9 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
         v.push(c(Group::Repository, "Enter Margin Pro licence key…", "", "license activate pro upgrade", vec![input("Licence key", "")], act(|x| vec![Action::InstallLicense(x[0].clone())])));
         v.push(c(Group::Repository, "Buy Margin Pro", "", "license purchase upgrade pro", vec![], act(|_| vec![Action::OpenUrl(crate::pro::PURCHASE_URL.into())])));
     }
+    let key = if cfg!(target_os = "macos") { "⌘⇧↩" } else { "Ctrl+Shift+Enter" };
+    let t = if app.focus_diff { "Show the branches and history again" } else { "Focus on the diff" };
+    v.push(c(Group::Navigate, t, key, "full width review zen hide sidebar history layout", vec![], act(|_| vec![Action::ToggleFocusDiff])));
     let dock = if app.state.notes_under_history { "Move notes under the commit details" } else { "Move notes under the branches and history" };
     v.push(c(Group::Notes, dock, "", "panel position dock layout left right", vec![], act(|_| vec![Action::ToggleNotesDock])));
     v.push(c(Group::Notes, "Notes sync settings…", "iCloud · Dropbox · Drive", "cloud sync icloud dropbox google drive", vec![], act(|_| vec![Action::OpenSettings])));

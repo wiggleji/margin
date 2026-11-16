@@ -97,6 +97,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
                 Action::Confirm { msg: format!("Discard changes to {what}? Untracked files are deleted. This cannot be undone."), action: Box::new(Action::Discard(p)) }
             }
             DiffEvent::CopyPath(p) => Action::Copy(p),
+            DiffEvent::ToggleFocus => Action::ToggleFocusDiff,
         });
     }
 }
@@ -212,7 +213,11 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
         }
         ui.add_space(4.0);
     };
-    rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff", prefs, Some(crate::diff_view::Header { ui: &mut header, title }));
+    for e in rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff", prefs, Some(crate::diff_view::Header { ui: &mut header, title })) {
+        if let DiffEvent::ToggleFocus = e {
+            actions.push(Action::ToggleFocusDiff);
+        }
+    }
 }
 
 /// "Summary\n\nBody" → ("Summary", "Body").

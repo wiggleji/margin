@@ -116,6 +116,8 @@ pub enum Action {
     SetGraphFilter(margin_core::history::HistoryFilter),
     /// Reload the shown diff (e.g. after toggling "Ignore whitespace").
     ReloadDiff,
+    /// Give the diff the whole window (hide branches, history, left notes) or undo it.
+    ToggleFocusDiff,
     /// Revert an automatic re-attachment (journal id).
     UndoReattach(String),
     /// Confirm an automatic re-attachment (stop offering undo).
@@ -379,6 +381,8 @@ pub struct MarginApp {
     pub palette: Option<crate::palette::Palette>,
     /// Focus the commit search box on the next frame (Edit → Find Commits).
     pub focus_search: bool,
+    /// Diff focus mode: the details/diff column takes the whole window.
+    pub focus_diff: bool,
     menu: crate::menu_bar::MenuBar,
     ctx: egui::Context,
 }
@@ -415,6 +419,7 @@ impl MarginApp {
             status_undo: vec![],
             palette: None,
             focus_search: false,
+            focus_diff: false,
             menu: crate::menu_bar::MenuBar::new(ctx),
             ctx: ctx.clone(),
         };
@@ -626,6 +631,7 @@ impl MarginApp {
             Cmd::Back => Action::NavBack,
             Cmd::Forward => Action::NavForward,
             Cmd::WorkingDirectory => Action::Select(Sel::Working),
+            Cmd::FocusDiff => Action::ToggleFocusDiff,
             Cmd::NextTab => Action::NextTab,
             Cmd::PrevTab => Action::PrevTab,
             Cmd::Help => Action::OpenUrl(crate::pro::HELP_URL.into()),
@@ -1265,6 +1271,7 @@ impl MarginApp {
                     Err(e) => self.err(e),
                 }
             }
+            ToggleFocusDiff => self.focus_diff = !self.focus_diff,
             ReloadDiff => {
                 match self.rv.as_ref().map(|rv| rv.sel.clone()) {
                     Some(Sel::Commit(id)) => self.load_commit(id),
@@ -2062,6 +2069,10 @@ impl eframe::App for MarginApp {
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) || i.pointer.button_pressed(egui::PointerButton::Extra2),
             )
         });
+        // ⌘⇧↩: diff focus mode on / off
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Enter)) {
+            self.focus_diff = !self.focus_diff;
+        }
         let (next_tab, prev_tab) = ctx.input_mut(|i| {
             let shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
             (
@@ -2134,17 +2145,30 @@ impl eframe::App for MarginApp {
                 expand_commit: !self.state.diff_collapse_commits,
                 expand_staged: !self.state.diff_collapse_staged,
                 expand_unstaged: self.state.diff_expand_unstaged,
+                focused: self.focus_diff,
             };
             let mut diff_prefs = before;
             let state = &mut self.state;
-            egui::Panel::right("details").resizable(true).default_size(560.0).min_size(360.0).show(ui, |ui| {
+            let focus = self.focus_diff;
+            let details = |ui: &mut egui::Ui, rv: &mut RepoView, state: &mut State, diff_prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>| {
                 if !under_history {
-                    notes(ui, rv, state, &mut actions);
+                    notes(ui, rv, state, actions);
                 }
                 egui::CentralPanel::default().show(ui, |ui| {
-                    crate::details::show(ui, rv, &mut diff_prefs, &task_url, &mut actions);
+                    crate::details::show(ui, rv, diff_prefs, &task_url, actions);
                 });
-            });
+            };
+            if focus {
+                // Focus mode: the diff column gets the whole window.
+                egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| details(ui, rv, state, &mut diff_prefs, &mut actions));
+            } else {
+                // The details column can't grow over the branches and history:
+                // they keep enough width that their edges stay grabbable.
+                let max_details = (ui.available_width() - 320.0).max(360.0);
+                egui::Panel::right("details").resizable(true).default_size(560.0).min_size(360.0).max_size(max_details).show(ui, |ui| {
+                    details(ui, rv, state, &mut diff_prefs, &mut actions)
+                });
+            }
             if diff_prefs != before {
                 state.diff_split = diff_prefs.split;
                 state.diff_ignore_ws = diff_prefs.ignore_ws;
@@ -2155,18 +2179,21 @@ impl eframe::App for MarginApp {
             }
             // Notes on the left: one wide panel under both the sidebar and the
             // history (added before them, so it spans their full width).
-            if under_history {
-                notes(ui, rv, state, &mut actions);
+            if !focus {
+                if under_history {
+                    notes(ui, rv, state, &mut actions);
+                }
+                let max_sidebar = (ui.available_width() * 0.5).max(160.0);
+                egui::Panel::left("sidebar").resizable(true).default_size(220.0).min_size(150.0).max_size(max_sidebar).show(ui, |ui| {
+                    // Fill the panel: otherwise it shrinks to its content when no
+                    // row has a right-aligned badge (e.g. a repo without upstreams).
+                    ui.set_min_width(ui.available_width());
+                    crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &mut actions);
+                });
+                egui::CentralPanel::default().show(ui, |ui| {
+                    crate::commit_list::show(ui, rv, &mut actions);
+                });
             }
-            egui::Panel::left("sidebar").resizable(true).default_size(220.0).show(ui, |ui| {
-                // Fill the panel: otherwise it shrinks to its content when no
-                // row has a right-aligned badge (e.g. a repo without upstreams).
-                ui.set_min_width(ui.available_width());
-                crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &mut actions);
-            });
-            egui::CentralPanel::default().show(ui, |ui| {
-                crate::commit_list::show(ui, rv, &mut actions);
-            });
         }
         self.auto_fetch_tick(&ctx);
         self.dialogs(&ctx);

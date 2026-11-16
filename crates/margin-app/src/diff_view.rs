@@ -29,6 +29,8 @@ pub struct DiffPrefs {
     pub expand_commit: bool,
     pub expand_staged: bool,
     pub expand_unstaged: bool,
+    /// Focus mode is on (the diff has the whole window); not saved.
+    pub focused: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,6 +66,8 @@ pub enum DiffEvent {
     /// Asks for confirmation first.
     Discard(Vec<String>),
     CopyPath(String),
+    /// The focus button: give the diff the whole window, or bring the rest back.
+    ToggleFocus,
 }
 
 #[derive(Clone, Copy)]
@@ -138,12 +142,13 @@ struct BarOut {
     nav: i32,
     ws: Option<bool>,
     split: Option<bool>,
+    focus: bool,
 }
 
 /// The toolbar above the rows: counts, collapse/expand all, ↑↓, whitespace,
 /// layout; `title` (faded in by `title_a`) once the header is out of view.
 #[allow(clippy::too_many_arguments)]
-fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: bool, prefs: &DiffPrefs, title: Option<&str>, title_a: f32, loading: bool) -> BarOut {
+fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: bool, prefs: &DiffPrefs, title: Option<&str>, title_a: f32, loading: bool, focused: bool) -> BarOut {
     let mut out = BarOut::default();
     // Stuck under a scrolled-away header: the commit title takes the place of
     // the counts (they're in the header); it fades in.
@@ -163,6 +168,12 @@ fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: 
         // controls on the right; the title fills the space between (no shifting)
         let right = ui.available_width();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let key = if cfg!(target_os = "macos") { "⌘⇧↩" } else { "Ctrl+Shift+Enter" };
+            let tip = if focused { format!("Show the branches and history again ({key})") } else { format!("Focus on the diff: hide the branches and history ({key})") };
+            if focus_button(ui, focused).on_hover_text(tip).clicked() {
+                out.focus = true;
+            }
+            ui.add_space(4.0);
             if layout_button(ui, true, prefs.split).on_hover_text("Side by side").clicked() {
                 out.split = Some(true);
             }
@@ -902,7 +913,7 @@ impl DiffView {
                 }
                 let mut bar_ui = page.new_child(egui::UiBuilder::new().max_rect(bar_rect.shrink2(vec2(0.0, 2.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
                 let title = header.as_ref().map(|h| h.title.as_str());
-                bar_out = diff_bar(&mut bar_ui, n_files, added, removed, collapsed_all, &prefs_now, title, title_a, loading);
+                bar_out = diff_bar(&mut bar_ui, n_files, added, removed, collapsed_all, &prefs_now, title, title_a, loading, prefs_now.focused);
             });
         if let Some(h) = measured_head {
             if (h - self.header_h).abs() > 0.5 {
@@ -922,6 +933,9 @@ impl DiffView {
         }
         if let Some(sp) = bar_out.split {
             prefs.split = sp;
+        }
+        if bar_out.focus {
+            events.push(DiffEvent::ToggleFocus);
         }
         if bar_out.nav != 0 {
             // handled next frame (same code path as ⌥↑/⌥↓)
@@ -1070,6 +1084,28 @@ impl Seg<'_> {
         let chunk: String = self.text.replace('\t', "    ").chars().skip(from).take(to - from).collect();
         p.text(pos2(text_x, rect.center().y), Align2::LEFT_CENTER, chunk, font.clone(), fg);
     }
+}
+
+/// Focus toggle: four corner brackets pointing out (expand) or in (restore).
+fn focus_button(ui: &mut Ui, on: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 18.0), Sense::click());
+    let p = ui.painter();
+    if on || resp.hovered() {
+        p.rect_filled(rect, 3.0, if on { theme::SELECTED } else { theme::HOVER });
+    }
+    let c = if on || resp.hovered() { theme::TEXT } else { theme::TEXT_DIM };
+    let st = Stroke::new(1.3, c);
+    let b = Rect::from_center_size(rect.center(), vec2(12.0, 10.0));
+    let l = 3.5;
+    // corners: (point, horizontal dir, vertical dir)
+    for (pt, dx, dy) in [(b.left_top(), 1.0, 1.0), (b.right_top(), -1.0, 1.0), (b.left_bottom(), 1.0, -1.0), (b.right_bottom(), -1.0, -1.0)] {
+        // expanded: brackets at the corners; focused: brackets pulled inward
+        let pt = if on { pt + vec2(dx * 3.0, dy * 2.5) } else { pt };
+        let (hx, vy) = if on { (-dx, -dy) } else { (dx, dy) };
+        p.line_segment([pt, pt + vec2(hx * l, 0.0)], st);
+        p.line_segment([pt, pt + vec2(0.0, vy * l)], st);
+    }
+    resp
 }
 
 /// Small icon toggle: three lines (inline) or two columns of lines (side by side).
