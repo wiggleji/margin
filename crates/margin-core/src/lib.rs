@@ -32,7 +32,7 @@ pub mod sync;
 pub mod tasks;
 mod time;
 
-pub use time::format_utc;
+pub use time::{format_local, format_utc, local_offset, local_zone};
 pub use time::now_unix as time_now;
 
 #[derive(Debug, Clone)]

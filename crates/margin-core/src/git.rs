@@ -270,6 +270,24 @@ impl Repo {
         })
     }
 
+    /// Branches (local first, then remote) whose history contains `id`.
+    pub fn branches_containing(&self, id: &str) -> Result<Vec<String>> {
+        let out = self.run(&["for-each-ref", "--contains", id, "--format=%(refname)", "refs/heads", "refs/remotes"])?;
+        let mut local = vec![];
+        let mut remote = vec![];
+        for l in out.lines() {
+            if let Some(b) = l.strip_prefix("refs/heads/") {
+                local.push(b.to_string());
+            } else if let Some(b) = l.strip_prefix("refs/remotes/") {
+                if !b.ends_with("/HEAD") {
+                    remote.push(b.to_string());
+                }
+            }
+        }
+        local.extend(remote);
+        Ok(local)
+    }
+
     /// Patch of a commit vs its first parent (root commits diff against empty).
     pub fn commit_diff(&self, id: &str) -> Result<String> {
         self.commit_diff_opts(id, false)

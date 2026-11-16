@@ -391,7 +391,7 @@ impl Server {
             "changed_files": st.files.len(),
             "pending_operation": self.repo.pending_operation(),
             "task_key": task,
-            "task_url": task.as_ref().and_then(|k| tasks::task_url(&self.cfg, self.tasks.as_deref(), k)),
+            "task_url": task.as_ref().and_then(|k| tasks::task_url(&self.cfg, self.tasks.as_deref(), margin_core::config::load_settings().ticket_url.as_deref(), k)),
             "repo_note": read(&NoteTarget::Repo)?,
             "branch_note": match &branch_note { Some(t) => read(t)?, None => Value::Null },
             "task_note": match &task { Some(k) => read(&NoteTarget::Task(k.clone()))?, None => Value::Null },

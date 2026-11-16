@@ -52,6 +52,13 @@ pub fn extract_keys(s: &str) -> Vec<String> {
             while j < b.len() && (b[j].is_ascii_uppercase() || b[j].is_ascii_digit() || b[j] == b'_') {
                 j += 1;
             }
+            // Look like keys but aren't tickets: UTF-8, SHA-256, ISO-8601, CVE-2024-…
+            const NOT_TASKS: &[&str] = &["UTF", "SHA", "ISO", "RFC", "CVE", "HTTP", "TLS", "SSL", "MD", "AES", "RSA", "ECMA", "ES", "IPV", "COVID", "GPT", "WCAG", "UTC", "GMT"];
+            let prefix = &s[start..j];
+            if NOT_TASKS.iter().any(|w| prefix.eq_ignore_ascii_case(w)) {
+                i = j;
+                continue;
+            }
             if j < b.len() && b[j] == b'-' && j - start >= 2 {
                 let mut k = j + 1;
                 while k < b.len() && b[k].is_ascii_digit() {
@@ -84,10 +91,26 @@ pub fn extract_keys(s: &str) -> Vec<String> {
 
 /// Browser URL for a task key: the API provider's URL if configured, else the
 /// `task_url_template` (works for Linear, Asana, YouTrack, … without an API token).
-pub fn task_url(cfg: &crate::config::Config, provider: Option<&dyn TaskProvider>, key: &str) -> Option<String> {
+/// Link to a task: the Jira provider's, else `task_url_template` (config.json),
+/// else the ticket link from Settings.
+pub fn task_url(cfg: &crate::config::Config, provider: Option<&dyn TaskProvider>, ticket_url: Option<&str>, key: &str) -> Option<String> {
     provider
         .map(|p| p.browse_url(key))
         .or_else(|| cfg.task_url_template.as_ref().map(|t| t.replace("{key}", key)))
+        .or_else(|| ticket_url.and_then(|t| ticket_link(t, key)))
+}
+
+/// `https://acme.atlassian.net` → `https://acme.atlassian.net/browse/KEY`;
+/// a template with `{key}` is filled in. `None` for an empty / non-http value.
+pub fn ticket_link(site_or_template: &str, key: &str) -> Option<String> {
+    let t = site_or_template.trim();
+    if !(t.starts_with("https://") || t.starts_with("http://")) {
+        return None;
+    }
+    if t.contains("{key}") {
+        return Some(t.replace("{key}", key));
+    }
+    Some(format!("{}/browse/{key}", t.trim_end_matches('/')))
 }
 
 pub fn provider_from_config(cfg: &crate::config::Config) -> Option<Box<dyn TaskProvider>> {
@@ -250,7 +273,11 @@ mod tests {
         assert_eq!(extract_keys("fix(ABC-1): also XY2-77, not a-1 or AB-x"), vec!["ABC-1", "XY2-77"]);
         assert_eq!(extract_keys("bugfix/ops-42_crash"), vec!["OPS-42"]);
         assert!(extract_keys("main").is_empty());
-        assert!(extract_keys("UTF-8 is fine").contains(&"UTF-8".to_string())); // known false positive
+        assert!(extract_keys("UTF-8 and SHA-256, ISO-8601, CVE-2024-1234").is_empty());
+        assert_eq!(extract_keys("[SER-6287] 하나 로그인 CF-13101 안내"), vec!["SER-6287", "CF-13101"]);
+        assert_eq!(super::ticket_link("https://acme.atlassian.net/", "SER-1").as_deref(), Some("https://acme.atlassian.net/browse/SER-1"));
+        assert_eq!(super::ticket_link("https://linear.app/acme/issue/{key}", "ENG-7").as_deref(), Some("https://linear.app/acme/issue/ENG-7"));
+        assert_eq!(super::ticket_link("acme", "X-1"), None);
     }
 
     #[test]

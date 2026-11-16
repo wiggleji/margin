@@ -40,7 +40,7 @@ pub enum Msg {
     // wrong tab (see MarginApp::on_msg).
     Refreshed { workdir: PathBuf, result: Result<Box<Snapshot>, String> },
     WorkDiff { workdir: PathBuf, generation: u64, result: Result<crate::diff_view::WorkDiff, String> },
-    CommitLoaded { workdir: PathBuf, generation: u64, result: Result<(CommitDetail, Vec<FileDiff>, bool), String> },
+    CommitLoaded { workdir: PathBuf, generation: u64, result: Result<(CommitDetail, Vec<FileDiff>, bool, Vec<String>), String> },
     /// A git operation finished. `refresh`: reload repo state afterwards.
     OpDone { workdir: PathBuf, label: String, result: Result<String, String>, refresh: bool },
     Task { key: String, result: Result<Task, String> },

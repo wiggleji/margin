@@ -5,11 +5,12 @@ use crate::diff_view::{DiffEvent, DiffMode};
 use crate::theme;
 use eframe::egui::{self, RichText, Ui};
 
-/// `prefs`: diff layout and whitespace (the diff bar changes them).
-pub fn show(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>) {
+/// `prefs`: diff layout and whitespace (the diff bar changes them);
+/// `task_url`: link for a task key, if one is configured.
+pub fn show(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, task_url: &dyn Fn(&str) -> Option<String>, actions: &mut Vec<Action>) {
     match rv.sel.clone() {
         Sel::Working => working(ui, rv, prefs, actions),
-        Sel::Commit(_) => commit(ui, rv, prefs, actions),
+        Sel::Commit(_) => commit(ui, rv, prefs, task_url, actions),
     }
 }
 
@@ -100,26 +101,15 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
     }
 }
 
-fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>) {
+fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, task_url: &dyn Fn(&str) -> Option<String>, actions: &mut Vec<Action>) {
     let Some(d) = rv.commit_detail.clone() else {
         ui.spinner();
         return;
     };
     egui::Panel::top("commit_header").show(ui, |ui| {
-        // Full message: subject, then the body (selectable; scrolls when long).
-        let (subject, body) = split_message(&d.message);
-        let big = ui.style().text_styles[&egui::TextStyle::Body].size + 2.0;
-        ui.add(egui::Label::new(RichText::new(subject).strong().size(big)).selectable(true).wrap());
-        let body = body.trim_end();
-        if !body.is_empty() {
-            ui.add_space(2.0);
-            let max = (ui.ctx().content_rect().height() * 0.3).max(80.0);
-            egui::ScrollArea::vertical().id_salt("commit_body_scroll").max_height(max).auto_shrink([false, true]).show(ui, |ui| {
-                ui.add(egui::Label::new(RichText::new(body).color(theme::TEXT)).selectable(true).wrap());
-            });
-        }
-        ui.add_space(4.0);
-        egui::Grid::new("commit_meta").num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
+        // ---- metadata first
+        let when = |t: i64| format!("{} {}", margin_core::format_local(t), margin_core::local_zone(t));
+        egui::Grid::new("commit_meta").num_columns(2).spacing([10.0, 3.0]).show(ui, |ui| {
             ui.weak("Commit");
             ui.horizontal(|ui| {
                 ui.monospace(&d.id[..12.min(d.id.len())]);
@@ -129,11 +119,11 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
             });
             ui.end_row();
             ui.weak("Author");
-            ui.label(format!("{} <{}>  ·  {} UTC", d.author, d.email, margin_core::format_utc(d.author_time)));
+            ui.label(format!("{} <{}>  ·  {}", d.author, d.email, when(d.author_time)));
             ui.end_row();
-            if d.committer != d.author {
+            if d.committer != d.author || d.commit_time != d.author_time {
                 ui.weak("Committer");
-                ui.label(format!("{}  ·  {} UTC", d.committer, margin_core::format_utc(d.commit_time)));
+                ui.label(format!("{}  ·  {}", d.committer, when(d.commit_time)));
                 ui.end_row();
             }
             if !d.parents.is_empty() {
@@ -147,19 +137,70 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 });
                 ui.end_row();
             }
+            // Branches whose history contains this commit (local first).
+            if !rv.commit_branches.is_empty() {
+                ui.weak("Branches");
+                let all = rv.commit_branches.join(", ");
+                ui.horizontal_wrapped(|ui| {
+                    const SHOW: usize = 6;
+                    for b in rv.commit_branches.iter().take(SHOW) {
+                        if ui.link(RichText::new(b).small()).on_hover_text("Show this branch").clicked() {
+                            actions.push(Action::GotoRev(b.clone()));
+                        }
+                    }
+                    let more = rv.commit_branches.len().saturating_sub(SHOW);
+                    if more > 0 {
+                        ui.label(RichText::new(format!("+{more} more")).small().color(theme::TEXT_DIM)).on_hover_text(&all);
+                    }
+                });
+                ui.end_row();
+            }
+            // Changes: files and lines in this commit.
+            let files = &rv.commit_diff.files;
+            if !files.is_empty() {
+                let (a, r) = files.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
+                ui.weak("Changes");
+                ui.horizontal(|ui| {
+                    ui.label(format!("{} file{}", files.len(), if files.len() == 1 { "" } else { "s" }));
+                    ui.label(RichText::new(format!("+{a}")).color(theme::ADDED));
+                    ui.label(RichText::new(format!("−{r}")).color(theme::REMOVED));
+                });
+                ui.end_row();
+            }
+            // Tasks: click the key for its notes; ↗ opens the ticket.
             let keys = margin_core::tasks::extract_keys(&d.message);
             if !keys.is_empty() {
                 ui.weak("Tasks");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for k in keys {
-                        if ui.link(RichText::new(&k).color(theme::ACCENT)).clicked() {
-                            actions.push(Action::FocusTask(k));
+                        if ui.link(RichText::new(&k).color(theme::ACCENT)).on_hover_text("Show the task's notes").clicked() {
+                            actions.push(Action::FocusTask(k.clone()));
                         }
+                        if let Some(u) = task_url(&k) {
+                            if ui.small_button("↗").on_hover_text(format!("Open {u}")).clicked() {
+                                actions.push(Action::OpenUrl(u));
+                            }
+                        }
+                        ui.add_space(6.0);
                     }
                 });
                 ui.end_row();
             }
         });
+        ui.add_space(6.0);
+        ui.separator();
+        // ---- then the message: subject, and the body (selectable; scrolls when long)
+        let (subject, body) = split_message(&d.message);
+        let big = ui.style().text_styles[&egui::TextStyle::Body].size + 2.0;
+        ui.add(egui::Label::new(RichText::new(subject).strong().size(big)).selectable(true).wrap());
+        let body = body.trim_end();
+        if !body.is_empty() {
+            ui.add_space(2.0);
+            let max = (ui.ctx().content_rect().height() * 0.3).max(80.0);
+            egui::ScrollArea::vertical().id_salt("commit_body_scroll").max_height(max).auto_shrink([false, true]).show(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(body).color(theme::TEXT)).selectable(true).wrap());
+            });
+        }
         ui.add_space(4.0);
     });
     rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff", prefs);

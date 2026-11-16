@@ -15,8 +15,10 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
     let isz = ui.text_style_height(&egui::TextStyle::Small) + 1.0;
     let note_icon = |tint| icons::image(&ctx, Icon::Note, isz, tint);
     egui::ScrollArea::vertical().id_salt("sidebar").auto_shrink([false, false]).show(ui, |ui| {
-        // One line per row: truncate with "…" instead of wrapping.
+        // One line per row: truncate with "…" instead of wrapping. Labels here
+        // are click targets, not text to select (no I-beam cursor).
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        ui.style_mut().interaction.selectable_labels = false;
         ui.add_space(4.0);
         let n = snap.status.files.len();
         if ui.selectable_label(rv.sel == Sel::Working, format!("Working directory ({n})")).clicked() {
@@ -65,8 +67,8 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                             let mut atoms = egui::Atoms::new(note_icon(theme::ACCENT));
                             atoms.push_right(format!("{} → {}", short(&e.from), short(&e.to)));
                             let resp = ui.selectable_label(false, atoms).on_hover_text(format!(
-                                "Moved automatically (same change, git patch-id) at {} UTC.\nClick to show the new commit.",
-                                margin_core::format_utc(e.at)
+                                "Moved automatically (same change, git patch-id) at {}.\nClick to show the new commit.",
+                                margin_core::format_local(e.at)
                             ));
                             if resp.clicked() {
                                 if let Some(c) = e.to.strip_prefix("commit:") {

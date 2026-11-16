@@ -6,7 +6,7 @@
 //!
 //! Terms are combined with AND; quotes allow spaces. Matching is
 //! case-insensitive; `commit:` matches the start of the SHA. Dates are the
-//! commit's author date in UTC (as shown in the app): `after:D` includes day D,
+//! commit's author date in the machine's time zone (as shown in the app): `after:D` includes day D,
 //! `before:D` excludes it. Relative dates: `today`, `yesterday`, `7d`, `2w`, `3m`.
 
 use margin_core::git::Commit;
@@ -37,11 +37,12 @@ pub struct Query {
 impl Query {
     pub fn parse(q: &str) -> Query {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        Query::parse_at(q, now)
+        Query::parse_at(q, now, &margin_core::local_offset)
     }
 
     /// `parse` with a fixed "now" (for relative dates; tests).
-    pub fn parse_at(q: &str, now: i64) -> Query {
+    /// `tz`: the time zone's offset from UTC at a given time (seconds).
+    pub fn parse_at(q: &str, now: i64, tz: &dyn Fn(i64) -> i64) -> Query {
         let mut terms = vec![];
         let (mut after, mut before): (Option<i64>, Option<i64>) = (None, None);
         for tok in tokens(q) {
@@ -53,7 +54,7 @@ impl Query {
                     if v.is_empty() {
                         continue;
                     }
-                    match day_start(v, now) {
+                    match day_start(v, now, tz) {
                         Some(t) if k == "after" || k == "since" => after = Some(after.map_or(t, |a| a.max(t))),
                         Some(t) => before = Some(before.map_or(t, |b| b.min(t))),
                         None => terms.push((Field::Any, tok.to_lowercase())),
@@ -108,11 +109,13 @@ impl Query {
     }
 }
 
-/// Start (UTC) of the day a date names: `2026-11-01`, `2026-11` (first of the
-/// month), `today`, `yesterday`, `7d` / `2w` / `3m` ago (from `now`).
-fn day_start(v: &str, now: i64) -> Option<i64> {
+/// Start of the day (local midnight, by `tz`) a date names: `2026-11-01`,
+/// `2026-11` (first of the month), `today`, `yesterday`, `7d` / `2w` / `3m` ago.
+fn day_start(v: &str, now: i64, tz: &dyn Fn(i64) -> i64) -> Option<i64> {
     const DAY: i64 = 86_400;
-    let today = now.div_euclid(DAY) * DAY;
+    // local midnight → unix time (offset taken near that moment, for DST)
+    let midnight = |local_day_start: i64| local_day_start - tz(local_day_start - tz(now));
+    let today = midnight((now + tz(now)).div_euclid(DAY) * DAY);
     let v = v.to_lowercase();
     match v.as_str() {
         "today" => return Some(today),
@@ -140,7 +143,7 @@ fn day_start(v: &str, now: i64) -> Option<i64> {
     if !(1970..=9999).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return None;
     }
-    Some(days_from_civil(y, m, d) * DAY)
+    Some(midnight(days_from_civil(y, m, d) * DAY))
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant).
@@ -226,7 +229,7 @@ mod tests {
         assert_eq!(super::days_from_civil(2000, 3, 1), 11_017);
         let at = |y, m, d, h: i64| super::days_from_civil(y, m, d) * 86_400 + h * 3600;
         let mut c = commit("abc", "Kim", "work", &[]);
-        let m = |q: &str, c: &Commit| Query::parse_at(q, now).matches(c, &[]);
+        let m = |q: &str, c: &Commit| Query::parse_at(q, now, &|_| 0).matches(c, &[]);
         c.time = at(2026, 11, 10, 9);
         assert!(m("after:2026-11-10", &c)); // the day itself is included
         assert!(!m("after:2026-11-11", &c));
@@ -241,6 +244,11 @@ mod tests {
         assert!(m("after:today", &c));
         // an unreadable date matches nothing rather than being ignored
         assert!(!m("after:someday", &c));
-        assert!(Query::parse_at("after:", now).is_empty());
+        assert!(Query::parse_at("after:", now, &|_| 0).is_empty());
+        // in UTC+9, "after:2026-11-10" starts at 2026-11-09 15:00 UTC
+        let kst = |_| 9 * 3600;
+        c.time = at(2026, 11, 9, 16); // 2026-11-10 01:00 KST
+        assert!(Query::parse_at("after:2026-11-10", now, &kst).matches(&c, &[]));
+        assert!(!Query::parse_at("after:2026-11-10", now, &|_| 0).matches(&c, &[]));
     }
 }

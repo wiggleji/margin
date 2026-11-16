@@ -143,6 +143,8 @@ pub struct RepoView {
     pub sel: Sel,
     pub work_diff: DiffView,
     pub commit_detail: Option<CommitDetail>,
+    /// Branches containing the selected commit (commit details).
+    pub commit_branches: Vec<String>,
     pub commit_diff: DiffView,
     pub generation: u64,
     pub commit_msg: String,
@@ -239,6 +241,7 @@ impl RepoView {
             sel: Sel::Working,
             work_diff: DiffView::default(),
             commit_detail: None,
+            commit_branches: vec![],
             commit_diff: DiffView::default(),
             generation: 0,
             commit_msg: String::new(),
@@ -529,7 +532,8 @@ impl MarginApp {
             let r = (|| {
                 let d = repo.commit_detail(&id)?;
                 let (files, trunc) = diff::parse(&repo.commit_diff_opts(&id, ignore_ws)?);
-                Ok::<_, margin_core::Error>((d, files, trunc))
+                let branches = repo.branches_containing(&id).unwrap_or_default();
+                Ok::<_, margin_core::Error>((d, files, trunc, branches))
             })();
             Msg::CommitLoaded { workdir: repo.workdir.clone(), generation, result: r.map_err(|e| e.0) }
         });
@@ -1053,6 +1057,11 @@ impl MarginApp {
                     rv.focus_task = Some(k.clone());
                     rv.editor.tab = crate::notes_panel::NoteTab::Task;
                 }
+                // The task opens in the notes panel: make sure it's visible.
+                if self.state.notes_collapsed {
+                    self.state.notes_collapsed = false;
+                    let _ = config::save_state(&self.state);
+                }
                 if !self.task_cache.contains_key(&k) {
                     self.handle(FetchTask(k));
                 }
@@ -1563,8 +1572,9 @@ impl MarginApp {
                     return;
                 }
                 match result {
-                    Ok((d, f, t)) => {
+                    Ok((d, f, t, b)) => {
                         rv.commit_detail = Some(d);
+                        rv.commit_branches = b;
                         rv.commit_diff.set(f, t);
                     }
                     Err(e) => rv.commit_diff.set_error(e),
@@ -2092,7 +2102,7 @@ impl eframe::App for MarginApp {
             // Notes sit at the bottom of the details column or of the history
             // column (Notes → "Move notes…"); same panel either way.
             let under_history = self.state.notes_under_history;
-            let task_url = |k: &str| tasks::task_url(&self.cfg, self.tasks.as_deref(), k);
+            let task_url = |k: &str| tasks::task_url(&self.cfg, self.tasks.as_deref(), self.settings.ticket_url.as_deref(), k);
             let notes = |ui: &mut egui::Ui, rv: &mut RepoView, state: &mut State, actions: &mut Vec<Action>| {
                 // The dragged height, or fitted to the content when collapsed /
                 // empty (see notes_panel). The panel draws its own grip.
@@ -2119,7 +2129,7 @@ impl eframe::App for MarginApp {
                     notes(ui, rv, state, &mut actions);
                 }
                 egui::CentralPanel::default().show(ui, |ui| {
-                    crate::details::show(ui, rv, &mut diff_prefs, &mut actions);
+                    crate::details::show(ui, rv, &mut diff_prefs, &task_url, &mut actions);
                 });
             });
             if diff_prefs != before {
@@ -2278,6 +2288,26 @@ impl MarginApp {
                     actions.push(Action::Fetch);
                 }
             });
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("TASKS").small().strong().color(theme::TEXT_DIM));
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Ticket link");
+                let mut t = self.settings.ticket_url.clone().unwrap_or_default();
+                if ui.add(egui::TextEdit::singleline(&mut t).hint_text("https://yourcompany.atlassian.net").desired_width(260.0)).changed() {
+                    self.settings.ticket_url = Some(t.trim().to_string()).filter(|t| !t.is_empty());
+                    changed = true;
+                }
+            });
+            let example = self.settings.ticket_url.as_deref().and_then(|t| tasks::ticket_link(t, "PROJ-123"));
+            ui.label(
+                egui::RichText::new(match &example {
+                    Some(u) => format!("PROJ-123 → {u}"),
+                    None => "Task keys (PROJ-123) in branch names and commit messages link here. A Jira site adds /browse/KEY; for other trackers use a template with {key}.".into(),
+                })
+                .small()
+                .color(theme::TEXT_DIM),
+            );
             ui.add_space(10.0);
             ui.label(egui::RichText::new("DIFFS").small().strong().color(theme::TEXT_DIM));
             ui.separator();

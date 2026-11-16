@@ -57,9 +57,10 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 - The **whole branch row** is the click target: click shows its tip, double-click checks it out.
 - Branches whose upstream is **gone** (deleted on the remote) are dimmed.
 - **Worktrees** are listed in the sidebar like branches, by the branch each has checked out (● marks this tab's; on the right, only the part of the folder name that isn't already in the branch or repo name). The section only shows when the repo has more than one worktree. Click a worktree to show its branch tip, double-click to open it in a tab; right-click to reveal, open a terminal, copy the path, or remove it. In the branch list, a folder icon marks branches checked out in another worktree; double-clicking one opens that worktree instead of failing to check it out.
-- **Search commits** with words and filters, combined with AND: `commit:3c7d469`, `author:sungmin` (name or email), `title:"merge pull"`, `branch:develop`, `tag:26.47`, `task:SER-6114`, `note:"rollout plan"` (title of a commit note, or of a branch note on the branch's tip), `after:2026-11-01` / `before:2026-11-15` (also `2026-11`, `7d`, `2w`, `3m`, `today`, `yesterday`; UTC dates, `after:` includes the day, `before:` excludes it). Hover the box for the list.
+- **Search commits** with words and filters, combined with AND: `commit:3c7d469`, `author:sungmin` (name or email), `title:"merge pull"`, `branch:develop`, `tag:26.47`, `task:SER-6114`, `note:"rollout plan"` (title of a commit note, or of a branch note on the branch's tip), `after:2026-11-01` / `before:2026-11-15` (also `2026-11`, `7d`, `2w`, `3m`, `today`, `yesterday`; dates in your machine's time zone, `after:` includes the day, `before:` excludes it). Hover the box for the list.
 - **↑ / ↓** move through the history; the list only scrolls when the selection reaches the top or bottom edge.
 - **History** loads 2,000 commits at a time; scrolling to the bottom loads the next batch automatically.
+- **Commit details:** metadata first (SHA, author and committer with times in your machine's time zone, parents, the branches containing the commit, files changed with +/−, and task keys), then the commit title and full message.
 - **History rows** have two lines: the subject on the left with branch and tag labels on the right, then the author with note markers (commit note, branch note title) on the left and PR status, the task key, and time on the right. A task key is shown only on its **newest** commit (and one per row, with "+N" for more), so a ticket spanning many commits doesn't repeat. While searching, it moves to the newest matching commit.
 - **Working directory:** the commit box on top, then every changed file under **Unstaged** (including untracked files) and **Staged**, with merge conflicts first. Click a file header to expand its diff; each file has Stage / Unstage / Discard buttons (double-click stages or unstages), hunks have their own buttons, and each section has *Stage all* / *Discard all* / *Unstage all*.
 - **Expanded by default** (Settings → Diffs): commits and staged files expanded, unstaged files collapsed. Expanding or collapsing a file by hand is kept while you work.
@@ -154,7 +155,7 @@ For GitHub Enterprise Server, list your host in `github.enterprise_hosts`. If yo
 
 ## Link other task trackers
 
-Without a Jira API config, set `task_url_template` (for example `https://linear.app/acme/issue/{key}`). Task keys found in branch names then open in that tracker with one click.
+Without a Jira API config, set **Settings → Tasks → Ticket link**: a Jira site such as `https://acme.atlassian.net` (keys open `/browse/KEY`), or a template with `{key}` such as `https://linear.app/acme/issue/{key}`. Task keys in branch names and commit messages then open the ticket with one click (↗ next to the key in commit details, and in the Task tab). Look-alikes such as `UTF-8`, `SHA-256`, `ISO-8601`, and `CVE-…` aren't treated as task keys.
 
 ## Where notes live
 

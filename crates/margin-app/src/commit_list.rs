@@ -421,7 +421,7 @@ fn rel_time(now: i64, t: i64) -> String {
         _ if d < 3600 => format!("{}m ago", d / 60),
         _ if d < 86_400 => format!("{}h ago", d / 3600),
         _ if d < 7 * 86_400 => format!("{}d ago", d / 86_400),
-        _ => margin_core::format_utc(t)[..10].to_string(),
+        _ => margin_core::format_local(t)[..10].to_string(),
     }
 }
 

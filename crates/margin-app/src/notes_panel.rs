@@ -341,13 +341,9 @@ pub fn show(
                     if !t.is_empty() {
                         t.push_str("\n\n");
                     }
-                    t.push_str(&format!(
-                        "### {} · {}\n\n",
-                        margin_core::format_utc(
-                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
-                        ),
-                        author
-                    ));
+                    // Local time with its zone, since notes are shared ("2026-11-16 14:32 KST").
+                    let now_s = margin_core::time_now();
+                    t.push_str(&format!("### {} {} · {}\n\n", margin_core::format_local(now_s), margin_core::local_zone(now_s), author));
                     ed.text = t;
                     ed.dirty = true;
                     ed.last_edit = now;
@@ -397,9 +393,9 @@ pub fn show(
             egui::Frame::new().fill(theme::HUNK_BG).inner_margin(6.0).corner_radius(3.0).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(format!(
-                        "Re-attached automatically from {} (same change, git patch-id) · {} UTC.",
+                        "Re-attached automatically from {} (same change, git patch-id) · {}.",
                         &from[..8.min(from.len())],
-                        margin_core::format_utc(e.at)
+                        margin_core::format_local(e.at)
                     )).color(theme::TEXT_DIM));
                     if ui.small_button("Undo").on_hover_text("Move the note back to the old commit and restore this one").clicked() {
                         actions.push(Action::UndoReattach(id.clone()));
@@ -681,7 +677,12 @@ fn task_card(
                 }
             }
             None => {
-                ui.weak("Set `task_url_template` (or `jira`) in config.json to link tasks.");
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(key).color(theme::ACCENT));
+                    if ui.link(RichText::new("Set the ticket link in Settings to open it").small()).clicked() {
+                        actions.push(Action::OpenSettings);
+                    }
+                });
             }
         }
         ui.separator();

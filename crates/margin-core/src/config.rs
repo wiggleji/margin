@@ -163,6 +163,10 @@ pub struct Settings {
     /// Without Pro only the first one syncs.
     #[serde(default)]
     pub synced_repos: Vec<String>,
+    /// Where task keys link to (Settings → Tasks): a site such as
+    /// `https://acme.atlassian.net` (→ /browse/KEY) or a template with `{key}`.
+    #[serde(default)]
+    pub ticket_url: Option<String>,
 }
 
 fn default_fetch_minutes() -> u32 {
@@ -171,7 +175,7 @@ fn default_fetch_minutes() -> u32 {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![] }
+        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None }
     }
 }
 
