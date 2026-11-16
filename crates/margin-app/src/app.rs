@@ -1940,7 +1940,7 @@ impl MarginApp {
                 actions.push(Action::OpenPalette);
             }
             let search = center
-                .add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Search commits…  author: title: commit: task: note:").desired_width(search_w))
+                .add(egui::TextEdit::singleline(&mut rv.filter).hint_text("Search commits…  author: title: commit: task: note: after:").desired_width(search_w))
                 .on_hover_text(crate::search::HELP);
             if std::mem::take(&mut self.focus_search) {
                 search.request_focus();
