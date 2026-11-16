@@ -512,9 +512,9 @@ impl DiffView {
             });
             let target = match (nav > 0, on) {
                 (true, Some(r)) => ys.clone().find(|&(i, _)| i > r),
-                (false, Some(r)) => ys.filter(|&(i, _)| i < r).last(),
+                (false, Some(r)) => ys.filter(|&(i, _)| i < r).next_back(),
                 (true, None) => ys.clone().find(|&(_, y)| y > self.offset + 1.0),
-                (false, None) => ys.filter(|&(_, y)| y < self.offset - 1.0).last(),
+                (false, None) => ys.filter(|&(_, y)| y < self.offset - 1.0).next_back(),
             };
             if let Some((i, y)) = target {
                 self.nav_row = Some(i);
