@@ -9,7 +9,7 @@
 use crate::app::Action;
 use crate::icons::{self, Icon};
 use crate::theme;
-use eframe::egui::{self, Align2, Key, Modifiers, RichText, Sense, vec2};
+use eframe::egui::{self, Align2, Key, Modifiers, RichText, Sense, pos2, vec2};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Group {
@@ -236,7 +236,8 @@ impl Palette {
         let screen = ctx.content_rect();
         let width = 680.0_f32.min(screen.width() - 32.0);
         // Use most of the window height so long lists scroll comfortably.
-        let list_h = (screen.height() - 46.0 - 120.0).clamp(220.0, 760.0);
+        // (leaves room for the search box, a picker title, and the key hints below)
+        let list_h = (screen.height() - 46.0 - 160.0).clamp(200.0, 720.0);
         let area = egui::Area::new(egui::Id::unique("command_palette"))
             .order(egui::Order::Foreground)
             .anchor(Align2::CENTER_TOP, vec2(0.0, 46.0))
@@ -341,13 +342,43 @@ impl Palette {
                                 resp.scroll_to_me(None);
                             }
                             let font = egui::TextStyle::Body.resolve(ui.style());
+                            let small = egui::TextStyle::Small.resolve(ui.style());
                             let indent = if header.is_some() { 22.0 } else { 8.0 };
                             let p = ui.painter_at(rect);
-                            p.text(rect.left_center() + vec2(indent, 0.0), Align2::LEFT_CENTER, &label, font, theme::TEXT());
-                            if !detail.is_empty() {
-                                let small = egui::TextStyle::Small.resolve(ui.style());
-                                p.text(rect.right_center() - vec2(8.0, 0.0), Align2::RIGHT_CENTER, &detail, small, theme::TEXT_DIM());
+                            // right side first: a shortcut as key caps, a description as dim text
+                            let mut right = rect.right() - 8.0;
+                            for part in detail.split(" · ").collect::<Vec<_>>().into_iter().rev().filter(|d| !d.is_empty()) {
+                                right = if is_shortcut(part) {
+                                    keycaps_right(&p, right, rect.center().y, part, &small)
+                                } else {
+                                    let g = p.layout_no_wrap(part.to_string(), small.clone(), theme::TEXT_DIM());
+                                    let w = g.size().x;
+                                    p.galley(pos2(right - w, rect.center().y - g.size().y / 2.0), g, theme::TEXT_DIM());
+                                    right - w
+                                } - 10.0;
                             }
+                            // title: the typed letters highlighted; destructive commands in red
+                            let color = if header.is_some() && is_destructive(&label) { theme::ERROR() } else { theme::TEXT() };
+                            let hits = fuzzy_hits(&self.query, &label);
+                            let mut job = egui::text::LayoutJob::default();
+                            for (k, ch) in label.chars().enumerate() {
+                                let hit = hits.contains(&k);
+                                job.append(
+                                    &ch.to_string(),
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: font.clone(),
+                                        color: if hit { theme::ACCENT() } else { color },
+                                        underline: if hit { egui::Stroke::new(1.0, theme::ACCENT()) } else { egui::Stroke::NONE },
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+                            job.wrap.max_width = (right - rect.left() - indent - 8.0).max(40.0);
+                            job.wrap.max_rows = 1;
+                            job.wrap.break_anywhere = true;
+                            let g = p.layout_job(job);
+                            p.galley(pos2(rect.left() + indent, rect.center().y - g.size().y / 2.0), g, color);
                             if resp.clicked() {
                                 self.sel = row;
                                 clicked = Some(row);
@@ -357,6 +388,20 @@ impl Palette {
                     if enter && !entries.is_empty() {
                         clicked = Some(self.sel);
                     }
+                    // what the keys do here
+                    ui.add_space(4.0);
+                    ui.separator();
+                    let esc = if matches!(view, View::List) { "close" } else { "back" };
+                    let run = if matches!(view, View::List) { "run" } else { "choose" };
+                    ui.horizontal(|ui| {
+                        let small = egui::TextStyle::Small.resolve(ui.style());
+                        for (k, what) in [("↑↓", "move"), ("↵", run), ("Esc", esc)] {
+                            let (r, _) = ui.allocate_exact_size(vec2(keycaps_width(ui, k, &small), small.size + 6.0), Sense::hover());
+                            keycaps_right(ui.painter(), r.right(), r.center().y, k, &small);
+                            ui.label(RichText::new(what).small().color(theme::TEXT_DIM()));
+                            ui.add_space(8.0);
+                        }
+                    });
                 });
             });
 
@@ -453,6 +498,82 @@ enum Entry {
     Item(usize),
 }
 
+/// Is this hint a keyboard shortcut ("⌘⇧↩", "Ctrl+R", "⌃Tab")?
+fn is_shortcut(h: &str) -> bool {
+    let h = h.trim();
+    h.starts_with(['⌘', '⌃', '⇧', '⌥']) || ["Ctrl+", "Alt+", "Shift+", "Cmd+"].iter().any(|p| h.starts_with(p))
+}
+
+/// Commands that delete or throw work away (shown in red).
+fn is_destructive(title: &str) -> bool {
+    let t = title.to_lowercase();
+    ["delete", "force", "discard", "drop", "prune", "remove", "abort"].iter().any(|w| t.starts_with(w)) || t.contains("hard reset") || t.contains("(hard")
+}
+
+/// A shortcut split into keys: "Ctrl+Shift+Tab" → [Ctrl, Shift, Tab]; "⌘⇧↩" → [⌘, ⇧, ↩].
+fn keys(s: &str) -> Vec<String> {
+    if s.contains('+') && s.len() > 1 {
+        return s.split('+').filter(|k| !k.is_empty()).map(str::to_string).collect();
+    }
+    // macOS symbols: one cap per modifier, then the rest as one key
+    let mut out = vec![];
+    let mut rest = String::new();
+    for c in s.chars() {
+        if "⌘⌃⇧⌥".contains(c) && rest.is_empty() {
+            out.push(c.to_string());
+        } else {
+            rest.push(c);
+        }
+    }
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
+fn keycaps_width(ui: &egui::Ui, s: &str, font: &egui::FontId) -> f32 {
+    keys(s).iter().map(|k| ui.fonts_mut(|f| f.layout_no_wrap(k.clone(), font.clone(), theme::TEXT()).size().x) + 10.0 + 3.0).sum::<f32>() - 3.0
+}
+
+/// Draw a shortcut as key caps whose right edge is `right`; returns the left edge.
+fn keycaps_right(p: &egui::Painter, right: f32, y: f32, s: &str, font: &egui::FontId) -> f32 {
+    let mut x = right;
+    for k in keys(s).iter().rev() {
+        let g = p.layout_no_wrap(k.clone(), font.clone(), theme::TEXT());
+        let r = egui::Rect::from_min_size(pos2(x - g.size().x - 10.0, y - (g.size().y + 4.0) / 2.0), vec2(g.size().x + 10.0, g.size().y + 4.0));
+        p.rect_filled(r, 4.0, theme::BG_DARK());
+        p.rect_stroke(r, 4.0, egui::Stroke::new(1.0, theme::TEXT_DIM().gamma_multiply(0.45)), egui::StrokeKind::Inside);
+        p.galley(pos2(r.left() + 5.0, r.top() + 2.0), g, theme::TEXT());
+        x = r.left() - 3.0;
+    }
+    x + 3.0
+}
+
+/// Which characters of `text` the query matched (the same walk as `fuzzy`).
+fn fuzzy_hits(query: &str, text: &str) -> Vec<usize> {
+    let q: Vec<char> = query.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect();
+    if q.is_empty() || fuzzy(query, text).is_none() {
+        return vec![];
+    }
+    // the query as one piece ("branch" in "Rebase current branch") beats
+    // scattered letters (Re-b-ase cu-r-rent…)
+    let lower: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    if lower.len() == text.chars().count()
+        && let Some(start) = (0..lower.len().saturating_sub(q.len() - 1)).find(|&i| lower[i..i + q.len()] == q[..])
+    {
+        return (start..start + q.len()).collect();
+    }
+    let mut out = vec![];
+    let mut qi = 0;
+    for (i, c) in text.chars().enumerate() {
+        if qi < q.len() && c.to_lowercase().next() == Some(q[qi]) {
+            out.push(i);
+            qi += 1;
+        }
+    }
+    out
+}
+
 /// Subsequence fuzzy match (case-insensitive, spaces in the query ignored).
 /// Rewards consecutive runs and word starts; `None` if not all chars match.
 pub fn fuzzy(query: &str, text: &str) -> Option<i32> {
@@ -485,7 +606,20 @@ pub fn fuzzy(query: &str, text: &str) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::fuzzy;
+    use super::{fuzzy, fuzzy_hits, is_destructive, is_shortcut, keys};
+
+    #[test]
+    fn hints_and_keys() {
+        assert!(is_shortcut("⌘⇧↩") && is_shortcut("Ctrl+R") && is_shortcut("⌃Tab"));
+        assert!(!is_shortcut("all remotes, prune") && !is_shortcut("new tab"));
+        assert_eq!(keys("Ctrl+Shift+Tab"), ["Ctrl", "Shift", "Tab"]);
+        assert_eq!(keys("⌘⇧↩"), ["⌘", "⇧", "↩"]);
+        assert_eq!(keys("⌃Tab"), ["⌃", "Tab"]);
+        assert!(is_destructive("Delete branch…") && is_destructive("Force delete branch…") && !is_destructive("New branch…"));
+        assert_eq!(fuzzy_hits("nb", "New branch…"), [0, 4]);
+        assert_eq!(fuzzy_hits("branch", "Rebase current branch onto…"), (15..21).collect::<Vec<_>>());
+        assert!(fuzzy_hits("zz", "New branch…").is_empty());
+    }
 
     #[test]
     fn fuzzy_ranks_word_starts_and_runs() {

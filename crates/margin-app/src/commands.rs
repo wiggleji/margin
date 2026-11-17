@@ -102,11 +102,11 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
     for p in app.recent_closed(&tabs) {
         items.push(Item::new(name_of(&p), format!("recent · {}", crate::app::tilde(std::path::Path::new(&p))), p.clone()));
     }
-    let key = if cfg!(target_os = "macos") { "⌃Tab" } else { "Ctrl+Tab" };
-    v.push(c(Group::Repository, "Change directory…", key, "switch tab repository project open recent", vec![pick("Directory", items)], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
+    let (key, back_key) = if cfg!(target_os = "macos") { ("⌃Tab", "⌃⇧Tab") } else { ("Ctrl+Tab", "Ctrl+Shift+Tab") };
+    v.push(c(Group::Repository, "Change directory…", "", "switch tab repository project open recent", vec![pick("Directory", items)], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
     if tabs.len() > 1 {
         v.push(c(Group::Repository, "Next tab", key, "directory switch", vec![], act(|_| vec![Action::NextTab])));
-        v.push(c(Group::Repository, "Previous tab", &format!("{key}+Shift"), "directory switch", vec![], act(|_| vec![Action::PrevTab])));
+        v.push(c(Group::Repository, "Previous tab", back_key, "directory switch", vec![], act(|_| vec![Action::PrevTab])));
     }
     if !matches!(app.license, margin_core::license::Status::Pro(_)) {
         v.push(c(Group::Repository, "Enter Margin Pro licence key…", "", "license activate pro upgrade", vec![input("Licence key", "")], act(|x| vec![Action::InstallLicense(x[0].clone())])));
