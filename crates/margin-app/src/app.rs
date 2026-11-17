@@ -79,6 +79,8 @@ pub enum Action {
     ReplyThread { id: String, branch: String, body: String },
     /// Resolve or reopen a PR review thread.
     ResolveThread { id: String, branch: String, resolve: bool },
+    /// Start a review thread on a line of the selected commit (PR of `branch`).
+    NewThread { branch: String, path: String, line: u64, old_side: bool, body: String },
     RenameBranchDialog(String),
     RenameBranch { old: String, new: String },
     /// Show any note (e.g. a detached one) in the notes panel.
@@ -185,6 +187,72 @@ fn setting(ui: &mut egui::Ui, title: &str, help: &str, add: impl FnOnce(&mut egu
         ui.label(egui::RichText::new(help).small().color(theme::TEXT_DIM()));
     }
     ui.add_space(16.0);
+}
+
+/// A font dropdown: the built-in font, then the installed families (for
+/// code: fixed-pitch ones first). Has a filter field. Returns true on a pick.
+fn font_picker(ui: &mut egui::Ui, id: &str, current: &mut Option<margin_core::config::FontChoice>, code: bool) -> bool {
+    let builtin = if code { "Default (Hack)" } else { "Default (Ubuntu)" };
+    let shown = current.as_ref().map_or(builtin, |c| c.family.as_str()).to_string();
+    let filter_id = ui.scope_id().with((id, "filter"));
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(shown)
+        .width(260.0)
+        .height(340.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            // (a fixed height: the popup keeps the size of its first frame)
+            ui.set_min_height(300.0);
+            let Some(list) = crate::fonts::families(ui.ctx()) else {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Finding installed fonts…");
+                });
+                return;
+            };
+            let mut filter: String = ui.data(|d| d.get_temp(filter_id)).unwrap_or_default();
+            let r = ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter").desired_width(f32::INFINITY));
+            if !r.has_focus() && filter.is_empty() {
+                r.request_focus();
+            }
+            ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+            ui.separator();
+            let q = filter.to_lowercase();
+            if q.is_empty() && ui.selectable_label(current.is_none(), builtin).clicked() {
+                picked = Some(None);
+            }
+            let matches = |f: &&crate::fonts::Family| q.is_empty() || f.name.to_lowercase().contains(&q);
+            let groups: Vec<(&str, Vec<&crate::fonts::Family>)> = if code {
+                vec![("Fixed width", list.iter().filter(|f| f.mono).filter(matches).collect()), ("Other fonts", list.iter().filter(|f| !f.mono).filter(matches).collect())]
+            } else {
+                vec![("", list.iter().filter(matches).collect())]
+            };
+            for (title, fams) in groups {
+                if fams.is_empty() {
+                    continue;
+                }
+                if !title.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(title).small().color(theme::TEXT_DIM()));
+                }
+                for f in fams {
+                    let on = current.as_ref().is_some_and(|c| c.family == f.name);
+                    if ui.selectable_label(on, &f.name).clicked() {
+                        picked = Some(Some(f.choice.clone()));
+                    }
+                }
+            }
+        });
+    match picked {
+        Some(p) => {
+            ui.data_mut(|d| d.remove::<String>(filter_id));
+            egui::Popup::close_all(ui.ctx());
+            *current = p;
+            true
+        }
+        None => false,
+    }
 }
 
 /// A clickable preview card for a theme.
@@ -487,6 +555,9 @@ impl MarginApp {
             settings.ui_font_size.unwrap_or(DEFAULT_FONT).clamp(MIN_UI_FONT, MAX_UI_FONT),
             settings.font_size.or(cfg.font_size).unwrap_or(DEFAULT_FONT).clamp(MIN_FONT, MAX_FONT),
         );
+        if settings.ui_font.is_some() || settings.code_font.is_some() {
+            crate::fonts::apply(ctx, settings.ui_font.as_ref(), settings.code_font.as_ref());
+        }
         let tasks = tasks::provider_from_config(&cfg).map(Arc::from);
         let mut app = MarginApp {
             author: cfg.note_author.clone().unwrap_or_default(),
@@ -703,7 +774,7 @@ impl MarginApp {
                     id: t.id.clone(),
                     branch: b.clone(),
                     pr: d.summary.number,
-                    comments: t.comments.iter().map(|c| (c.author.clone(), c.body.clone(), c.created_at.chars().take(10).collect(), c.url.clone())).collect(),
+                    comments: t.comments.iter().map(|c| (c.author.clone(), crate::emoji::render(&c.body).into_owned(), c.created_at.chars().take(10).collect(), c.url.clone())).collect(),
                 };
                 if !out.contains(&it) {
                     out.push(it);
@@ -711,6 +782,12 @@ impl MarginApp {
             }
         }
         rv.commit_diff.set_threads(out);
+        // New comments go to the (first) open PR containing this commit.
+        let target = rv.commit_branches.iter().find_map(|b| match rv.pr_detail.get(b) {
+            Some(Ok(d)) if d.summary.state == "OPEN" && !d.id.is_empty() => Some((b.clone(), d.summary.number)),
+            _ => None,
+        });
+        rv.commit_diff.set_comment_target(target);
     }
 
     /// Run a review-thread mutation in the background (see `Msg::ThreadOp`).
@@ -1310,6 +1387,12 @@ impl MarginApp {
             ReplyThread { id, branch, body } => self.thread_op(id, branch, "Reply", move |gh, id| gh.reply_thread(id, &body)),
             ResolveThread { id, branch, resolve } => {
                 self.thread_op(id, branch, if resolve { "Resolve" } else { "Unresolve" }, move |gh, id| gh.set_thread_resolved(id, resolve))
+            }
+            NewThread { branch, path, line, old_side, body } => {
+                let Some(rv) = &self.rv else { return };
+                let Sel::Commit(commit) = rv.sel.clone() else { return };
+                let pr_id = rv.pr_detail.get(&branch).and_then(|d| d.as_ref().ok()).map(|d| d.id.clone()).unwrap_or_default();
+                self.thread_op("draft".into(), branch, "Comment", move |gh, _| gh.new_thread(&pr_id, &commit, &path, line, old_side, &body));
             }
             ScanDetached => {
                 let Some(rv) = &mut self.rv else { return };
@@ -2532,7 +2615,7 @@ impl MarginApp {
         let (mut set, mut save) = (false, false);
         let mut size_row = |ui: &mut egui::Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, presets: &[(&str, f32)]| {
             ui.horizontal(|ui| {
-                let r = ui.add(egui::Slider::new(v, range).step_by(0.5).suffix(" pt"));
+                let r = ui.add(egui::Slider::new(v, range).step_by(0.5).fixed_decimals(1).suffix(" pt"));
                 set |= r.changed();
                 save |= r.drag_stopped() || (r.changed() && !r.dragged());
                 ui.add_space(8.0);
@@ -2545,6 +2628,23 @@ impl MarginApp {
                 }
             });
         };
+        // ---- fonts (start listing the installed ones now, for the pickers)
+        let _ = crate::fonts::families(ui.ctx());
+        let mut fonts_changed = false;
+        setting(ui, "Fonts", "Any installed font. Characters a font lacks (e.g. Korean in a code font) still show, from the built-in and system fonts.", |ui| {
+            egui::Grid::new("font-pickers").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                ui.label("Interface");
+                fonts_changed |= font_picker(ui, "ui-font", &mut self.settings.ui_font, false);
+                ui.end_row();
+                ui.label("Code");
+                fonts_changed |= font_picker(ui, "code-font", &mut self.settings.code_font, true);
+                ui.end_row();
+            });
+        });
+        if fonts_changed {
+            crate::fonts::apply(ui.ctx(), self.settings.ui_font.as_ref(), self.settings.code_font.as_ref());
+            changed = true;
+        }
         setting(ui, "Code and notes", "Diffs, notes and commit messages: the text you read.", |ui| {
             size_row(ui, &mut code, MIN_FONT..=MAX_FONT, &[("Small", 12.0), ("Default", DEFAULT_FONT), ("Large", 15.0), ("Larger", 17.0)]);
             ui.add_space(6.0);

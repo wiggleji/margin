@@ -49,6 +49,9 @@ pub enum Section {
     Staged,
 }
 
+/// Id of the card for a new comment (not on GitHub yet).
+const DRAFT: &str = "draft";
+
 /// A PR review thread to show inside the diff, on `line` of `path`.
 #[derive(Clone, PartialEq, Debug)]
 pub struct InlineThread {
@@ -86,6 +89,8 @@ pub enum DiffEvent {
     /// Reply to a review thread / resolve or reopen it.
     ThreadReply { id: String, branch: String, body: String },
     ThreadResolve { id: String, branch: String, resolve: bool },
+    /// Start a new review thread on a line of this commit.
+    ThreadNew { branch: String, path: String, line: u64, old_side: bool, body: String },
     /// The focus button: give the diff the whole window, or bring the rest back.
     ToggleFocus,
 }
@@ -156,6 +161,8 @@ pub struct DiffView {
     reply_text: String,
     reply_focus: bool,
     thread_busy: std::collections::HashSet<String>,
+    /// Where new review comments go: (branch, PR number). None: no "+" on lines.
+    comment_target: Option<(String, u64)>,
     /// Scroll smoothly to this offset (next / previous change).
     glide_to: Option<f32>,
     /// Row of the change last jumped to, and the viewport height.
@@ -329,6 +336,8 @@ impl DiffView {
         self.words = word_highlights(&self.files);
         self.threads.clear();
         self.thread_at.clear();
+        self.reply = None;
+        self.reply_text.clear();
         self.sel = None;
         self.dragging = false;
         self.nav_row = None;
@@ -386,7 +395,11 @@ impl DiffView {
     }
 
     /// PR review threads for this diff (commit view). Rebuilds when they change.
-    pub fn set_threads(&mut self, t: Vec<InlineThread>) {
+    pub fn set_threads(&mut self, mut t: Vec<InlineThread>) {
+        // a new comment being written stays
+        if let Some(d) = self.threads.iter().find(|x| x.id == DRAFT) {
+            t.push(d.clone());
+        }
         if t == self.threads {
             return;
         }
@@ -406,14 +419,52 @@ impl DiffView {
         self.rebuild();
     }
 
-    /// A reply / resolve for thread `id` finished (the PR reloads after a success).
+    /// A reply / resolve / new comment for thread `id` finished (the PR
+    /// reloads after a success, bringing a new thread in).
     pub fn thread_done(&mut self, id: &str, ok: bool) {
         self.thread_busy.remove(id);
         if ok && self.reply.as_deref() == Some(id) {
             self.reply = None;
             self.reply_text.clear();
         }
+        if ok && id == DRAFT {
+            self.drop_draft();
+        }
         self.thread_w = 0.0; // re-measure
+    }
+
+    /// Lines can get new review comments, posted to this branch's PR.
+    pub fn set_comment_target(&mut self, target: Option<(String, u64)>) {
+        if target.is_none() {
+            self.drop_draft();
+        }
+        self.comment_target = target;
+    }
+
+    /// Open a new-comment card under a line.
+    fn open_draft(&mut self, path: String, line: u64, old_side: bool) {
+        let Some((branch, pr)) = self.comment_target.clone() else { return };
+        self.drop_draft();
+        self.threads.push(InlineThread { id: DRAFT.into(), branch, path, line, old_side, resolved: false, outdated: false, pr, comments: vec![] });
+        self.thread_open.push(true);
+        self.reply = Some(DRAFT.into());
+        self.reply_text.clear();
+        self.reply_focus = true;
+        self.thread_h.clear(); // re-measure
+        self.rebuild();
+    }
+
+    fn drop_draft(&mut self) {
+        if let Some(i) = self.threads.iter().position(|t| t.id == DRAFT) {
+            self.threads.remove(i);
+            self.thread_open.remove(i);
+            self.thread_h.clear();
+            if self.reply.as_deref() == Some(DRAFT) {
+                self.reply = None;
+                self.reply_text.clear();
+            }
+            self.rebuild();
+        }
     }
 
     pub fn section(&self, fi: usize) -> Option<Section> {
@@ -647,6 +698,7 @@ impl DiffView {
         }
         let mut thread_toggle: Option<usize> = None;
         let mut thread_act: Option<(usize, CardAct)> = None;
+        let mut new_comment: Option<(String, u64, bool)> = None;
         let mut reply_text = std::mem::take(&mut self.reply_text);
         let reply_focus = std::mem::take(&mut self.reply_focus);
 
@@ -1041,6 +1093,54 @@ impl DiffView {
                     }
                 }
                 }
+                // ---- "+" on the hovered line's number: start a new review comment
+                if let (Some(geo), true, Some(hp)) = (first.as_ref(), self.comment_target.is_some() && !self.dragging, page.input(|i| i.pointer.hover_pos())) {
+                    let ri = ((hp.y - geo.top0) / geo.row_h).floor();
+                    let inside = ri >= 0.0 && (ri as usize) < self.rows.len() && hp.x >= geo.x0 && hp.x <= geo.x0 + geo.width && page.clip_rect().contains(hp);
+                    let ri = ri.max(0.0) as usize;
+                    let ln = |fi: usize, hi: usize, li: usize| &self.files[fi].hunks[hi].lines[li];
+                    // (file, line number, old side, x where the code starts)
+                    let target = if !inside {
+                        None
+                    } else {
+                        match self.rows[ri] {
+                            Row::Line(fi, hi, li, _) => {
+                                let l = ln(fi, hi, li);
+                                let old = l.kind == LineKind::Removed;
+                                let n = if old { l.old_no } else { l.new_no };
+                                n.filter(|_| l.kind != LineKind::NoNewline).map(|n| (fi, n, old, geo.x0 + geo.gutter - 4.0))
+                            }
+                            Row::Pair(fi, hi, o, nw, _) => {
+                                let right = hp.x > geo.x0 + geo.width / 2.0;
+                                let side_x = if right { geo.x0 + geo.width / 2.0 } else { geo.x0 };
+                                (if right { nw } else { o }).and_then(|li| {
+                                    let l = ln(fi, hi, li);
+                                    let n = if right { l.new_no } else { l.old_no };
+                                    n.filter(|_| l.kind != LineKind::NoNewline).map(|n| (fi, n, !right, side_x + geo.char_w * 6.0 + 4.0))
+                                })
+                            }
+                            _ => None,
+                        }
+                    };
+                    if let Some((fi, n, old, code_x)) = target {
+                        let sz = (geo.row_h - 2.0).min(18.0);
+                        let y = geo.top0 + ri as f32 * geo.row_h + (geo.row_h - sz) / 2.0;
+                        let r = Rect::from_min_size(pos2(code_x - sz - 3.0, y), vec2(sz, sz));
+                        let resp = page.interact(r, base_id.with("new-comment"), Sense::click());
+                        let fill = if resp.hovered() { theme::ACCENT() } else { theme::ACCENT().gamma_multiply(0.85) };
+                        page.painter().rect_filled(r, 4.0, fill);
+                        let fg = if theme::cur().dark { theme::BG_DARK() } else { Color32::WHITE };
+                        let (c, k) = (r.center(), sz * 0.28);
+                        page.painter().line_segment([pos2(c.x - k, c.y), pos2(c.x + k, c.y)], Stroke::new(1.6, fg));
+                        page.painter().line_segment([pos2(c.x, c.y - k), pos2(c.x, c.y + k)], Stroke::new(1.6, fg));
+                        if resp.hovered() {
+                            page.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if resp.on_hover_text("Comment on this line").clicked() {
+                            new_comment = Some((self.files[fi].display_path().to_string(), u64::from(n), old));
+                        }
+                    }
+                }
                 // ---- review thread cards, over the rows reserved for them
                 for &(ti, first_r, n) in &self.thread_at {
                     if first_r + n < first_row || first_r > last_row {
@@ -1071,10 +1171,12 @@ impl DiffView {
                     // click the header line to fold / unfold
                     let head = Rect::from_min_size(rect.min, vec2(rect.width() - 80.0, card.header_h));
                     let hr = page.interact(head, base_id.with(("thread-head", ti)), Sense::click());
-                    if hr.hovered() {
+                    if t.id == DRAFT {
+                        // (a new comment has no thread to fold yet)
+                    } else if hr.hovered() {
                         page.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-                    if hr.on_hover_text(if open_t { "Fold this thread" } else { "Show this thread" }).clicked() {
+                    if t.id != DRAFT && hr.on_hover_text(if open_t { "Fold this thread" } else { "Show this thread" }).clicked() {
                         thread_toggle = Some(ti);
                     }
                     // footer links: Reply · Resolve · Open on GitHub
@@ -1104,15 +1206,19 @@ impl DiffView {
                     if let Some((ex, ey, ew, eh)) = card.editor {
                         let er = Rect::from_min_size(pos2(rect.left() + ex, rect.top() + ey), vec2(ew, eh));
                         let busy = state.busy;
+                        let te_id = base_id.with(("thread-reply", ti));
+                        // ":ta…" → emoji dropdown (takes ↑↓ ↵ Esc while open)
+                        let emoji_open = crate::emoji::keys(page, te_id, &reply_text);
                         let te = egui::TextEdit::multiline(&mut reply_text)
-                            .id(base_id.with(("thread-reply", ti)))
-                            .hint_text("Reply…  (⌘↩ to send)")
+                            .id(te_id)
+                            .hint_text(if t.id == DRAFT { "Leave a comment…  (⌘↩ sends, : for emoji)" } else { "Reply…  (⌘↩ sends, : for emoji)" })
                             .font(egui::TextStyle::Body)
                             .desired_width(ew)
                             .margin(vec2(8.0, 6.0))
                             .background_color(page.visuals().panel_fill)
                             .interactive(!busy);
                         let r = page.put(er, te);
+                        crate::emoji::dropdown(page, te_id, er, &mut reply_text, emoji_open);
                         if reply_focus {
                             r.request_focus();
                         }
@@ -1152,6 +1258,10 @@ impl DiffView {
             }
         }
         self.reply_text = reply_text;
+        if let Some((path, line, old)) = new_comment {
+            self.open_draft(path, line, old);
+            ui.ctx().request_repaint();
+        }
         if let Some((ti, act)) = thread_act {
             let t = &self.threads[ti];
             match act {
@@ -1167,13 +1277,19 @@ impl DiffView {
                     }
                     self.reply_focus = true;
                 }
+                CardAct::Cancel if t.id == DRAFT => self.drop_draft(),
                 CardAct::Cancel => {
                     self.reply = None;
                     self.reply_text.clear();
                 }
                 CardAct::Send => {
                     self.thread_busy.insert(t.id.clone());
-                    events.push(DiffEvent::ThreadReply { id: t.id.clone(), branch: t.branch.clone(), body: self.reply_text.trim().to_string() });
+                    let body = self.reply_text.trim().to_string();
+                    events.push(if t.id == DRAFT {
+                        DiffEvent::ThreadNew { branch: t.branch.clone(), path: t.path.clone(), line: t.line, old_side: t.old_side, body }
+                    } else {
+                        DiffEvent::ThreadReply { id: t.id.clone(), branch: t.branch.clone(), body }
+                    });
                 }
                 CardAct::Resolve => {
                     self.thread_busy.insert(t.id.clone());
@@ -1292,7 +1408,11 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool, state: ThreadSta
     };
     // header: "Review · 3 comments" (folded: also the first comment's start)
     let mut head = format!("{status} · {n} comment{}", if n == 1 { "" } else { "s" });
-    if !open {
+    let draft = t.id == DRAFT;
+    if draft {
+        let side = if t.old_side { " (before)" } else { "" };
+        head = format!("New comment · {}:{}{side}", t.path.rsplit('/').next().unwrap_or(&t.path), t.line);
+    } else if !open {
         if let Some((a, b, _, _)) = t.comments.first() {
             let first: String = b.lines().next().unwrap_or("").chars().take(80).collect();
             head = format!("▸ {head} · {a}: {first}");
@@ -1325,7 +1445,9 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool, state: ThreadSta
         items.push((pad, y, bg.clone(), theme::TEXT()));
         y += bg.size().y;
     }
-    y += 8.0;
+    if !draft {
+        y += 8.0;
+    }
     // footer: Reply · Resolve / Unresolve · Open on GitHub ↗
     let ThreadState { replying, busy } = state;
     let mut acts = vec![];
@@ -1340,7 +1462,7 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool, state: ThreadSta
         fh = fh.max(g.size().y);
         *x += g.size().x + 18.0;
     };
-    let can_write = !t.id.is_empty();
+    let can_write = !t.id.is_empty() && !draft;
     if busy {
         link_item("Working…", None, theme::TEXT_DIM(), &mut items, &mut x);
     } else if can_write {
@@ -1352,7 +1474,9 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool, state: ThreadSta
     if !t.comments.is_empty() {
         link_item("Open on GitHub ↗", Some(CardAct::Link), theme::ACCENT(), &mut items, &mut x);
     }
-    y += fh + 10.0;
+    if fh > 0.0 {
+        y += fh + 10.0;
+    }
     // reply box (stays while sending, so the text isn't lost on failure)
     let mut editor = None;
     if replying {

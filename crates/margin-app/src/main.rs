@@ -7,6 +7,8 @@ mod commit_list;
 mod icons;
 mod details;
 mod diff_view;
+mod emoji;
+mod fonts;
 mod jobs;
 mod markdown_view;
 mod menu_bar;

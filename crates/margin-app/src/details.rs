@@ -100,7 +100,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             DiffEvent::ToggleFocus => Action::ToggleFocusDiff,
             DiffEvent::OpenUrl(u) => Action::OpenUrl(u),
             // (no review threads in the working directory)
-            DiffEvent::ThreadReply { .. } | DiffEvent::ThreadResolve { .. } => continue,
+            DiffEvent::ThreadReply { .. } | DiffEvent::ThreadResolve { .. } | DiffEvent::ThreadNew { .. } => continue,
         });
     }
 }
@@ -226,6 +226,7 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
             DiffEvent::OpenUrl(u) => actions.push(Action::OpenUrl(u)),
             DiffEvent::ThreadReply { id, branch, body } => actions.push(Action::ReplyThread { id, branch, body }),
             DiffEvent::ThreadResolve { id, branch, resolve } => actions.push(Action::ResolveThread { id, branch, resolve }),
+            DiffEvent::ThreadNew { branch, path, line, old_side, body } => actions.push(Action::NewThread { branch, path, line, old_side, body }),
             _ => {}
         }
     }

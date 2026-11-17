@@ -177,6 +177,20 @@ pub struct Settings {
     /// Interface text size (lists, toolbar, menus); `None` = 13.
     #[serde(default)]
     pub ui_font_size: Option<f32>,
+    /// Interface and code fonts (Settings → Appearance); `None` = built-in.
+    #[serde(default)]
+    pub ui_font: Option<FontChoice>,
+    #[serde(default)]
+    pub code_font: Option<FontChoice>,
+}
+
+/// An installed font: family name, and the file (and face in it) to load.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FontChoice {
+    pub family: String,
+    pub path: String,
+    #[serde(default)]
+    pub index: u32,
 }
 
 fn default_fetch_minutes() -> u32 {
@@ -185,7 +199,7 @@ fn default_fetch_minutes() -> u32 {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None, font_size: None, ui_font_size: None }
+        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None, font_size: None, ui_font_size: None, ui_font: None, code_font: None }
     }
 }
 

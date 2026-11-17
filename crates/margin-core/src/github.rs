@@ -187,6 +187,8 @@ pub struct ReviewThread {
 pub struct PrDetail {
     #[serde(flatten)]
     pub summary: PrSummary,
+    /// GraphQL node id (for new review comments).
+    pub id: String,
     pub base: String,
     pub checks: Vec<Check>,
     /// Conversation comments, reviews, and unresolved review threads — newest first.
@@ -204,7 +206,7 @@ const SUMMARY: &str = "fragment S on PullRequest {
 }";
 
 const DETAIL: &str = "
-  baseRefName
+  id baseRefName
   comments(last: 30) { nodes { author { login } body createdAt url } }
   reviews(last: 30) { nodes { author { login } state body submittedAt url } }
   reviewThreads(last: 80) { nodes { id isResolved isOutdated path line originalLine diffSide
@@ -320,6 +322,16 @@ impl GitHub {
             "mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
         };
         self.graphql(q, json!({ "id": thread_id })).map(drop)
+    }
+
+    /// Start a new review thread on `line` of `path` as of `commit` (old side:
+    /// the line number before the change). Posted as a one-comment review.
+    pub fn new_thread(&self, pr_id: &str, commit: &str, path: &str, line: u64, old_side: bool, body: &str) -> Result<()> {
+        let q = "mutation($pr: ID!, $commit: GitObjectID!, $path: String!, $line: Int!, $side: DiffSide!, $body: String!) {
+  addPullRequestReview(input: {pullRequestId: $pr, commitOID: $commit, event: COMMENT,
+    threads: [{path: $path, line: $line, side: $side, body: $body}]}) { pullRequestReview { id } } }";
+        let side = if old_side { "LEFT" } else { "RIGHT" };
+        self.graphql(q, json!({ "pr": pr_id, "commit": commit, "path": path, "line": line, "side": side, "body": body })).map(drop)
     }
 
     pub fn pr_detail(&self, head: &str) -> Result<Option<PrDetail>> {
@@ -458,6 +470,7 @@ fn parse_detail(pr: &Value) -> PrDetail {
 
     PrDetail {
         summary: parse_summary(pr),
+        id: s(&pr["id"]),
         base: s(&pr["baseRefName"]),
         checks,
         comments,

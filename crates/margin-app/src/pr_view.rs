@@ -175,7 +175,7 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
                                 actions.push(Action::OpenUrl(c.url.clone()));
                             }
                         });
-                        let body = clean_body(&c.body);
+                        let body = crate::emoji::render(&clean_body(&c.body)).into_owned();
                         if !body.is_empty() {
                             egui::Frame::new().inner_margin(egui::Margin { left: 10, ..Default::default() }).show(ui, |ui| {
                                 if let Some(MdAction::Link(u)) = markdown_view::render(ui, &body) {
