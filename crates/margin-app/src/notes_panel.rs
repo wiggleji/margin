@@ -283,10 +283,8 @@ pub fn show(
         }
         return;
     }
+    // The dragged height, except for an empty note (fitted below).
     rv.editor.fit_h = None;
-    if fit_before.is_some() {
-        ui.ctx().request_repaint();
-    }
 
     // ---- PR tab: the whole panel for status, checks and the conversation
     if rv.editor.tab == NoteTab::Pr {
@@ -299,6 +297,9 @@ pub fn show(
                     crate::pro::lock_hint(ui, "GitHub PR status", license, actions);
                 }
             });
+        }
+        if fit_before.is_some() {
+            ui.ctx().request_repaint();
         }
         return;
     }
@@ -324,6 +325,14 @@ pub fn show(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| task_link(ui, b, task.as_deref(), task_cache, task_url, actions));
         }
     });
+    // An empty note shrinks the panel to this one line (it grows back,
+    // animated, on "Write note" or when switching to a note with text).
+    if compact {
+        rv.editor.fit_h = Some(ui.cursor().top() - top + 4.0);
+    }
+    if rv.editor.fit_h != fit_before {
+        ui.ctx().request_repaint();
+    }
     if compact {
         return;
     }
