@@ -154,13 +154,32 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 // interface-sized (not the code size)
                 let ui_size = ui.style().text_styles[&egui::TextStyle::Body].size;
                 ui.label(RichText::new(&d.id[..12.min(d.id.len())]).family(egui::FontFamily::Monospace).size(ui_size - 0.5));
-                if ui.small_button("Copy").clicked() {
-                    actions.push(Action::Copy(d.id.clone()));
-                }
+                // Copy ▾: the SHA in either length, the message, or both
+                ui.menu_button(RichText::new("Copy ▾").small(), |ui| {
+                    let (subject, _) = split_message(&d.message);
+                    let short = d.id[..8.min(d.id.len())].to_string();
+                    for (label, text) in [
+                        ("Full SHA", d.id.clone()),
+                        ("Short SHA", short.clone()),
+                        ("Message", d.message.trim_end().to_string()),
+                        ("Short SHA and title", format!("{short} {subject}")),
+                    ] {
+                        if ui.button(label).clicked() {
+                            actions.push(Action::Copy(text));
+                            ui.close();
+                        }
+                    }
+                });
             });
             ui.end_row();
+            // name, then the email and the time (with how long ago) quieter
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_secs() as i64);
             ui.weak("Author");
-            ui.label(format!("{} <{}>  ·  {}", d.author, d.email, when(d.author_time)));
+            ui.horizontal_wrapped(|ui| {
+                ui.label(&d.author);
+                ui.label(RichText::new(&d.email).small().color(theme::TEXT_DIM()));
+                ui.label(RichText::new(format!("·  {}  ·  {}", when(d.author_time), crate::commit_list::rel_time(now, d.author_time))).color(theme::TEXT_DIM()));
+            });
             ui.end_row();
             if d.committer != d.author || d.commit_time != d.author_time {
                 ui.weak("Committer");
@@ -169,12 +188,19 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
             }
             if !d.parents.is_empty() {
                 ui.weak("Parents");
-                ui.horizontal(|ui| {
+                // each parent: its short SHA (a link) and its title
+                ui.vertical(|ui| {
                     for p in &d.parents {
-                        let ui_size = ui.style().text_styles[&egui::TextStyle::Body].size;
-                        if ui.link(RichText::new(&p[..8.min(p.len())]).family(egui::FontFamily::Monospace).size(ui_size - 0.5)).clicked() {
-                            actions.push(Action::JumpTo(p.clone()));
-                        }
+                        ui.horizontal(|ui| {
+                            let ui_size = ui.style().text_styles[&egui::TextStyle::Body].size;
+                            if ui.link(RichText::new(&p[..8.min(p.len())]).family(egui::FontFamily::Monospace).size(ui_size - 0.5)).on_hover_text("Go to this commit").clicked() {
+                                actions.push(Action::JumpTo(p.clone()));
+                            }
+                            let subject = rv.snap.as_ref().and_then(|s| s.commits.iter().find(|c| &c.id == p)).map(|c| c.subject.clone());
+                            if let Some(sj) = subject {
+                                ui.add(egui::Label::new(RichText::new(sj).color(theme::TEXT_DIM())).truncate());
+                            }
+                        });
                     }
                 });
                 ui.end_row();
@@ -183,16 +209,25 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
             if !branches.is_empty() {
                 ui.weak("Branches");
                 let all = branches.join(", ");
+                // chips, like the labels in the history; "+N more" expands in place
+                let all_id = egui::Id::unique(("commit-branches-all", &d.id));
+                let show_all: bool = ui.data(|x| x.get_temp(all_id)).unwrap_or(false);
                 ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                     const SHOW: usize = 6;
-                    for b in branches.iter().take(SHOW) {
-                        if ui.link(RichText::new(b).small()).on_hover_text("Show this branch").clicked() {
+                    let n = if show_all { branches.len() } else { SHOW };
+                    for b in branches.iter().take(n) {
+                        let chip = egui::Button::new(RichText::new(b).color(theme::TEXT())).fill(theme::BG_DARK()).corner_radius(4.0);
+                        if ui.add(chip).on_hover_text("Show this branch").clicked() {
                             actions.push(Action::GotoRev(b.clone()));
                         }
                     }
                     let more = branches.len().saturating_sub(SHOW);
                     if more > 0 {
-                        ui.label(RichText::new(format!("+{more} more")).small().color(theme::TEXT_DIM())).on_hover_text(&all);
+                        let label = if show_all { "Show fewer".to_string() } else { format!("+{more} more") };
+                        if ui.link(RichText::new(label).color(theme::TEXT_DIM())).on_hover_text(&all).clicked() {
+                            ui.data_mut(|x| x.insert_temp(all_id, !show_all));
+                        }
                     }
                 });
                 ui.end_row();
