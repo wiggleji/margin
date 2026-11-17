@@ -43,6 +43,8 @@ pub struct NoteEditor {
     external: bool,
     error: Option<String>,
     violations: Vec<markdown::Violation>,
+    /// Put the cursor in the editor once it's on screen (Write note, Edit…).
+    focus_next: bool,
     /// Tasks already asked for (for the branch's ticket summary).
     requested_tasks: HashSet<String>,
     last_edit: f64,
@@ -318,7 +320,7 @@ pub fn show(
             ui.add_space(6.0);
             if crate::widgets::primary_button(ui, "Write note").clicked() {
                 rv.editor.preview = false;
-                ui.ctx().memory_mut(|m| m.request_focus(edit_id()));
+                rv.editor.focus_next = true;
             }
         }
         if let (NoteTab::Branch, Some(b)) = (rv.editor.tab, &branch) {
@@ -337,106 +339,15 @@ pub fn show(
         return;
     }
 
-    // Second row: Edit / Split / Preview, formatting, + Entry, save state; Link task on the right.
+    // Second row: Edit / Split / Preview, the formatting buttons (while
+    // editing), then on the right the save state, Add entry, ⋯ and Done.
     let mut fmt: Option<crate::note_format::Fmt> = None;
-    // Wraps in a narrow panel (e.g. under the history).
-    ui.horizontal_wrapped(|ui| {
-        {
-            let ed = &mut rv.editor;
-            if ed.target.is_some() {
-                let editing = !ed.preview;
-                use crate::widgets::Seg;
-                let modes = [
-                    Seg::new(None, "Edit"),
-                    Seg::new(None, "Split").tip("Editor and live preview side by side"),
-                    Seg::new(None, "Preview"),
-                ];
-                let cur = if ed.preview { 2 } else if prefs.notes_split { 1 } else { 0 };
-                match crate::widgets::segmented(ui, &modes, Some(cur)) {
-                    Some(2) => ed.preview = true,
-                    Some(m) => {
-                        ed.preview = false;
-                        prefs.notes_split = m == 1;
-                        let _ = margin_core::config::save_state(prefs);
-                    }
-                    None => {}
-                }
-                if editing {
-                    ui.separator();
-                    for f in crate::note_format::Fmt::ALL {
-                        let (l, tip) = f.label();
-                        let mut t = RichText::new(l);
-                        t = match f {
-                            crate::note_format::Fmt::Bold => t.strong(),
-                            crate::note_format::Fmt::Italic => t.italics(),
-                            crate::note_format::Fmt::Code => t.monospace(),
-                            _ => t,
-                        };
-                        if ui.add(egui::Button::new(t).frame(false).min_size(egui::vec2(18.0, 0.0))).on_hover_text(tip).clicked() {
-                            fmt = Some(f);
-                        }
-                    }
-                    ui.separator();
-                }
-                // Delete (with confirmation) when there's a saved note.
-                if ed.target.is_some() && !ed.base_version.is_empty() {
-                    if let Some(t) = ed.target.clone() {
-                        if crate::widgets::icon_button(ui, crate::widgets::Glyph::Trash, "Delete this note…").clicked() {
-                            actions.push(Action::Confirm {
-                                msg: format!(
-                                    "Delete the note on {}?\n\nIt's moved to the notes trash folder ({}), so it can still be recovered from there.",
-                                    short_target(&t),
-                                    ".git/margin/notes/.trash"
-                                ),
-                                action: Box::new(Action::DeleteNote(t)),
-                            });
-                        }
-                    }
-                }
-                if ui.small_button("+ Entry").on_hover_text("Append a timestamped entry").clicked() {
-                    let mut t = ed.text.trim_end().to_string();
-                    if !t.is_empty() {
-                        t.push_str("\n\n");
-                    }
-                    // Local time with its zone, since notes are shared ("2026-11-16 14:32 KST").
-                    let now_s = margin_core::time_now();
-                    t.push_str(&format!("### {} {} · {}\n\n", margin_core::format_local(now_s), margin_core::local_zone(now_s), author));
-                    ed.text = t;
-                    ed.dirty = true;
-                    ed.last_edit = now;
-                    ed.preview = false;
-                }
-                // Notes sync indicator (click → Settings)
-                {
-                    use margin_core::sync::RepoSync;
-                    let label = match &rv.sync_state {
-                        RepoSync::Active { .. } => match &rv.sync.lock().unwrap().last {
-                            Some((_, Err(_))) => Some(("sync failed", theme::ERROR())),
-                            _ => Some(("synced", theme::ADDED())),
-                        },
-                        RepoSync::Paused => Some(("sync paused (Pro)", theme::ACCENT())),
-                        RepoSync::NoFolder => Some(("sync: no folder", theme::ACCENT())),
-                        RepoSync::Off => None,
-                    };
-                    if let Some((t, c)) = label {
-                        let tip = crate::app::sync_status_text(rv).0;
-                        if ui.add(egui::Label::new(RichText::new(t).small().color(c)).sense(egui::Sense::click())).on_hover_text(tip).clicked() {
-                            actions.push(Action::OpenSettings);
-                        }
-                    }
-                }
-                let ed = &mut rv.editor;
-                let (txt, color) = if ed.error.is_some() {
-                    ("error", theme::ERROR())
-                } else if ed.dirty {
-                    ("unsaved", theme::ACCENT())
-                } else {
-                    ("saved", theme::TEXT_DIM())
-                };
-                ui.label(RichText::new(txt).small().color(color));
-            }
-        }
-    });
+    let mut done = false;
+    if rv.editor.target.is_some() {
+        let tb = toolbar(ui, rv, prefs, author, now, actions);
+        fmt = tb.0;
+        done = tb.1;
+    }
     ui.separator();
 
     // ---- "re-attached automatically" banner (Commit / pinned tabs)
@@ -537,17 +448,33 @@ pub fn show(
         apply_format(ui.ctx(), ed, f, now);
     }
 
+    // Done (button, Esc or ⌘↩ in the editor): save now and show the result.
+    let editor_keys_done = !ed.preview
+        && ui.input(|i| i.key_pressed(egui::Key::Escape) || (i.key_pressed(egui::Key::Enter) && i.modifiers.command))
+        && ui.memory(|m| m.has_focus(edit_id()) || m.focused().is_none());
+    if (done || editor_keys_done) && !ed.preview {
+        if ed.dirty && ed.violations.is_empty() {
+            ed.save(&rv.notes);
+            rv.note_index = rv.notes.list().map(|l| l.into_iter().map(|m| (m.target, m.title)).collect()).unwrap_or_default();
+        }
+        ed.preview = true;
+        ui.memory_mut(|m| m.surrender_focus(edit_id()));
+    }
+
     if ed.preview {
         egui::ScrollArea::vertical().id_salt("note_scroll").auto_shrink([false, false]).show(ui, |ui| {
             if ed.text.trim().is_empty() {
                 if ui.link("Empty note — click to write").clicked() {
                     ed.preview = false;
+                    ed.focus_next = true;
                 }
                 return;
             }
             let resp = preview(ui, ed, &rv.notes, actions);
-            if resp.interact(egui::Sense::click()).double_clicked() {
+            let resp = resp.interact(egui::Sense::click()).on_hover_text_at_pointer("Double-click to edit");
+            if resp.double_clicked() {
                 ed.preview = false;
+                ed.focus_next = true;
             }
         });
     } else if prefs.notes_split {
@@ -618,16 +545,37 @@ fn grip(ui: &mut Ui, prefs: &mut margin_core::config::State, panel_h: f32) {
 }
 
 /// The Markdown editor, filling the space it's given.
+/// Longest readable line in the editor and the preview; wider panels keep
+/// the text at this width (left-aligned) instead of stretching it.
+const READ_W: f32 = 760.0;
+
+/// The note editor: Markdown source with roomy lines and light highlighting
+/// (headings, list and task markers, quotes, code) so it reads like the result.
 fn editor(ui: &mut Ui, ed: &mut NoteEditor, now: f64) {
     theme::content_style(ui);
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+        let job = highlight(buf.as_str(), &font, wrap.min(READ_W));
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
     let out = egui::TextEdit::multiline(&mut ed.text)
         .font(egui::TextStyle::Monospace)
         .desired_width(f32::INFINITY)
         .min_size(ui.available_size())
+        .margin(egui::vec2(14.0, 12.0))
         .lock_focus(true)
-        .hint_text("Markdown. Links OK, images/HTML not allowed. Agents can edit this via MCP.")
+        .hint_text("Write in Markdown: ## heading, **bold**, - list, - [ ] task, `code`, [link](https://…).\nEsc or ⌘↩ when you're done. Agents can edit this note too, via MCP.")
+        .layouter(&mut layouter)
         .id(edit_id())
         .show(ui);
+    if std::mem::take(&mut ed.focus_next) {
+        out.response.request_focus();
+        // caret at the end, ready to add to the note
+        let end = egui::text::CCursor::new(ed.text.chars().count());
+        let mut st = out.state.clone();
+        st.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+        st.store(ui.ctx(), edit_id());
+    }
     if let Some(r) = out.cursor_range {
         let [a, b] = r.sorted_cursors();
         ed.sel = (a.index.0, b.index.0);
@@ -639,9 +587,42 @@ fn editor(ui: &mut Ui, ed: &mut NoteEditor, now: f64) {
     }
 }
 
+/// Lay out Markdown source with per-line colours and 1.5× line height.
+fn highlight(text: &str, font: &egui::FontId, wrap: f32) -> egui::text::LayoutJob {
+    use egui::text::{LayoutJob, TextFormat};
+    let mut job = LayoutJob { wrap: egui::text::TextWrapping { max_width: wrap, ..Default::default() }, ..Default::default() };
+    let line_h = Some((font.size * 1.5).round());
+    let fmt = |color: egui::Color32| TextFormat { font_id: font.clone(), color, line_height: line_h, ..Default::default() };
+    let mut in_code = false;
+    for line in text.split_inclusive('\n') {
+        let t = line.trim_start();
+        if t.starts_with("```") {
+            in_code = !in_code;
+            job.append(line, 0.0, fmt(theme::TEXT_DIM()));
+            continue;
+        }
+        if in_code {
+            job.append(line, 0.0, fmt(theme::ADDED()));
+        } else if t.starts_with('#') {
+            job.append(line, 0.0, fmt(theme::ACCENT()));
+        } else if t.starts_with('>') {
+            job.append(line, 0.0, fmt(theme::TEXT_DIM()));
+        } else if let Some(m) = ["- [ ] ", "- [x] ", "- [X] ", "- ", "* ", "+ "].iter().find(|m| t.starts_with(**m)) {
+            // the list / task marker dim, the item text normal
+            let lead = line.len() - t.len() + m.len();
+            job.append(&line[..lead], 0.0, fmt(theme::TEXT_DIM()));
+            job.append(&line[lead..], 0.0, fmt(theme::TEXT()));
+        } else {
+            job.append(line, 0.0, fmt(theme::TEXT()));
+        }
+    }
+    job
+}
+
 /// Rendered note; checkboxes toggle and save, links open.
 fn preview(ui: &mut Ui, ed: &mut NoteEditor, notes: &NoteStore, actions: &mut Vec<Action>) -> egui::Response {
-    let resp = ui.scope(|ui| {
+    let resp = egui::Frame::new().inner_margin(egui::Margin { left: 14, right: 14, top: 10, bottom: 12 }).show(ui, |ui| {
+        ui.set_max_width(READ_W);
         theme::content_style(ui);
         markdown_view::render(ui, &ed.text)
     });
@@ -655,6 +636,180 @@ fn preview(ui: &mut Ui, ed: &mut NoteEditor, notes: &NoteStore, actions: &mut Ve
         None => {}
     }
     resp.response
+}
+
+/// The note toolbar. Returns a formatting button pressed and whether Done was.
+///
+/// Wide panel: one row. Narrow: the formatting buttons get a row of their own.
+fn toolbar(
+    ui: &mut Ui,
+    rv: &mut RepoView,
+    prefs: &mut margin_core::config::State,
+    author: &str,
+    now: f64,
+    actions: &mut Vec<Action>,
+) -> (Option<crate::note_format::Fmt>, bool) {
+    use crate::note_format::Fmt;
+    let editing = !rv.editor.preview;
+    let wide = ui.available_width() >= 640.0;
+    let mut fmt = None;
+    let mut done = false;
+    let format_buttons = |ui: &mut Ui, fmt: &mut Option<Fmt>| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (i, f) in Fmt::ALL.into_iter().enumerate() {
+            // groups: text (H B I code link) | blocks (list, task, quote)
+            if i == 5 {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+            }
+            if fmt_button(ui, f).clicked() {
+                *fmt = Some(f);
+            }
+        }
+    };
+    ui.horizontal(|ui| {
+        // mode
+        use crate::widgets::Seg;
+        let modes = [
+            Seg::new(None, "Edit").tip("Write Markdown (double-click the note to start)"),
+            Seg::new(None, "Split").tip("Editor and live preview side by side"),
+            Seg::new(None, "Preview").tip("The note as it reads (Esc or ⌘↩ from the editor)"),
+        ];
+        let cur = if rv.editor.preview { 2 } else if prefs.notes_split { 1 } else { 0 };
+        match crate::widgets::segmented(ui, &modes, Some(cur)) {
+            Some(2) => done = true,
+            Some(m) => {
+                rv.editor.preview = false;
+                prefs.notes_split = m == 1;
+                let _ = margin_core::config::save_state(prefs);
+                rv.editor.focus_next = true;
+            }
+            None => {}
+        }
+        if editing && wide {
+            ui.add_space(10.0);
+            format_buttons(ui, &mut fmt);
+        }
+        // right side, right to left: Done, ⋯, Add entry, save state
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if editing {
+                if crate::widgets::primary_button(ui, "Done").on_hover_text("Save and show the note (Esc or ⌘↩)").clicked() {
+                    done = true;
+                }
+                ui.add_space(4.0);
+            }
+            more_menu(ui, rv, actions);
+            if ui.button("+ Entry").on_hover_text(format!("Add a dated entry at the end (### {} · {author})", margin_core::format_local(margin_core::time_now()))).clicked() {
+                add_entry(&mut rv.editor, author, now);
+                rv.editor.focus_next = true;
+            }
+            ui.add_space(6.0);
+            save_state(ui, rv, actions);
+        });
+    });
+    if editing && !wide {
+        ui.horizontal(|ui| format_buttons(ui, &mut fmt));
+    }
+    (fmt, done)
+}
+
+/// One formatting button: an icon (or "H"), 26×24, tooltip with its shortcut.
+fn fmt_button(ui: &mut Ui, f: crate::note_format::Fmt) -> egui::Response {
+    use crate::note_format::Fmt;
+    let icon = match f {
+        Fmt::Heading => Icon::Heading,
+        Fmt::Bold => Icon::Bold,
+        Fmt::Italic => Icon::Italic,
+        Fmt::Code => Icon::Code,
+        Fmt::Link => Icon::Link,
+        Fmt::Bullet => Icon::ListUnordered,
+        Fmt::Task => Icon::Tasklist,
+        Fmt::Quote => Icon::Quote,
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 24.0), egui::Sense::click());
+    let hot = resp.hovered() || resp.has_focus();
+    if hot {
+        ui.painter().rect_filled(rect, 4.0, theme::HOVER());
+    }
+    let color = if hot { theme::TEXT() } else { theme::TEXT_DIM() };
+    crate::icons::paint(ui.painter(), icon, egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0)), color);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.on_hover_text(f.label().1)
+}
+
+/// "● Saved" / "● Unsaved…" / "● Can't save" (+ notes sync state, click → Settings).
+fn save_state(ui: &mut Ui, rv: &RepoView, actions: &mut Vec<Action>) {
+    use margin_core::sync::RepoSync;
+    let ed = &rv.editor;
+    let (txt, color, tip) = if ed.error.is_some() || !ed.violations.is_empty() {
+        ("Can't save", theme::ERROR(), "Fix the problem shown above the note")
+    } else if ed.dirty {
+        ("Saving…", theme::ACCENT(), "Saved automatically a moment after you stop typing")
+    } else {
+        ("Saved", theme::ADDED(), "Saved in .git/margin/notes")
+    };
+    let sync = match &rv.sync_state {
+        RepoSync::Active { .. } => match &rv.sync.lock().unwrap().last {
+            Some((_, Err(_))) => Some(("sync failed", theme::ERROR())),
+            _ => Some(("synced", theme::TEXT_DIM())),
+        },
+        RepoSync::Paused => Some(("sync paused (Pro)", theme::ACCENT())),
+        RepoSync::NoFolder => Some(("sync: no folder", theme::ACCENT())),
+        RepoSync::Off => None,
+    };
+    // (right-to-left: sync first, so it ends up after the save state)
+    if let Some((t, c)) = sync {
+        let stip = crate::app::sync_status_text(rv).0;
+        if ui.add(egui::Label::new(RichText::new(t).small().color(c)).sense(egui::Sense::click())).on_hover_text(stip).clicked() {
+            actions.push(Action::OpenSettings);
+        }
+        ui.label(RichText::new("·").small().color(theme::TEXT_DIM()));
+    }
+    ui.label(RichText::new(txt).small().color(theme::TEXT_DIM())).on_hover_text(tip);
+    let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+    ui.painter().circle_filled(r.center(), 3.5, color);
+}
+
+/// ⋯: less common note actions, away from the everyday buttons.
+fn more_menu(ui: &mut Ui, rv: &RepoView, actions: &mut Vec<Action>) {
+    let ed = &rv.editor;
+    let resp = ui.add(egui::Button::new(crate::icons::image(ui.ctx(), Icon::KebabHorizontal, 14.0, theme::TEXT_DIM())).frame(false).min_size(egui::vec2(26.0, 24.0)));
+    let resp = resp.on_hover_text("More");
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(200.0);
+        let saved = !ed.base_version.is_empty();
+        let label = RichText::new("Delete note…").color(if saved { theme::ERROR() } else { theme::TEXT_DIM() });
+        if let Some(t) = ed.target.clone()
+            && ui.add_enabled(saved, egui::Button::new(label)).clicked()
+        {
+            actions.push(Action::Confirm {
+                msg: format!(
+                    "Delete the note on {}?\n\nIt's moved to the notes trash folder ({}), so it can still be recovered from there.",
+                    short_target(&t),
+                    ".git/margin/notes/.trash"
+                ),
+                action: Box::new(Action::DeleteNote(t)),
+            });
+        }
+    });
+}
+
+/// Append "### 2026-11-17 14:32 KST · author" and open the editor there.
+fn add_entry(ed: &mut NoteEditor, author: &str, now: f64) {
+    let mut t = ed.text.trim_end().to_string();
+    if !t.is_empty() {
+        t.push_str("\n\n");
+    }
+    // Local time with its zone, since notes are shared.
+    let now_s = margin_core::time_now();
+    t.push_str(&format!("### {} {} · {}\n\n", margin_core::format_local(now_s), margin_core::local_zone(now_s), author));
+    ed.text = t;
+    ed.dirty = true;
+    ed.last_edit = now;
+    ed.preview = false;
 }
 
 /// Apply a toolbar format to the editor's selection and put the cursor back.

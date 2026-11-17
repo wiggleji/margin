@@ -45,6 +45,9 @@ pub fn render(ui: &mut Ui, src: &str) -> Option<MdAction> {
     let mut out = None;
     let base = ui.style().text_styles[&egui::TextStyle::Body].size;
     let mut cx = Ctx { out: &mut out, base };
+    // Readable spacing: wrapped lines ~1.4×, paragraphs and lists apart.
+    ui.spacing_mut().item_spacing.y = (base * 0.4).round().max(4.0);
+    let para = (base * 0.55).round();
 
     let mut runs: Vec<Run> = Vec::new();
     let mut st = Run::default();
@@ -66,7 +69,7 @@ pub fn render(ui: &mut Ui, src: &str) -> Option<MdAction> {
             }
             Event::End(TagEnd::Paragraph) => {
                 flush(ui, &mut cx, &mut runs, prefix.take(), indent, heading, quote);
-                ui.add_space(4.0);
+                ui.add_space(para);
             }
             Event::Start(Tag::BlockQuote(_)) => quote += 1,
             Event::End(TagEnd::BlockQuote(_)) => quote = quote.saturating_sub(1),
@@ -94,7 +97,7 @@ pub fn render(ui: &mut Ui, src: &str) -> Option<MdAction> {
                 flush(ui, &mut cx, &mut runs, prefix.take(), indent, heading, quote);
                 lists.pop();
                 if lists.is_empty() {
-                    ui.add_space(4.0);
+                    ui.add_space(para);
                 }
             }
             Event::Start(Tag::Item) => {
@@ -179,8 +182,9 @@ fn flush(ui: &mut Ui, cx: &mut Ctx, runs: &mut Vec<Run>, prefix: Option<Prefix>,
         3 => 2.0,
         _ => 1.0,
     });
+    // more room above a heading than below it, so it reads as the start of a section
     if heading.is_some() {
-        ui.add_space(4.0);
+        ui.add_space((cx.base * 0.6).round());
     }
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;

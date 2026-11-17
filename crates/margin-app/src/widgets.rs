@@ -119,7 +119,6 @@ pub enum Glyph {
     Chevron { open: bool },
     /// A panel moving to the left / right.
     Dock { to_right: bool },
-    Trash,
     /// Diff layouts: three full lines / two columns of lines.
     Inline,
     SideBySide,
@@ -141,7 +140,6 @@ pub fn icon_button(ui: &mut Ui, glyph: Glyph, tip: &str) -> egui::Response {
         p.rect_filled(rect, 5.0, theme::HOVER());
     }
     let c = match glyph {
-        Glyph::Trash if hot => theme::ERROR(),
         _ if hot => theme::TEXT(),
         _ => theme::TEXT_DIM(),
     };
@@ -218,14 +216,6 @@ pub fn paint_glyph(p: &egui::Painter, glyph: Glyph, rect: Rect, c: Color32) {
             let d = if matches!(glyph, Glyph::ArrowUp) { -1.0 } else { 1.0 };
             p.line_segment([m + vec2(0.0, -5.0 * d), m + vec2(0.0, 5.0 * d)], st);
             p.add(egui::Shape::line(vec![m + vec2(-4.0, 1.0 * d), m + vec2(0.0, 5.0 * d), m + vec2(4.0, 1.0 * d)], st));
-        }
-        Glyph::Trash => {
-            p.line_segment([m + vec2(-5.0, -3.5), m + vec2(5.0, -3.5)], st);
-            p.line_segment([m + vec2(-1.5, -5.0), m + vec2(1.5, -5.0)], st);
-            let can = vec![m + vec2(-3.8, -3.5), m + vec2(-3.0, 5.0), m + vec2(3.0, 5.0), m + vec2(3.8, -3.5)];
-            p.add(egui::Shape::line(can, st));
-            p.line_segment([m + vec2(-1.0, -1.5), m + vec2(-1.0, 3.0)], Stroke::new(1.0, c));
-            p.line_segment([m + vec2(1.0, -1.5), m + vec2(1.0, 3.0)], Stroke::new(1.0, c));
         }
     }
 }
