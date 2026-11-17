@@ -850,6 +850,26 @@ impl DiffView {
                                 ui.interact(ir.expand(2.0), base_id.with(("file-status", i)), Sense::hover()).on_hover_text(word);
                                 x = ir.right() + 8.0;
                             }
+                            // Room for the path: up to the line counts and the buttons
+                            // on the right; longer paths are shortened in the middle
+                            // (`src/…/login.rs`, `too…long.png`), full on hover.
+                            let row_buttons: &[&str] = match sec {
+                                Section::Staged => &["Unstage"],
+                                Section::Conflicted => &["Stage"],
+                                Section::Unstaged => &["Discard", "Stage"],
+                                _ => &[],
+                            };
+                            let btn_pad = ui.spacing().button_padding.x * 2.0 + 6.0;
+                            let buttons_w: f32 = row_buttons.iter().map(|l| ui.fonts_mut(|f| f.layout_no_wrap(l.to_string(), small.clone(), Color32::WHITE).size().x) + btn_pad + 6.0).sum();
+                            let count_cells: usize = [(f.added, 1), (f.removed, 1)].iter().filter(|(n, _)| *n > 0).map(|(n, _)| n.to_string().len() + 2).sum();
+                            let avail = rect.right() - 6.0 - buttons_w - count_cells as f32 * char_w - 18.0 - x;
+                            let max_cells = (avail / char_w).floor().max(6.0) as usize;
+                            let full = match (&f.old_path, &f.new_path) {
+                                (Some(o), Some(n)) if o != n => format!("{o} → {n}"),
+                                _ => f.display_path().to_string(),
+                            };
+                            let elided = crate::path_elide::width(&full) + 2 > max_cells;
+                            let fit = |p: &str, m: usize| crate::path_elide::elide_path(p, m);
                             // path: the folder dim, the file name bright (renames: old → new)
                             let mut job = egui::text::LayoutJob::default();
                             let path_part = |job: &mut egui::text::LayoutJob, path: &str, strike: bool| {
@@ -867,12 +887,13 @@ impl DiffView {
                             };
                             match (&f.old_path, &f.new_path) {
                                 (Some(o), Some(n)) if o != n => {
-                                    path_part(&mut job, o, false);
+                                    let half = max_cells.saturating_sub(5) / 2;
+                                    path_part(&mut job, &fit(o, half), false);
                                     job.append("  →  ", 0.0, egui::TextFormat { font_id: font.clone(), color: theme::TEXT_DIM(), ..Default::default() });
-                                    path_part(&mut job, n, false);
+                                    path_part(&mut job, &fit(n, half), false);
                                 }
-                                (Some(o), None) => path_part(&mut job, o, true),
-                                _ => path_part(&mut job, f.display_path(), false),
+                                (Some(o), None) => path_part(&mut job, &fit(o, max_cells), true),
+                                _ => path_part(&mut job, &fit(f.display_path(), max_cells), false),
                             }
                             let g = p.layout_job(job);
                             let w = g.size().x;
@@ -890,11 +911,7 @@ impl DiffView {
                             // Working directory: per-file buttons on the right, and a menu.
                             let path = f.display_path().to_string();
                             if matches!(sec, Section::Unstaged | Section::Staged | Section::Conflicted) {
-                                let labels: &[&str] = match sec {
-                                    Section::Staged => &["Unstage"],
-                                    Section::Conflicted => &["Stage"],
-                                    _ => &["Discard", "Stage"],
-                                };
+                                let labels = row_buttons;
                                 let mut bx = rect.right() - 6.0;
                                 for &l in labels.iter().rev() {
                                     let pad = ui.spacing().button_padding.x * 2.0 + 6.0;
@@ -910,6 +927,7 @@ impl DiffView {
                                     bx -= 6.0;
                                 }
                             }
+                            let resp = if elided { resp.on_hover_text(&full) } else { resp };
                             if resp.double_clicked() && matches!(sec, Section::Unstaged | Section::Staged) {
                                 events.push(if sec == Section::Staged { DiffEvent::Unstage(vec![path.clone()]) } else { DiffEvent::Stage(vec![path.clone()]) });
                             } else if resp.clicked() {

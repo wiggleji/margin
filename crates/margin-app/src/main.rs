@@ -17,6 +17,7 @@ mod notes_panel;
 mod palette;
 mod pro;
 mod search;
+mod path_elide;
 mod pr_view;
 mod sidebar;
 mod tab_strip;

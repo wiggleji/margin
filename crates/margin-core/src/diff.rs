@@ -116,9 +116,9 @@ pub fn parse(text: &str) -> (Vec<FileDiff>, bool) {
             } else if let Some(p) = line.strip_prefix("+++ ") {
                 f.new_path = strip_ab(p);
             } else if let Some(p) = line.strip_prefix("rename from ") {
-                f.old_path = Some(p.to_string());
+                f.old_path = Some(unquote(p));
             } else if let Some(p) = line.strip_prefix("rename to ") {
-                f.new_path = Some(p.to_string());
+                f.new_path = Some(unquote(p));
             } else if line.starts_with("Binary files ") || line == "GIT binary patch" {
                 f.binary = true;
             }
@@ -171,11 +171,56 @@ pub fn parse(text: &str) -> (Vec<FileDiff>, bool) {
 }
 
 fn strip_ab(p: &str) -> Option<String> {
+    let p = unquote(p.trim_end_matches('\t'));
     if p == "/dev/null" {
         return None;
     }
-    let p = p.strip_prefix("a/").or_else(|| p.strip_prefix("b/")).unwrap_or(p);
-    Some(p.trim_end_matches('\t').to_string())
+    let p = p.strip_prefix("a/").or_else(|| p.strip_prefix("b/")).unwrap_or(&p);
+    Some(p.to_string())
+}
+
+/// Undo git's C-style path quoting: `"dir/\355\225\234 \"x\".md"` → `dir/한 "x".md`.
+/// Git quotes paths with unusual characters (and, unless `core.quotepath`
+/// is off, every non-ASCII one), escaping bytes as octal. Unquoted text is
+/// returned as is.
+pub fn unquote(p: &str) -> String {
+    let Some(inner) = p.strip_prefix('"').and_then(|q| q.strip_suffix('"')) else {
+        return p.to_string();
+    };
+    let b = inner.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'\\' || i + 1 >= b.len() {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        let c = b[i + 1];
+        i += 2;
+        match c {
+            b'n' => out.push(b'\n'),
+            b't' => out.push(b'\t'),
+            b'r' => out.push(b'\r'),
+            b'a' => out.push(7),
+            b'b' => out.push(8),
+            b'f' => out.push(12),
+            b'v' => out.push(11),
+            b'0'..=b'7' => {
+                // up to three octal digits = one byte
+                let mut v = (c - b'0') as u32;
+                let mut n = 1;
+                while n < 3 && i < b.len() && (b'0'..=b'7').contains(&b[i]) {
+                    v = v * 8 + (b[i] - b'0') as u32;
+                    i += 1;
+                    n += 1;
+                }
+                out.push(v as u8);
+            }
+            other => out.push(other), // \" and \\
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn parse_hunk_header(h: &str) -> (u32, u32) {
@@ -323,5 +368,25 @@ index 111..222 100644
         // non-ASCII stays on char boundaries
         let (a, _) = super::word_changes("이름 = 홍길동", "이름 = 김철수").unwrap();
         assert_eq!(&"이름 = 홍길동"[a[0].0..a[0].1], "홍길동");
+    }
+
+    #[test]
+    fn quoted_paths() {
+        use super::unquote;
+        // "한글.md" as git writes it with core.quotepath on
+        assert_eq!(unquote(r#""docs/\355\225\234\352\270\200.md""#), "docs/한글.md");
+        assert_eq!(unquote(r#""a/say \"hi\".txt""#), r#"a/say "hi".txt"#);
+        assert_eq!(unquote(r#""tab\there""#), "tab\there");
+        assert_eq!(unquote("plain/path.rs"), "plain/path.rs");
+        let d = concat!(
+            r#"diff --git "a/\355\225\234.md" "b/\355\225\234.md""#, "\n",
+            "new file mode 100644\n",
+            "--- /dev/null\n",
+            r#"+++ "b/\355\225\234.md""#, "\n",
+            "@@ -0,0 +1 @@\n",
+            "+x\n",
+        );
+        let (files, _) = super::parse(d);
+        assert_eq!(files[0].new_path.as_deref(), Some("한.md"));
     }
 }

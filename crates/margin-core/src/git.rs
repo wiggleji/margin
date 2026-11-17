@@ -895,6 +895,8 @@ fn base_cmd(dir: &Path) -> Command {
     let mut c = Command::new(git_binary());
     c.arg("-C")
         .arg(dir)
+        // Paths as they are (한글.md, not "\355\225\234…"), in every language.
+        .args(["-c", "core.quotepath=false"])
         // Never block on an invisible prompt.
         .env("GIT_TERMINAL_PROMPT", "0")
         // Don't fight the user's terminal for index.lock on read-only calls.
