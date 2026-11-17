@@ -308,7 +308,6 @@ pub fn show(
 
     // ---- what this note is attached to (and, when empty, a button to start it)
     // (wraps onto more lines in a narrow panel instead of overlapping)
-    let roomy = ui.available_width() >= 560.0 * ui_scale(ui);
     ui.horizontal_wrapped(|ui| {
         if let Some(k) = &task
             && pro
@@ -326,11 +325,10 @@ pub fn show(
             }
         }
         if let (NoteTab::Branch, Some(b)) = (rv.editor.tab, &branch) {
-            if roomy {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| task_link(ui, b, task.as_deref(), task_cache, task_url, actions));
-            } else {
-                task_link(ui, b, task.as_deref(), task_cache, task_url, actions);
-            }
+            // Inline after the text (and Write note), wrapping to the next
+            // line when there's no room: it never sits on top of anything.
+            ui.add_space(10.0);
+            task_link(ui, b, task.as_deref(), task_cache, task_url, actions);
         }
     });
     // An empty note shrinks the panel to this one line (it grows back,
