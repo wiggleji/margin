@@ -128,6 +128,11 @@ pub enum Action {
     JumpTo(String),
 }
 
+/// Text size bounds and default (points).
+const MIN_FONT: f32 = 11.0;
+const MAX_FONT: f32 = 20.0;
+const DEFAULT_FONT: f32 = 13.0;
+
 /// Sections of the Settings window.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -470,7 +475,7 @@ impl MarginApp {
         let cfg = config::load_config();
         let settings = config::load_settings();
         theme::set(settings.theme.as_deref());
-        theme::apply(ctx, cfg.font_size.unwrap_or(13.0));
+        theme::apply(ctx, settings.font_size.or(cfg.font_size).unwrap_or(DEFAULT_FONT).clamp(MIN_FONT, MAX_FONT));
         let tasks = tasks::provider_from_config(&cfg).map(Arc::from);
         let mut app = MarginApp {
             author: cfg.note_author.clone().unwrap_or_default(),
@@ -2408,9 +2413,44 @@ impl MarginApp {
         }
     }
 
-    /// Appearance: theme picker. Returns whether settings changed.
+    /// Current text size (Settings, else config.json, else the default).
+    fn font_size(&self) -> f32 {
+        self.settings.font_size.or(self.cfg.font_size).unwrap_or(DEFAULT_FONT).clamp(MIN_FONT, MAX_FONT)
+    }
+
+    /// Appearance: text size and theme picker. Returns whether settings changed.
     fn settings_appearance(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
+        // ---- text size (applied live while dragging; saved on release)
+        let mut size = self.font_size();
+        let mut set_size = None;
+        let mut save_size = false;
+        setting(ui, "Text size", "Applies everywhere: lists, notes, diffs and menus.", |ui| {
+            ui.horizontal(|ui| {
+                let r = ui.add(egui::Slider::new(&mut size, MIN_FONT..=MAX_FONT).step_by(0.5).suffix(" pt"));
+                if r.changed() {
+                    set_size = Some(size);
+                }
+                // save once the slider is let go (or changed with the keyboard)
+                save_size |= r.drag_stopped() || (r.changed() && !r.dragged());
+                ui.add_space(8.0);
+                for (label, v) in [("Small", 12.0), ("Default", DEFAULT_FONT), ("Large", 15.0), ("Larger", 17.0)] {
+                    if ui.selectable_label((size - v).abs() < 0.01, label).clicked() {
+                        set_size = Some(v);
+                        save_size = true;
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            // live sample in the code font too
+            ui.label(egui::RichText::new("The quick brown fox · 다람쥐 헌 쳇바퀴에 타고파").size(size));
+            ui.label(egui::RichText::new("fn login(user: &str) -> Result<()>").monospace().size(size - 0.5).color(theme::TEXT_DIM()));
+        });
+        if let Some(v) = set_size {
+            self.settings.font_size = Some(v);
+            theme::apply(ui.ctx(), v);
+        }
+        changed |= save_size;
         let current = self.settings.theme.clone().unwrap_or_else(|| "margin".into());
         for (title, dark) in [("Dark themes", true), ("Light themes", false)] {
             setting(ui, title, "", |ui| {
@@ -2420,7 +2460,7 @@ impl MarginApp {
                         if theme_card(ui, p, p.id == current).clicked() && p.id != current {
                             self.settings.theme = Some(p.id.to_string());
                             theme::set(Some(p.id));
-                            theme::apply(ui.ctx(), self.cfg.font_size.unwrap_or(13.0));
+                            theme::apply(ui.ctx(), self.font_size());
                             changed = true;
                         }
                     }

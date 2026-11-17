@@ -17,6 +17,8 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 
 **Settings (⌘,)**: sections for Appearance, Margin Pro, Notes sync, Fetch, Tasks, and Diffs, each setting with a short explanation. Changes save automatically.
 
+**Text size** (Settings → Appearance): 11–20 pt with Small / Default / Large / Larger presets, applied right away (overrides `font_size` in config.json).
+
 **Themes** (Settings → Appearance, applied right away): Margin (default), Material, Material Darker, Material Palenight, Material Ocean, Material Lighter, Solarized Dark, and Solarized Light. Each is built from its palette's base colours; diff backgrounds, selection, and graph lanes are mixed from them.
 
 **Command palette (⌘P)**: every action, fuzzy-searchable and grouped with icons. The groups are *In progress* (continue/abort), Repository, Remote, Commit, Branch, Tag, Stash, Worktree, Git Flow, Submodule, GitHub, Notes, and Go to. Commands that need input ask for it inside the palette: pick a branch, type a name, or confirm. ↑/↓ move, ↵ runs, and Esc steps back. With an empty search, the **5 most recently run commands** are listed first under *Recent* (remembered across restarts).

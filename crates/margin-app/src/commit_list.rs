@@ -7,11 +7,6 @@ use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, Ui, pos2,
 use margin_core::git::{Commit, ResetMode};
 use margin_core::notes::NoteTarget;
 
-/// Two text lines per commit (subject / author, see `show`).
-const ROW_H: f32 = 40.0;
-/// Line centres from the row's top / bottom.
-const LINE1: f32 = 12.0;
-const LINE2: f32 = 11.0;
 const LANE_W: f32 = 12.0;
 const MAX_LANES: usize = 14;
 
@@ -81,6 +76,9 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
     let head = snap.status.head_oid.clone();
     let font = FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
     let small = FontId::proportional(font.size - 1.5);
+    // Two text lines per commit (subject / author); sized from the text size.
+    let row_h = (font.size * 2.0 + 13.0).round();
+    let (line1, line2) = (6.0 + font.size / 2.0, 5.0 + small.size / 2.0);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -123,16 +121,16 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
         let (off, h) = rv.list_view;
         // Keep the edge row fully visible (the reported viewport runs a little
         // under the panel below it).
-        let h = h - ROW_H * 0.6;
-        let y = r as f32 * ROW_H;
+        let h = h - row_h * 0.6;
+        let y = r as f32 * row_h;
         let target = if h <= 0.0 {
             Some((y - 200.0).max(0.0))
-        } else if y >= off && y + ROW_H <= off + h {
+        } else if y >= off && y + row_h <= off + h {
             None
-        } else if y < off && y >= off - ROW_H {
+        } else if y < off && y >= off - row_h {
             Some(y)
-        } else if y + ROW_H > off + h && y + ROW_H <= off + h + ROW_H {
-            Some(y + ROW_H - h)
+        } else if y + row_h > off + h && y + row_h <= off + h + row_h {
+            Some(y + row_h - h)
         } else {
             Some((y - h / 3.0).max(0.0))
         };
@@ -141,11 +139,11 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
         }
     }
 
-    let out = scroll.show_rows(ui, ROW_H, total, |ui, range| {
+    let out = scroll.show_rows(ui, row_h, total, |ui, range| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let width = ui.available_width();
         for row in range {
-            let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(vec2(width, row_h), Sense::click());
             let p = ui.painter_at(rect);
 
             if row == 0 {
@@ -156,8 +154,8 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 let unstaged = st.files.iter().filter(|f| f.is_unstaged()).count();
                 let detail = if st.files.is_empty() { "clean".to_string() } else { format!("{unstaged} unstaged, {staged} staged") };
                 p.circle_stroke(pos2(rect.left() + 10.0, rect.center().y), 4.0, Stroke::new(1.5, theme::TEXT_DIM()));
-                p.text(pos2(rect.left() + 24.0, rect.top() + LINE1), Align2::LEFT_CENTER, "Working directory", font.clone(), theme::TEXT());
-                p.text(pos2(rect.left() + 24.0, rect.bottom() - LINE2), Align2::LEFT_CENTER, detail, small.clone(), theme::TEXT_DIM());
+                p.text(pos2(rect.left() + 24.0, rect.top() + line1), Align2::LEFT_CENTER, "Working directory", font.clone(), theme::TEXT());
+                p.text(pos2(rect.left() + 24.0, rect.bottom() - line2), Align2::LEFT_CENTER, detail, small.clone(), theme::TEXT_DIM());
                 if resp.clicked() {
                     actions.push(Action::Select(Sel::Working));
                 }
@@ -190,7 +188,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             // Two lines:
             //   subject ……………………………………………… [branch] [tag]
             //   author [note] [branch note] ………… [PR #12] [PROJ-1]  2h ago
-            let (y1, y2) = (rect.top() + LINE1, rect.bottom() - LINE2);
+            let (y1, y2) = (rect.top() + line1, rect.bottom() - line2);
             let left = rect.left() + graph_w + 4.0;
             let right = rect.right() - 8.0;
             let isz = small.size + 1.0;
