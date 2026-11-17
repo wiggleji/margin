@@ -401,5 +401,8 @@ pub fn apply(ctx: &egui::Context, font_size: f32, content: f32) {
         s.spacing.item_spacing = egui::vec2(6.0, 3.0);
         s.spacing.button_padding = egui::vec2(7.0, 2.0);
         s.spacing.interact_size.y = f + 7.0;
+        // Scrolling stops at the edges: no rubber-band stretch and spring back
+        // (trackpad coasting still works, it just ends at the edge).
+        s.spacing.scroll.kinetic.rubber_band = false;
     });
 }
