@@ -2079,9 +2079,16 @@ impl MarginApp {
             // ---- left: repository menu, branch switcher, back/forward
             let mut left = bar(ui, left_to_right, row);
             // Directory menu: open tabs (switch / ×), recent, open, reveal, close.
-            let mut title = egui::text::LayoutJob::default();
-            let body = egui::TextStyle::Body.resolve(left.style());
-            title.append(&rv.repo.name(), 0.0, egui::TextFormat { font_id: body, color: theme::TEXT(), ..Default::default() });
+            // (icon, name, ▾: these two buttons open menus)
+            let isz = left.text_style_height(&egui::TextStyle::Body) - 1.0;
+            let menu_label = |ui: &egui::Ui, icon: crate::icons::Icon, text: &str, color: egui::Color32| {
+                egui::Atoms::new((
+                    crate::icons::image(ui.ctx(), icon, isz, color),
+                    egui::RichText::new(text).color(color),
+                    egui::RichText::new("▾").small().color(theme::TEXT_DIM()),
+                ))
+            };
+            let title = menu_label(&left, crate::icons::Icon::Repo, &rv.repo.name(), theme::TEXT());
             let menu = left.menu_button(title, |ui| {
                 ui.set_min_width(260.0);
                 ui.label(egui::RichText::new("OPEN").small().strong().color(theme::TEXT_DIM()));
@@ -2145,7 +2152,10 @@ impl MarginApp {
             menu.response.on_hover_text("Switch directory (Ctrl+Tab, or ⌘P → Change directory)");
             if let Some(snap) = &rv.snap {
                 let branch = snap.status.branch.clone().unwrap_or_else(|| "(detached HEAD)".into());
-                left.menu_button(egui::RichText::new(&branch).color(theme::ACCENT()), |ui| {
+                // long names shortened in the middle (the full one on hover)
+                let short = crate::path_elide::elide_name(&branch, 28);
+                let label = menu_label(&left, crate::icons::Icon::GitBranch, &short, theme::ACCENT());
+                left.menu_button(label, |ui| {
                     ui.set_min_width(220.0);
                     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                         // Same prefix groups as the sidebar; groups are submenus.
@@ -2165,7 +2175,7 @@ impl MarginApp {
                     }
                 })
                 .response
-                .on_hover_text("Switch branch");
+                .on_hover_text(format!("{branch}\nSwitch branch"));
                 if let Some(op) = snap.pending_op {
                     let r = left.add(egui::Button::new(egui::RichText::new(format!("{op} in progress")).color(theme::ERROR())).small());
                     if r.on_hover_text("Continue / skip / abort").clicked() {
@@ -2242,26 +2252,50 @@ impl MarginApp {
             let right_start = right.min_rect().left();
 
             // ---- center: command palette + commit search, centred in the window
-            let gap = 16.0;
-            let palette_w = 150.0;
+            // Between the left and right groups, never over them: the
+            // palette button and the search box shrink when space is short.
+            let gap = 12.0;
+            let k = (ui.style().text_styles[&egui::TextStyle::Body].size / 13.0).max(1.0);
             let avail = (right_start - left_end - 2.0 * gap).max(0.0);
-            let search_w = (avail - palette_w - 8.0).clamp(120.0, 300.0);
+            let key = if cfg!(target_os = "macos") { "⌘P" } else { "Ctrl+P" };
+            // (no room at all: no button; Ctrl+P and the menu still open it)
+            let (palette_label, palette_w) = if avail >= 300.0 * k {
+                (format!("Commands   {key}"), 150.0 * k)
+            } else if avail >= 66.0 * k {
+                (key.to_string(), 58.0 * k)
+            } else {
+                (String::new(), -8.0)
+            };
+            let search_w = (avail - palette_w - 8.0).clamp(0.0, 320.0 * k);
             let center_w = palette_w + 8.0 + search_w;
-            let x0 = (row.center().x - center_w / 2.0).max(left_end + gap).min(right_start - gap - center_w);
+            let x0 = (row.center().x - center_w / 2.0).min(right_start - gap - center_w).max(left_end + gap);
             let center_rect = egui::Rect::from_min_size(egui::pos2(x0, row.top()), egui::vec2(center_w, row.height()));
             let mut center = bar(ui, left_to_right, center_rect);
-            let key = if cfg!(target_os = "macos") { "⌘P" } else { "Ctrl+P" };
-            if center
-                .add_sized([palette_w, center.spacing().interact_size.y], egui::Button::new(format!("Commands   {key}")))
-                .on_hover_text("Command palette: every git action")
-                .clicked()
+            if palette_w > 0.0
+                && center
+                    .add_sized([palette_w, center.spacing().interact_size.y], egui::Button::new(palette_label))
+                    .on_hover_text(format!("Command palette: every git action ({key})"))
+                    .clicked()
             {
                 actions.push(Action::OpenPalette);
             }
-            let search = crate::search::search_box(&mut center, rv, search_w, "Search commits…  author: title: commit: task: note: after:")
-                .on_hover_text(crate::search::HELP);
+            // the longest hint that fits the box (the filters are in its tooltip)
+            let font = egui::TextStyle::Body.resolve(center.style());
+            let hint = ["Search commits — author:, task:, after:…", "Search commits — author:, task:…", "Search commits", "Search…"]
+                .into_iter()
+                .find(|h| center.fonts_mut(|f| f.layout_no_wrap(h.to_string(), font.clone(), theme::TEXT()).size().x) + 16.0 <= search_w)
+                .unwrap_or("");
+            let search = if search_w >= 60.0 {
+                Some(crate::search::search_box(&mut center, rv, search_w, hint).on_hover_text(crate::search::HELP))
+            } else {
+                None
+            };
             if std::mem::take(&mut self.focus_search) {
-                search.request_focus();
+                match search {
+                    Some(s) => s.request_focus(),
+                    // no room for the box: search from the palette instead
+                    None => actions.push(Action::OpenPalette),
+                }
             }
 
             // ---- status (between centre and Pull/Push): spinner, message, Undo
