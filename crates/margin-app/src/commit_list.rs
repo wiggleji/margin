@@ -74,6 +74,21 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
     let total = 1 + n_commits + has_more as usize;
 
     let head = snap.status.head_oid.clone();
+    // Branches hidden with the eye (and tags, when hidden) get no badge on
+    // commits either; the row's tooltip still lists every ref.
+    let hidden_refs: std::collections::HashSet<&str> = {
+        use margin_core::git::RefKind;
+        let up = margin_core::history::head_upstream(&snap.refs);
+        let f = &rv.graph_filter;
+        snap.refs
+            .iter()
+            .filter(|r| match r.kind {
+                RefKind::Tag => f.hide_tags,
+                _ => !f.shows(r, up.as_deref()),
+            })
+            .map(|r| r.name.as_str())
+            .collect()
+    };
     let font = FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
     let small = FontId::proportional(font.size - 1.5);
     // Two text lines per commit (subject / author); sized from the text size.
@@ -196,9 +211,13 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             let is_tip = |name: &str| tips.is_some_and(|t| t.iter().any(|x| x == name));
             let mut hover_extra = String::new();
 
-            // ---- line 1, right: ref labels, right-aligned (at most ~60% of the row)
-            let refs: Vec<(String, Color32)> = c.refs.iter().map(|r| ref_chip(r)).collect();
-            let budget = ((right - left) * 0.6).max(60.0);
+            // ---- line 1, right: ref labels, right-aligned (at most ~40% of the
+            // row, so the title stays readable); hidden branches get none
+            let refs: Vec<(String, Color32)> = c.refs.iter().map(|r| ref_chip(r)).filter(|(name, _)| !hidden_refs.contains(name.as_str())).collect();
+            if refs.len() < c.refs.len() {
+                hover_extra += &format!("\n\nRefs: {}", c.refs.iter().map(|r| ref_chip(r).0).collect::<Vec<_>>().join(", "));
+            }
+            let budget = ((right - left) * 0.4).max(60.0);
             let mut shown: Vec<(std::sync::Arc<egui::Galley>, Color32)> = vec![];
             let mut used = 0.0;
             for (k, (label, color)) in refs.iter().enumerate() {
@@ -214,7 +233,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 shown.push((g, *color));
             }
             let hidden = refs.len() - shown.len();
-            if hidden > 0 {
+            if hidden > 0 && refs.len() == c.refs.len() {
                 hover_extra += &format!("\n\nRefs: {}", refs.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join(", "));
             }
             let more = (hidden > 0).then(|| p.layout_no_wrap(format!("+{hidden}"), small.clone(), theme::TEXT_DIM()));
@@ -234,8 +253,12 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             }
 
             // ---- line 1, left: subject (clipped before the labels)
-            let sp = ui.painter_at(Rect::from_min_max(pos2(left, rect.top()), pos2(refs_left - 8.0, rect.center().y)));
-            sp.text(pos2(left + 2.0, y1), Align2::LEFT_CENTER, &c.subject, font.clone(), theme::TEXT());
+            // (one line, ending in "…" when it doesn't fit)
+            let mut job = egui::text::LayoutJob::simple(c.subject.clone(), font.clone(), theme::TEXT(), (refs_left - 8.0 - left - 2.0).max(20.0));
+            job.wrap.max_rows = 1;
+            job.wrap.break_anywhere = true;
+            let sg = p.layout_job(job);
+            p.galley(pos2(left + 2.0, y1 - sg.size().y / 2.0), sg, theme::TEXT());
 
             // ---- line 2, right (right to left): time, task keys, PR status
             let mut rx = right;
