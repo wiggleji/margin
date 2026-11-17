@@ -161,7 +161,7 @@ const M_PURPLE: u32 = 0xc792ea;
 const M_CYAN: u32 = 0x89ddff;
 const M_ORANGE: u32 = 0xf78c6c;
 
-pub const THEMES: [Palette; 8] = [
+pub const THEMES: [Palette; 12] = [
     MARGIN,
     make(Base {
         id: "material",
@@ -281,6 +281,78 @@ pub const THEMES: [Palette; 8] = [
         purple: 0x6c71c4,
         cyan: 0x2aa198,
         orange: 0xcb4b16,
+    }),
+    // Bright: white, crisp text.
+    make(Base {
+        id: "paper",
+        name: "Paper",
+        dark: false,
+        bg: 0xffffff,
+        bg_dark: 0xf1f3f5,
+        text: 0x24292f,
+        text_dim: 0x6e7781,
+        accent: 0x2f6fde,
+        red: 0xcf222e,
+        green: 0x1a7f37,
+        yellow: 0x9a6700,
+        blue: 0x2f6fde,
+        purple: 0x8250df,
+        cyan: 0x1b7c83,
+        orange: 0xbc4c00,
+    }),
+    // Bright: Atom's One Light palette.
+    make(Base {
+        id: "one-light",
+        name: "One Light",
+        dark: false,
+        bg: 0xfafafa,
+        bg_dark: 0xeaeaeb,
+        text: 0x383a42,
+        text_dim: 0x8e8f96,
+        accent: 0x4078f2,
+        red: 0xe45649,
+        green: 0x50a14f,
+        yellow: 0xc18401,
+        blue: 0x4078f2,
+        purple: 0xa626a4,
+        cyan: 0x0184bc,
+        orange: 0x986801,
+    }),
+    // Warm and easy on the eyes: the Gruvbox light palette (cream, earthy colours).
+    make(Base {
+        id: "gruvbox-light",
+        name: "Gruvbox Light",
+        dark: false,
+        bg: 0xfbf1c7,
+        bg_dark: 0xebdbb2,
+        text: 0x3c3836,
+        text_dim: 0x7c6f64,
+        accent: 0xb57614,
+        red: 0x9d0006,
+        green: 0x79740e,
+        yellow: 0xb57614,
+        blue: 0x076678,
+        purple: 0x8f3f71,
+        cyan: 0x427b58,
+        orange: 0xaf3a03,
+    }),
+    // Warm and easy on the eyes: sepia paper, brown ink, soft colours (low glare).
+    make(Base {
+        id: "sepia",
+        name: "Sepia",
+        dark: false,
+        bg: 0xf4ecd8,
+        bg_dark: 0xe7dbbf,
+        text: 0x5b4636,
+        text_dim: 0x95816b,
+        accent: 0xa0612b,
+        red: 0xb5453a,
+        green: 0x5f7f32,
+        yellow: 0xa87b1f,
+        blue: 0x3f6e94,
+        purple: 0x86577f,
+        cyan: 0x3d8577,
+        orange: 0xb35f23,
     }),
 ];
 

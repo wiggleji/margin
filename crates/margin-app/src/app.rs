@@ -115,6 +115,8 @@ pub enum Action {
     PrevTab,
     /// Close the tab at a visual index.
     CloseTab(usize),
+    /// Drag a tab to another position (indices in visual order).
+    MoveTab { from: usize, to: usize },
     ToggleAutoFetch,
     /// Move the notes panel between the details and the history column.
     ToggleNotesDock,
@@ -1135,6 +1137,24 @@ impl MarginApp {
                     let i = if matches!(a, NextTab) { (self.active_pos + 1) % n } else { (self.active_pos + n - 1) % n };
                     self.handle(SwitchTab(i));
                 }
+            }
+            MoveTab { from, to } => {
+                let n = self.tab_count();
+                if from == to || from >= n || to >= n {
+                    return;
+                }
+                // visual order, with the active tab as a gap (`None`)
+                let mut order: Vec<Option<RepoView>> = self.others.drain(..).map(Some).collect();
+                if self.rv.is_some() {
+                    order.insert(self.active_pos.min(order.len()), None);
+                }
+                let t = order.remove(from);
+                order.insert(to, t);
+                if let Some(p) = order.iter().position(Option::is_none) {
+                    self.active_pos = p;
+                }
+                self.others = order.into_iter().flatten().collect();
+                self.save_tabs();
             }
             CloseTab(i) => {
                 if i == self.active_pos {
@@ -2334,6 +2354,14 @@ impl eframe::App for MarginApp {
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) || i.pointer.button_pressed(egui::PointerButton::Extra2),
             )
         });
+        // ⌘1…⌘8 switch to that tab, ⌘9 to the last (as in browsers)
+        let nums = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6, egui::Key::Num7, egui::Key::Num8, egui::Key::Num9];
+        if let Some(k) = ctx.input_mut(|i| nums.iter().position(|&k| i.consume_key(egui::Modifiers::COMMAND, k))) {
+            let n = self.tab_count();
+            if n > 0 {
+                self.handle(Action::SwitchTab(if k == 8 { n - 1 } else { k.min(n - 1) }));
+            }
+        }
         // Ctrl+, opens Settings where there's no menu bar to do it (macOS: Margin → Settings…)
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
             self.show_settings = true;
@@ -2696,7 +2724,7 @@ impl MarginApp {
             });
         }
         ui.label(
-            egui::RichText::new("Material themes follow the Material Theme palettes (Material, Darker, Palenight, Ocean, Lighter); Solarized uses Ethan Schoonover's palette.")
+            egui::RichText::new("Material themes follow the Material Theme palettes (Material, Darker, Palenight, Ocean, Lighter); Solarized uses Ethan Schoonover's palette, One Light Atom's, and Gruvbox Pavel Pertsev's. Gruvbox Light and Sepia are warm, low-glare themes for long reading.")
                 .small()
                 .color(theme::TEXT_DIM()),
         );
