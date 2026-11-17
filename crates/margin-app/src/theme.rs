@@ -391,7 +391,9 @@ pub fn apply(ctx: &egui::Context, font_size: f32, content: f32) {
     v.widgets.hovered.bg_stroke.color = shade(260);
     v.widgets.active.bg_stroke.color = p.accent;
     ctx.set_visuals_of(theme, v);
-    ctx.global_style_mut(|s| {
+    // Both the dark and the light style (global_style_mut would only change the
+    // one active right now, leaving light themes with egui's defaults).
+    ctx.all_styles_mut(|s| {
         let f = font_size;
         s.text_styles.insert(TextStyle::Body, FontId::proportional(f));
         s.text_styles.insert(TextStyle::Button, FontId::proportional(f));
@@ -405,4 +407,26 @@ pub fn apply(ctx: &egui::Context, font_size: f32, content: f32) {
         // (trackpad coasting still works, it just ends at the edge).
         s.spacing.scroll.kinetic.rubber_band = false;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui;
+
+    #[test]
+    fn styles_reach_dark_and_light_themes() {
+        let ctx = egui::Context::default();
+        for p in super::THEMES.iter() {
+            super::set(Some(p.id));
+            super::apply(&ctx, 14.0, 16.0);
+            for theme in [egui::Theme::Dark, egui::Theme::Light] {
+                let st = ctx.style_of(theme);
+                assert!(!st.spacing.scroll.kinetic.rubber_band, "{} / {theme:?}", p.id);
+                // text sizes reach light themes too
+                assert_eq!(st.text_styles[&egui::TextStyle::Body].size, 14.0, "{} / {theme:?}", p.id);
+                assert_eq!(st.text_styles[&egui::TextStyle::Monospace].size, 15.5, "{} / {theme:?}", p.id);
+            }
+        }
+        super::set(None);
+    }
 }
