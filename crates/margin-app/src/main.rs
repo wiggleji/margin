@@ -19,6 +19,7 @@ mod pr_view;
 mod sidebar;
 mod tab_strip;
 mod theme;
+mod widgets;
 
 use std::path::PathBuf;
 

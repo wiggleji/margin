@@ -9,7 +9,7 @@
 //! Edit and Split (editor + live preview) have a formatting toolbar.
 
 use crate::app::{Action, RepoView, Sel};
-use crate::icons::{self, Icon};
+use crate::icons::Icon;
 use crate::markdown_view::{self, MdAction};
 use crate::theme;
 use eframe::egui::{self, RichText, Ui};
@@ -202,57 +202,61 @@ pub fn show(
     // ---- tab bar (wraps when the panel is narrow)
     let tab_before = rv.editor.tab;
     ui.horizontal_wrapped(|ui| {
-        let chevron = if prefs.notes_collapsed { "▸" } else { "▾" };
+        use crate::widgets::{Glyph, Seg, icon_button, segmented};
         let tip = if prefs.notes_collapsed { "Show the note" } else { "Collapse to this row" };
-        if ui.add(egui::Button::new(RichText::new(chevron).color(theme::TEXT_DIM())).frame(false)).on_hover_text(tip).clicked() {
+        if icon_button(ui, Glyph::Chevron { open: !prefs.notes_collapsed }, tip).clicked() {
             prefs.notes_collapsed = !prefs.notes_collapsed;
             let _ = margin_core::config::save_state(prefs);
         }
         // Move the panel to the other column (under the history / under the details).
-        let (arrow, tip) = if prefs.notes_under_history { ("⇥", "Move notes under the commit details") } else { ("⇤", "Move notes under the branches and history") };
-        if ui.add(egui::Button::new(RichText::new(arrow).color(theme::TEXT_DIM())).frame(false)).on_hover_text(tip).clicked() {
+        let (to_right, tip) = if prefs.notes_under_history {
+            (true, "Move notes under the commit details")
+        } else {
+            (false, "Move notes under the branches and history")
+        };
+        if icon_button(ui, Glyph::Dock { to_right }, tip).clicked() {
             actions.push(Action::ToggleNotesDock);
         }
-        let ctx = ui.ctx().clone();
-        let icon_size = ui.text_style_height(&egui::TextStyle::Body) - 1.0;
-        // Tab label: text, then a note icon if the note exists, then a GitHub icon + PR number.
-        let label = |text: String, has: bool, pr: Option<&margin_core::github::PrSummary>| {
-            let mut a = egui::Atoms::new(text);
-            if has {
-                a.push_right(icons::image(&ctx, Icon::Note, icon_size, theme::ACCENT()));
-            }
-            if let Some(pr) = pr {
-                let tone = crate::pr_view::tone_color(pr.readiness().1);
-                a.push_right(icons::image(&ctx, Icon::Github, icon_size, tone));
-                a.push_right(RichText::new(format!("#{}", pr.number)).color(tone));
-            }
-            a
-        };
+        ui.add_space(4.0);
+        // Tabs: icon, label, then a note icon if the note exists and the PR status.
+        let note_mark = |seg: Seg, has: bool| if has { seg.mark(Icon::Note, None, theme::ACCENT()) } else { seg };
+        let mut tabs: Vec<(NoteTab, Seg)> = vec![];
         if let Some(id) = &commit_id {
             let has = rv.has_note(&NoteTarget::Commit(id.clone()));
-            ui.selectable_value(&mut rv.editor.tab, NoteTab::Commit, label(format!("Commit {}", &id[..7.min(id.len())]), has, None))
-                .on_hover_text("Bound to this exact commit. After a rebase/amend it stays with the old commit.");
+            let seg = Seg::new(Some(Icon::GitCommit), format!("Commit {}", &id[..7.min(id.len())]))
+                .tip("Bound to this exact commit. After a rebase/amend it stays with the old commit.");
+            tabs.push((NoteTab::Commit, note_mark(seg, has)));
         }
         if let Some(b) = &branch {
             let has = rv.has_note(&NoteTarget::Branch(b.clone()));
-            ui.selectable_value(&mut rv.editor.tab, NoteTab::Branch, label(format!("Branch {b}"), has, rv.prs.get(b)))
-                .on_hover_text("Bound to the branch name. Shown on the branch's top commit and follows it through rebase/amend/rename.");
+            let mut seg = note_mark(Seg::new(Some(Icon::GitBranch), b.clone()), has)
+                .tip("Branch note: shown on the branch's top commit; follows it through rebase/amend/rename.");
+            if let Some(pr) = rv.prs.get(b) {
+                let tone = crate::pr_view::tone_color(pr.readiness().1);
+                seg = seg.mark(Icon::Github, Some(format!("#{}", pr.number)), tone);
+            }
+            tabs.push((NoteTab::Branch, seg));
         }
         if let Some(k) = &task {
             let has = rv.has_note(&NoteTarget::Task(k.clone()));
-            ui.selectable_value(&mut rv.editor.tab, NoteTab::Task, label(format!("Task {k}"), has, None));
+            tabs.push((NoteTab::Task, note_mark(Seg::new(Some(Icon::Workflow), k.clone()), has).tip("Task note")));
         }
         let has = rv.has_note(&NoteTarget::Repo);
-        ui.selectable_value(&mut rv.editor.tab, NoteTab::Repo, label("Repo".into(), has, None));
+        tabs.push((NoteTab::Repo, note_mark(Seg::new(Some(Icon::Repo), "Repo"), has).tip("Notes for the whole repository")));
         if let Some(p) = rv.pinned_note.clone() {
             let detached = rv.detached.iter().any(|d| d.note == p);
             let text = if detached { format!("Detached {}", short_target(&p)) } else { short_target(&p) };
-            ui.selectable_value(&mut rv.editor.tab, NoteTab::Pinned, label(text, false, None));
-            if ui.small_button("×").on_hover_text("Close").clicked() {
-                rv.pinned_note = None;
-                if rv.editor.tab == NoteTab::Pinned {
-                    rv.editor.tab = NoteTab::Branch;
-                }
+            tabs.push((NoteTab::Pinned, Seg::new(Some(Icon::Note), text)));
+        }
+        let sel = tabs.iter().position(|(t, _)| *t == rv.editor.tab);
+        let (ids, segs): (Vec<NoteTab>, Vec<Seg>) = tabs.into_iter().unzip();
+        if let Some(i) = segmented(ui, &segs, sel) {
+            rv.editor.tab = ids[i];
+        }
+        if rv.pinned_note.is_some() && ui.small_button("×").on_hover_text("Close this note").clicked() {
+            rv.pinned_note = None;
+            if rv.editor.tab == NoteTab::Pinned {
+                rv.editor.tab = NoteTab::Branch;
             }
         }
     });
@@ -271,7 +275,7 @@ pub fn show(
     // "Link task…" for a branch without one (an action, so not shaped like a tab).
     let link_task = |ui: &mut Ui, actions: &mut Vec<Action>| {
         if let (None, Some(b)) = (&task, &branch) {
-            if ui.link(RichText::new("Link task…").small()).on_hover_text("Link a Jira / Linear / Asana task to this branch").clicked() {
+            if ui.small_button("Link task…").on_hover_text("Link a Jira / Linear / Asana task to this branch").clicked() {
                 actions.push(Action::LinkTaskDialog { branch: b.clone() });
             }
         }
@@ -284,7 +288,7 @@ pub fn show(
             match &ed.target {
                 Some(t) => {
                     ui.label(RichText::new(format!("No note on {} yet.", short_target(t))).color(theme::TEXT_DIM()));
-                    if ui.small_button("Write note").clicked() {
+                    if crate::widgets::primary_button(ui, "Write note").clicked() {
                         ed.preview = false;
                         ui.ctx().memory_mut(|m| m.request_focus(edit_id()));
                     }
@@ -319,18 +323,21 @@ pub fn show(
             let ed = &mut rv.editor;
             if ed.target.is_some() {
                 let editing = !ed.preview;
-                if ui.selectable_label(editing && !prefs.notes_split, "Edit").clicked() {
-                    ed.preview = false;
-                    prefs.notes_split = false;
-                    let _ = margin_core::config::save_state(prefs);
-                }
-                if ui.selectable_label(editing && prefs.notes_split, "Split").on_hover_text("Editor and live preview side by side").clicked() {
-                    ed.preview = false;
-                    prefs.notes_split = true;
-                    let _ = margin_core::config::save_state(prefs);
-                }
-                if ui.selectable_label(ed.preview, "Preview").clicked() {
-                    ed.preview = true;
+                use crate::widgets::Seg;
+                let modes = [
+                    Seg::new(None, "Edit"),
+                    Seg::new(None, "Split").tip("Editor and live preview side by side"),
+                    Seg::new(None, "Preview"),
+                ];
+                let cur = if ed.preview { 2 } else if prefs.notes_split { 1 } else { 0 };
+                match crate::widgets::segmented(ui, &modes, Some(cur)) {
+                    Some(2) => ed.preview = true,
+                    Some(m) => {
+                        ed.preview = false;
+                        prefs.notes_split = m == 1;
+                        let _ = margin_core::config::save_state(prefs);
+                    }
+                    None => {}
                 }
                 if editing {
                     ui.separator();
@@ -352,7 +359,7 @@ pub fn show(
                 // Delete (with confirmation) when there's a saved note.
                 if ed.target.is_some() && !ed.base_version.is_empty() {
                     if let Some(t) = ed.target.clone() {
-                        if trash_button(ui).on_hover_text("Delete this note…").clicked() {
+                        if crate::widgets::icon_button(ui, crate::widgets::Glyph::Trash, "Delete this note…").clicked() {
                             actions.push(Action::Confirm {
                                 msg: format!(
                                     "Delete the note on {}?\n\nIt's moved to the notes trash folder ({}), so it can still be recovered from there.",
@@ -619,28 +626,6 @@ fn grip(ui: &mut Ui, prefs: &mut margin_core::config::State, panel_h: f32) {
         let _ = margin_core::config::save_state(prefs);
     }
     resp.on_hover_text("Drag to resize · double-click to collapse");
-}
-
-/// Small trash-can icon button.
-fn trash_button(ui: &mut Ui) -> egui::Response {
-    let s = ui.spacing().interact_size.y;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(s, s), egui::Sense::click());
-    let hot = resp.hovered();
-    if hot {
-        ui.painter().rect_filled(rect, 3.0, theme::HOVER());
-    }
-    let c = if hot { theme::ERROR() } else { theme::TEXT_DIM() };
-    let st = egui::Stroke::new(1.2, c);
-    let p = ui.painter();
-    let ctr = rect.center();
-    // lid, handle, can, two ribs
-    p.line_segment([ctr + egui::vec2(-5.0, -3.5), ctr + egui::vec2(5.0, -3.5)], st);
-    p.line_segment([ctr + egui::vec2(-1.5, -5.0), ctr + egui::vec2(1.5, -5.0)], st);
-    let can = [ctr + egui::vec2(-3.8, -3.5), ctr + egui::vec2(-3.0, 5.0), ctr + egui::vec2(3.0, 5.0), ctr + egui::vec2(3.8, -3.5)];
-    p.add(egui::Shape::line(can.to_vec(), st));
-    p.line_segment([ctr + egui::vec2(-1.0, -1.5), ctr + egui::vec2(-1.0, 3.0)], egui::Stroke::new(1.0, c));
-    p.line_segment([ctr + egui::vec2(1.0, -1.5), ctr + egui::vec2(1.0, 3.0)], egui::Stroke::new(1.0, c));
-    resp
 }
 
 /// The Markdown editor, filling the space it's given.
