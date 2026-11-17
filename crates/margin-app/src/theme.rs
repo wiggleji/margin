@@ -387,8 +387,10 @@ pub fn apply(ctx: &egui::Context, font_size: f32, content: f32) {
         w.weak_bg_fill = shade(t);
         w.fg_stroke.color = p.text;
     }
-    v.widgets.inactive.bg_stroke.color = Color32::TRANSPARENT;
-    v.widgets.hovered.bg_stroke.color = shade(260);
+    // A visible edge on resting controls (checkboxes, radio buttons, buttons,
+    // drop-downs), so they don't melt into light backgrounds.
+    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, shade(260));
+    v.widgets.hovered.bg_stroke.color = shade(400);
     v.widgets.active.bg_stroke.color = p.accent;
     ctx.set_visuals_of(theme, v);
     // Both the dark and the light style (global_style_mut would only change the

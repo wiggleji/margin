@@ -2334,6 +2334,10 @@ impl eframe::App for MarginApp {
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::CloseBracket) || i.pointer.button_pressed(egui::PointerButton::Extra2),
             )
         });
+        // Ctrl+, opens Settings where there's no menu bar to do it (macOS: Margin → Settings…)
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
+            self.show_settings = true;
+        }
         // ⌘⇧↩: diff focus mode on / off
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Enter)) {
             self.focus_diff = !self.focus_diff;
@@ -2530,8 +2534,14 @@ impl MarginApp {
         }
         let mut changed = false;
         let mut close = false;
+        // A fixed size (scaled with the text size, kept inside the window), so
+        // switching sections never moves or resizes it.
+        let k = (ctx.global_style().text_styles[&egui::TextStyle::Body].size / 13.0).max(1.0);
+        let screen = ctx.content_rect().size();
+        let (win_w, body_h) = ((720.0 * k).min(screen.x - 60.0).max(480.0), (470.0 * k).min(screen.y - 170.0).max(220.0));
+        let side_w = 150.0 * k.min(1.2);
         let modal = egui::Modal::new(egui::Id::unique("settings")).show(ctx, |ui| {
-            ui.set_width(720.0);
+            ui.set_width(win_w);
             ui.horizontal(|ui| {
                 ui.heading("Settings");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2548,27 +2558,29 @@ impl MarginApp {
             ui.horizontal_top(|ui| {
                 // ---- sections
                 ui.vertical(|ui| {
-                    ui.set_width(150.0);
+                    ui.set_width(side_w);
                     ui.style_mut().interaction.selectable_labels = false;
                     for t in SettingsTab::ALL {
                         let on = self.settings_tab == t;
                         let text = if on { egui::RichText::new(t.label()).strong() } else { egui::RichText::new(t.label()) };
-                        if ui.add(egui::Button::selectable(on, text).min_size(egui::vec2(146.0, 26.0))).clicked() {
+                        if ui.add(egui::Button::selectable(on, text).min_size(egui::vec2(side_w - 4.0, 26.0))).clicked() {
                             self.settings_tab = t;
                         }
                     }
                 });
                 ui.separator();
                 // ---- the selected section
+                let body_w = ui.available_width();
                 ui.vertical(|ui| {
-                    ui.set_width(540.0);
+                    ui.set_width(body_w);
                     let tab = self.settings_tab;
-                    ui.label(egui::RichText::new(tab.label()).size(ui.style().text_styles[&egui::TextStyle::Heading].size - 1.0).strong());
-                    ui.add_space(2.0);
-                    ui.label(egui::RichText::new(tab.intro()).color(theme::TEXT_DIM()));
-                    ui.add_space(14.0);
-                    egui::ScrollArea::vertical().id_salt("settings_scroll").max_height(440.0).min_scrolled_height(440.0).auto_shrink([false, false]).show(ui, |ui| {
-                        ui.set_width(526.0);
+                    // (title and intro scroll with the section: every section is the same height)
+                    egui::ScrollArea::vertical().id_salt(("settings_scroll", tab.label())).max_height(body_h).min_scrolled_height(body_h).auto_shrink([false, false]).show(ui, |ui| {
+                        ui.set_width(body_w - 14.0);
+                        ui.label(egui::RichText::new(tab.label()).size(ui.style().text_styles[&egui::TextStyle::Heading].size - 1.0).strong());
+                        ui.add_space(2.0);
+                        ui.label(egui::RichText::new(tab.intro()).color(theme::TEXT_DIM()));
+                        ui.add_space(14.0);
                         match tab {
                             SettingsTab::Appearance => changed |= self.settings_appearance(ui),
                             SettingsTab::Pro => self.settings_pro(ui, actions),
@@ -2625,30 +2637,42 @@ impl MarginApp {
         };
         // ---- fonts (start listing the installed ones now, for the pickers)
         let _ = crate::fonts::families(ui.ctx());
+        // One block per kind of text: its font, then its size.
         let mut fonts_changed = false;
-        setting(ui, "Fonts", "Any installed font. Characters a font lacks (e.g. Korean in a code font) still show, from the built-in and system fonts.", |ui| {
-            egui::Grid::new("font-pickers").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                ui.label("Interface");
-                fonts_changed |= font_picker(ui, "ui-font", &mut self.settings.ui_font, false);
-                ui.end_row();
-                ui.label("Code");
-                fonts_changed |= font_picker(ui, "code-font", &mut self.settings.code_font, true);
-                ui.end_row();
+        let label_w = 52.0 * (ui.style().text_styles[&egui::TextStyle::Body].size / 13.0).max(1.0);
+        let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.horizontal(|ui| {
+                ui.add_sized([label_w, ui.spacing().interact_size.y], egui::Label::new(egui::RichText::new(label).color(theme::TEXT_DIM())));
+                add(ui);
+            });
+        };
+        setting(ui, "Interface", "Lists, sidebar, toolbar, buttons and menus. The size stays in a small range so the layout keeps its shape.", |ui| {
+            row(ui, "Font", &mut |ui| fonts_changed |= font_picker(ui, "ui-font", &mut self.settings.ui_font, false));
+            ui.add_space(4.0);
+            row(ui, "Size", &mut |ui| size_row(ui, &mut iface, MIN_UI_FONT..=MAX_UI_FONT, &[("Compact", 12.0), ("Default", DEFAULT_FONT), ("Large", 14.0)]));
+        });
+        setting(ui, "Code and notes", "Diffs, notes and commit messages: the text you read.", |ui| {
+            row(ui, "Font", &mut |ui| fonts_changed |= font_picker(ui, "code-font", &mut self.settings.code_font, true));
+            ui.add_space(4.0);
+            row(ui, "Size", &mut |ui| size_row(ui, &mut code, MIN_FONT..=MAX_FONT, &[("Small", 12.0), ("Default", DEFAULT_FONT), ("Large", 15.0), ("Larger", 17.0)]));
+            ui.add_space(8.0);
+            // preview, in a code-coloured box like the diff
+            egui::Frame::new().fill(theme::BG_DARK()).corner_radius(4.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new("fn login(user: &str) -> Result<()>").monospace().size(code - 0.5));
+                ui.label(egui::RichText::new("Release notes · 다람쥐 헌 쳇바퀴에 타고파 · 🎉").size(code).color(theme::TEXT_DIM()));
             });
         });
+        ui.label(
+            egui::RichText::new("Any installed font. Characters a font lacks (e.g. Korean in a code font, emoji) still show, from the built-in and system fonts.")
+                .small()
+                .color(theme::TEXT_DIM()),
+        );
+        ui.add_space(12.0);
         if fonts_changed {
             crate::fonts::apply(ui.ctx(), self.settings.ui_font.as_ref(), self.settings.code_font.as_ref());
             changed = true;
         }
-        setting(ui, "Code and notes", "Diffs, notes and commit messages: the text you read.", |ui| {
-            size_row(ui, &mut code, MIN_FONT..=MAX_FONT, &[("Small", 12.0), ("Default", DEFAULT_FONT), ("Large", 15.0), ("Larger", 17.0)]);
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("fn login(user: &str) -> Result<()>").monospace().size(code - 0.5));
-            ui.label(egui::RichText::new("Release notes · 다람쥐 헌 쳇바퀴에 타고파").size(code).color(theme::TEXT_DIM()));
-        });
-        setting(ui, "Interface", "Lists, sidebar, toolbar, buttons and menus. Kept in a small range so the layout stays the same.", |ui| {
-            size_row(ui, &mut iface, MIN_UI_FONT..=MAX_UI_FONT, &[("Compact", 12.0), ("Default", DEFAULT_FONT), ("Large", 14.0)]);
-        });
         if set {
             self.settings.font_size = Some(code);
             self.settings.ui_font_size = Some(iface);

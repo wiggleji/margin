@@ -19,7 +19,9 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 
 **Text size** (Settings → Appearance), applied right away: **Code and notes** (11–20 pt; diffs, notes, and commit messages; overrides `font_size` in config.json) and **Interface** (12–15 pt; lists, sidebar, toolbar, menus), kept separate so a bigger reading size doesn't reflow the whole window.
 
-**Fonts** (Settings → Appearance): any installed font for the **Interface** and for **Code** (fixed-width fonts listed first), with a filter. Characters a font lacks (Korean in a Latin code font, emoji) still come from the built-in and system fonts.
+**Fonts** (Settings → Appearance): any installed font for the **Interface** and for **Code and notes** (fixed-width fonts listed first), with a filter. Each block has its font and its size together, and Code and notes shows a preview. Characters a font lacks (Korean in a Latin code font, emoji) still come from the built-in and system fonts.
+
+**Settings** open with ⌘, (Margin menu) or Ctrl+, on Linux and Windows, and close with Esc. The window keeps one size whichever section is shown. Checkboxes, radio buttons, and buttons have a visible edge in every theme, light ones included.
 
 **Themes** (Settings → Appearance, applied right away): Margin (default), Material, Material Darker, Material Palenight, Material Ocean, Material Lighter, Solarized Dark, and Solarized Light. Each is built from its palette's base colours; diff backgrounds, selection, and graph lanes are mixed from them.
 
