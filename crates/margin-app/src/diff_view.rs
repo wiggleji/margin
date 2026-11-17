@@ -795,7 +795,7 @@ impl DiffView {
                         let pad = ui.spacing().button_padding.x * 2.0 + 6.0;
                         let bw = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), small.clone(), Color32::WHITE).size().x) + pad;
                         let r = Rect::from_min_size(pos2(x, rect.top() + 2.0), vec2(bw, row_h - 4.0));
-                        let clicked = ui.put(r, egui::Button::new(egui::RichText::new(text).font(small.clone())).wrap_mode(egui::TextWrapMode::Extend)).clicked();
+                        let clicked = ui.put(r, action_button(text, &small)).clicked();
                         (clicked, bw)
                     };
                     let (rect, resp) = ui.allocate_exact_size(vec2(width, row_h), sense);
@@ -970,7 +970,7 @@ impl DiffView {
                                 let pad = ui.spacing().button_padding.x * 2.0 + 6.0;
                                 let bw = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), small.clone(), Color32::WHITE).size().x) + pad;
                                 let r = Rect::from_min_size(pos2(x, rect.top() + 2.0), vec2(bw, row_h - 4.0));
-                                let btn = ui.put(r, egui::Button::new(egui::RichText::new(*text).font(small.clone())).wrap_mode(egui::TextWrapMode::Extend));
+                                let btn = ui.put(r, action_button(text, &small));
                                 if btn.clicked() {
                                     events.push(DiffEvent::Hunk(DiffAction { file: fi, hunk: hi, op: *op }));
                                 }
@@ -1411,6 +1411,20 @@ enum CardAct {
 struct ThreadState {
     replying: bool,
     busy: bool,
+}
+
+/// A small button in a diff row. Discarding throws work away, so those
+/// buttons look different from Stage / Unstage (red text on a faint red
+/// tint), so they're not mistaken for each other.
+fn action_button(text: &str, font: &FontId) -> egui::Button<'static> {
+    let danger = text.starts_with("Discard");
+    let label = egui::RichText::new(text.to_string()).font(font.clone());
+    let b = if danger {
+        egui::Button::new(label.color(theme::ERROR())).fill(theme::ERROR().gamma_multiply(0.15))
+    } else {
+        egui::Button::new(label)
+    };
+    b.wrap_mode(egui::TextWrapMode::Extend)
 }
 
 /// "@@ -78,3 +78,4 @@ fn login()" → ("Lines 78–81", "fn login()"): the new
