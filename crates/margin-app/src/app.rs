@@ -476,10 +476,8 @@ impl RepoView {
     pub fn note_title(&self, t: &NoteTarget) -> Option<&str> {
         self.note_index.get(t).map(String::as_str)
     }
+    /// The task linked to the note's branch.
     pub fn note_task(&self) -> Option<String> {
-        if let Some(t) = &self.focus_task {
-            return Some(t.clone());
-        }
         let b = self.note_branch()?;
         self.notes.task_for_branch(&b)
     }
@@ -1307,18 +1305,14 @@ impl MarginApp {
                     rv.editor.tab = crate::notes_panel::NoteTab::Branch;
                 }
             }
+            // A task opens its ticket (tasks have no notes of their own).
             FocusTask(k) => {
                 if let Some(rv) = &mut self.rv {
                     rv.focus_task = Some(k.clone());
-                    rv.editor.tab = crate::notes_panel::NoteTab::Task;
                 }
-                // The task opens in the notes panel: make sure it's visible.
-                if self.state.notes_collapsed {
-                    self.state.notes_collapsed = false;
-                    let _ = config::save_state(&self.state);
-                }
-                if !self.task_cache.contains_key(&k) {
-                    self.handle(FetchTask(k));
+                match tasks::task_url(&self.cfg, self.tasks.as_deref(), self.settings.ticket_url.as_deref(), &k) {
+                    Some(u) => open_url(&u, self),
+                    None => self.err(format!("Set your ticket site in Settings → Tasks to open {k}")),
                 }
             }
             ShowNote(tab) => {
@@ -2404,7 +2398,7 @@ impl eframe::App for MarginApp {
                 let dragging = ui.input(|i| i.pointer.primary_down());
                 let notes_h = ui.ctx().animate_value_with_time(egui::Id::unique("notes_panel_h"), target, if dragging { 0.0 } else { 0.12 });
                 egui::Panel::bottom("notes").exact_size(notes_h).show(ui, |ui| {
-                    crate::notes_panel::show(ui, rv, &self.task_cache, tasks_configured, &license, &task_url, &self.author, state, notes_h, actions);
+                    crate::notes_panel::show(ui, rv, &self.task_cache, &license, &task_url, &self.author, state, notes_h, actions);
                 });
             };
             let before = crate::diff_view::DiffPrefs {
@@ -2925,7 +2919,7 @@ fn open_url(url: &str, app: &mut MarginApp) {
             }
             Ok(NoteTarget::Task(k)) => app.handle(Action::FocusTask(k)),
             Ok(NoteTarget::Branch(b)) => app.handle(Action::FocusBranch(b)),
-            Ok(NoteTarget::Repo) => app.handle(Action::ShowNote(crate::notes_panel::NoteTab::Repo)),
+            Ok(NoteTarget::Repo) => app.handle(Action::OpenNote(NoteTarget::Repo)),
             Err(e) => app.err(e),
         }
         return;

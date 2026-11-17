@@ -1,6 +1,5 @@
 use crate::app::{Action, RepoView, Sel};
 use crate::icons::{self, Icon};
-use crate::notes_panel::NoteTab;
 use crate::theme;
 use eframe::egui::{self, RichText, Ui};
 use crate::branch_tree::{self, Node};
@@ -24,13 +23,13 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         if ui.selectable_label(rv.sel == Sel::Working, format!("Working directory ({n})")).clicked() {
             actions.push(Action::Select(Sel::Working));
         }
-        let repo_note = rv.has_note(&NoteTarget::Repo);
-        let mut atoms = egui::Atoms::new("Repository notes");
-        if repo_note {
+        // Notes are on commits and branches; an older repository note still opens.
+        if rv.has_note(&NoteTarget::Repo) {
+            let mut atoms = egui::Atoms::new("Repository notes");
             atoms.push_right(note_icon(theme::ACCENT()));
-        }
-        if ui.selectable_label(false, atoms).clicked() {
-            actions.push(Action::ShowNote(NoteTab::Repo));
+            if ui.selectable_label(false, atoms).clicked() {
+                actions.push(Action::OpenNote(NoteTarget::Repo));
+            }
         }
         ui.add_space(6.0);
 

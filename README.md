@@ -78,7 +78,8 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 - Fetch, pull, and push run in the background. The UI refreshes when the window regains focus.
 
 **Notes**
-- Notes attach to `repo`, `branch:<name>`, `commit:<sha>`, and `task:<KEY>`.
+- Notes are for **commits and branches**: the notes panel has a **Commit** tab (the selected commit) and a **Branch** tab, and a line under the tabs says which one you're editing and how it behaves. Tasks have no notes of their own: a task key links to its ticket (shown on the right of the Branch tab, with its title when the Jira API is set up). Older `repo` and `task:<KEY>` notes (and ones written over MCP) still open from the sidebar, ⌘P, or `note:` search.
+- **PR tab:** when the branch has a pull request, a **PR #123** tab next to Branch shows its status, checks, and conversation using the whole panel.
 - **Two kinds of git notes:**
   - **Branch note:** bound to the branch name. It's shown on the branch's **top commit** (a chip in the graph, and the default tab when you select the tip). It follows the branch through rebase, amend, and new commits. Use it for ongoing work.
   - **Commit note:** bound to one exact SHA. After a rebase or amend it stays with the old commit. Use it for facts about that exact snapshot (benchmarks, review of that revision).
@@ -89,14 +90,14 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 - Markdown with tables, task lists, and links. **Images, raw HTML, and unsafe link schemes are rejected** on every write, from both the GUI and MCP.
 - **Notes panel:** drag the grip on top to resize it, double-click the grip (or click ▾) to collapse it to its tab row, and click ⇤ / ⇥ to move it under the branches and history (one wide panel spanning both) or under the commit details (also ⌘P → *Move notes…*). These choices are remembered. The panel keeps the height you set (switching notes never resizes it); an empty note shows a one-line **Write note** button. The **trash** button deletes the shown note after a confirmation; it's moved to `.git/margin/notes/.trash/`, so it can be recovered.
 - **Preview, Edit, and Split** (editor and live preview side by side). Notes open in Preview. Edit and Split have a formatting toolbar: heading, **bold** (⌘B), *italic* (⌘I), code, link (⌘K), bullet, checklist, and quote. It wraps the selection, or toggles the prefix on the selected lines.
-- Autosave, and clickable task checkboxes. Internal links like `margin:commit:abc123` and `margin:task:PROJ-42` navigate inside the app.
+- Autosave, and clickable task checkboxes. Internal links like `margin:commit:abc123` and `margin:task:PROJ-42` navigate inside the app (`margin:task:…` opens the ticket).
 - Concurrency-safe: versioned writes. If an agent edits the note you're editing, you get a *Load theirs / Keep mine* choice.
 
 **GitHub pull requests** (github.com and Enterprise Server). Display-only, so everything links out to GitHub.
 - Merge readiness: *Ready to merge*, *Changes requested*, *Review required*, *Merge conflicts*, *Behind base*, *Draft*, *Merged*…
 - CI status with each check (failures first, click to open the run).
 - Comments: conversation comments, reviews, and unresolved review threads (`file:line`), newest first.
-- Shown as a `#123` chip on the branch tip and in the sidebar, plus a PR card on the branch tab. One GraphQL request covers all local branches. It reloads on window focus (at most once a minute) and after fetch, pull, or push.
+- Shown as a `#123` chip on the branch tip and in the sidebar, plus the **PR** tab in the notes panel. One GraphQL request covers all local branches. It reloads on window focus (at most once a minute) and after fetch, pull, or push.
 
 **Tasks (Jira Cloud and Data Center)**
 - The task key is inferred from the branch name (`feature/PROJ-42-login` → `PROJ-42`), or you can link it explicitly.
@@ -164,7 +165,7 @@ For GitHub Enterprise Server, list your host in `github.enterprise_hosts`. If yo
 
 ## Link other task trackers
 
-Without a Jira API config, set **Settings → Tasks → Ticket link**: a Jira site such as `https://acme.atlassian.net` (keys open `/browse/KEY`), or a template with `{key}` such as `https://linear.app/acme/issue/{key}`. Task keys in branch names and commit messages then open the ticket with one click (↗ next to the key in commit details, and in the Task tab). Look-alikes such as `UTF-8`, `SHA-256`, `ISO-8601`, and `CVE-…` aren't treated as task keys, and lowercase keys (`ops-42` in a branch name) need two or more digits and a prefix that isn't an everyday branch word, so `topic-1`, `release-2`, or `feature-123` don't count.
+Without a Jira API config, set **Settings → Tasks → Ticket link**: a Jira site such as `https://acme.atlassian.net` (keys open `/browse/KEY`), or a template with `{key}` such as `https://linear.app/acme/issue/{key}`. Task keys in branch names and commit messages then open the ticket with one click (the key in commit details, and on the Branch tab of the notes panel). Look-alikes such as `UTF-8`, `SHA-256`, `ISO-8601`, and `CVE-…` aren't treated as task keys, and lowercase keys (`ops-42` in a branch name) need two or more digits and a prefix that isn't an everyday branch word, so `topic-1`, `release-2`, or `feature-123` don't count.
 
 ## Where notes live
 

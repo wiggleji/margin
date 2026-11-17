@@ -183,18 +183,20 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 });
                 ui.end_row();
             }
-            // Tasks: click the key for its notes; ↗ opens the ticket.
+            // Tasks: each key links to its ticket.
             let keys = margin_core::tasks::extract_keys(&d.message);
             if !keys.is_empty() {
                 ui.weak("Tasks");
                 ui.horizontal_wrapped(|ui| {
                     for k in keys {
-                        if ui.link(RichText::new(&k).color(theme::ACCENT())).on_hover_text("Show the task's notes").clicked() {
-                            actions.push(Action::FocusTask(k.clone()));
-                        }
-                        if let Some(u) = task_url(&k) {
-                            if ui.small_button("↗").on_hover_text(format!("Open {u}")).clicked() {
-                                actions.push(Action::OpenUrl(u));
+                        match task_url(&k) {
+                            Some(u) => {
+                                if ui.link(RichText::new(format!("{k} ↗")).color(theme::ACCENT())).on_hover_text(format!("Open {u}")).clicked() {
+                                    actions.push(Action::OpenUrl(u));
+                                }
+                            }
+                            None => {
+                                ui.label(RichText::new(&k).color(theme::ACCENT())).on_hover_text("Set the ticket site in Settings → Tasks to link it");
                             }
                         }
                         ui.add_space(6.0);

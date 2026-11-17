@@ -499,12 +499,15 @@ fn github(rv: &RepoView, current: Option<&str>, v: &mut Vec<Command>) {
 }
 
 fn notes(rv: &RepoView, current: Option<&str>, v: &mut Vec<Command>) {
-    v.push(c(Group::Notes, "Open repository notes", "", "note", vec![], act(|_| vec![Action::ShowNote(NoteTab::Repo)])));
+    // (repository and task notes are no longer created; existing ones still open)
+    if rv.has_note(&margin_core::notes::NoteTarget::Repo) {
+        v.push(c(Group::Notes, "Open repository notes", "", "note", vec![], act(|_| vec![Action::OpenNote(margin_core::notes::NoteTarget::Repo)])));
+    }
     if current.is_some() {
         v.push(c(Group::Notes, "Open branch notes", "", "note", vec![], act(|_| vec![Action::Select(Sel::Working), Action::ShowNote(NoteTab::Branch)])));
     }
-    if rv.note_task().is_some() {
-        v.push(c(Group::Notes, "Open task notes", "", "note jira", vec![], act(|_| vec![Action::ShowNote(NoteTab::Task)])));
+    if let Some(t) = rv.note_task().map(margin_core::notes::NoteTarget::Task).filter(|t| rv.has_note(t)) {
+        v.push(c(Group::Notes, "Open task notes", "", "note jira", vec![], act(move |_| vec![Action::OpenNote(t.clone())])));
     }
     if !rv.detached.is_empty() {
         let items: Vec<Item> = rv

@@ -20,11 +20,13 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum NoteTab {
+    /// Note on the selected commit.
     Commit,
+    /// Note on the branch (follows it through rebase / amend / rename).
     #[default]
     Branch,
-    Task,
-    Repo,
+    /// The branch's pull request (no note: status, checks, conversation).
+    Pr,
     /// A note opened explicitly (e.g. from "Detached notes").
     Pinned,
 }
@@ -41,8 +43,9 @@ pub struct NoteEditor {
     external: bool,
     error: Option<String>,
     violations: Vec<markdown::Violation>,
-    last_edit: f64,
+    /// Tasks already asked for (for the branch's ticket summary).
     requested_tasks: HashSet<String>,
+    last_edit: f64,
     /// Height of the content when the panel is fitted to it (collapsed, or an
     /// empty note); `None` when it uses the dragged height. Read by the layout.
     pub fit_h: Option<f32>,
@@ -165,7 +168,6 @@ pub fn show(
     ui: &mut Ui,
     rv: &mut RepoView,
     task_cache: &HashMap<String, Result<Task, String>>,
-    tasks_enabled: bool,
     license: &margin_core::license::Status,
     task_url: &dyn Fn(&str) -> Option<String>,
     author: &str,
@@ -181,14 +183,23 @@ pub fn show(
     };
     let branch = rv.note_branch();
     let task = rv.note_task();
+    // The branch's PR (or, without Pro, a hint for it on GitHub repos).
+    let pr = branch.as_ref().and_then(|b| rv.prs.get(b).cloned());
+    let pr_tab = pr.is_some() || (branch.is_some() && !pro && rv.looks_github);
+    // Fall back to a tab that exists for this selection.
     if rv.editor.tab == NoteTab::Commit && commit_id.is_none() {
         rv.editor.tab = NoteTab::Branch;
+    }
+    if rv.editor.tab == NoteTab::Pr && !pr_tab {
+        rv.editor.tab = NoteTab::Branch;
+    }
+    if rv.editor.tab == NoteTab::Branch && branch.is_none() && commit_id.is_some() {
+        rv.editor.tab = NoteTab::Commit;
     }
     let desired = match rv.editor.tab {
         NoteTab::Commit => commit_id.clone().map(NoteTarget::Commit),
         NoteTab::Branch => branch.clone().map(NoteTarget::Branch),
-        NoteTab::Task => task.clone().map(NoteTarget::Task),
-        NoteTab::Repo => Some(NoteTarget::Repo),
+        NoteTab::Pr => None,
         NoteTab::Pinned => rv.pinned_note.clone(),
     };
     rv.editor.sync(desired, &rv.notes);
@@ -218,31 +229,31 @@ pub fn show(
             actions.push(Action::ToggleNotesDock);
         }
         ui.add_space(4.0);
-        // Tabs: icon, label, then a note icon if the note exists and the PR status.
+        // Tabs: the commit's note, the branch's note, the branch's PR. A note
+        // icon marks a note that exists.
         let note_mark = |seg: Seg, has: bool| if has { seg.mark(Icon::Note, None, theme::ACCENT()) } else { seg };
         let mut tabs: Vec<(NoteTab, Seg)> = vec![];
         if let Some(id) = &commit_id {
             let has = rv.has_note(&NoteTarget::Commit(id.clone()));
             let seg = Seg::new(Some(Icon::GitCommit), format!("Commit {}", &id[..7.min(id.len())]))
-                .tip("Bound to this exact commit. After a rebase/amend it stays with the old commit.");
+                .tip("Note on this commit. It stays with this exact commit (after a rebase or amend, with the old one).");
             tabs.push((NoteTab::Commit, note_mark(seg, has)));
         }
         if let Some(b) = &branch {
             let has = rv.has_note(&NoteTarget::Branch(b.clone()));
-            let mut seg = note_mark(Seg::new(Some(Icon::GitBranch), b.clone()), has)
-                .tip("Branch note: shown on the branch's top commit; follows it through rebase/amend/rename.");
-            if let Some(pr) = rv.prs.get(b) {
-                let tone = crate::pr_view::tone_color(pr.readiness().1);
-                seg = seg.mark(Icon::Github, Some(format!("#{}", pr.number)), tone);
-            }
-            tabs.push((NoteTab::Branch, seg));
+            let seg = Seg::new(Some(Icon::GitBranch), format!("Branch {b}")).tip("Note on this branch. It follows the branch through rebase, amend and rename.");
+            tabs.push((NoteTab::Branch, note_mark(seg, has)));
         }
-        if let Some(k) = &task {
-            let has = rv.has_note(&NoteTarget::Task(k.clone()));
-            tabs.push((NoteTab::Task, note_mark(Seg::new(Some(Icon::Workflow), k.clone()), has).tip("Task note")));
+        if pr_tab {
+            let seg = match &pr {
+                // "PR ◯ #42", the number coloured by readiness
+                Some(p) => Seg::new(None, "PR")
+                    .mark(Icon::Github, Some(format!("#{}", p.number)), crate::pr_view::tone_color(p.readiness().1))
+                    .tip(format!("{} · {}", p.title, p.readiness().0)),
+                None => Seg::new(Some(Icon::Github), "PR").tip("Pull request status (Margin Pro)"),
+            };
+            tabs.push((NoteTab::Pr, seg));
         }
-        let has = rv.has_note(&NoteTarget::Repo);
-        tabs.push((NoteTab::Repo, note_mark(Seg::new(Some(Icon::Repo), "Repo"), has).tip("Notes for the whole repository")));
         if let Some(p) = rv.pinned_note.clone() {
             let detached = rv.detached.iter().any(|d| d.note == p);
             let text = if detached { format!("Detached {}", short_target(&p)) } else { short_target(&p) };
@@ -272,47 +283,49 @@ pub fn show(
         }
         return;
     }
-    // "Link task…" for a branch without one (an action, so not shaped like a tab).
-    let link_task = |ui: &mut Ui, actions: &mut Vec<Action>| {
-        if let (None, Some(b)) = (&task, &branch) {
-            if ui.small_button("Link task…").on_hover_text("Link a Jira / Linear / Asana task to this branch").clicked() {
-                actions.push(Action::LinkTaskDialog { branch: b.clone() });
-            }
-        }
-    };
-
-    // ---- empty note: one line instead of a big empty editor
-    if compact {
-        ui.horizontal(|ui| {
-            let ed = &mut rv.editor;
-            match &ed.target {
-                Some(t) => {
-                    ui.label(RichText::new(format!("No note on {} yet.", short_target(t))).color(theme::TEXT_DIM()));
-                    if crate::widgets::primary_button(ui, "Write note").clicked() {
-                        ed.preview = false;
-                        ui.ctx().memory_mut(|m| m.request_focus(edit_id()));
-                    }
-                }
-                None => {
-                    ui.label(RichText::new(match ed.tab {
-                        NoteTab::Branch => "Detached HEAD — no branch to attach notes to.",
-                        NoteTab::Task => "No task linked.",
-                        _ => "Nothing selected.",
-                    }).color(theme::TEXT_DIM()));
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| link_task(ui, actions));
-        });
-        // Same height as any other note: switching notes never resizes the panel.
-        rv.editor.fit_h = None;
-        if fit_before.is_some() {
-            ui.ctx().request_repaint();
-        }
-        return;
-    }
     rv.editor.fit_h = None;
     if fit_before.is_some() {
         ui.ctx().request_repaint();
+    }
+
+    // ---- PR tab: the whole panel for status, checks and the conversation
+    if rv.editor.tab == NoteTab::Pr {
+        ui.separator();
+        if let Some(b) = &branch {
+            egui::ScrollArea::vertical().id_salt("pr_scroll").auto_shrink([false, false]).show(ui, |ui| {
+                if pro {
+                    crate::pr_view::card(ui, rv, b, actions);
+                } else {
+                    crate::pro::lock_hint(ui, "GitHub PR status", license, actions);
+                }
+            });
+        }
+        return;
+    }
+
+    // ---- what this note is attached to (and, when empty, a button to start it)
+    ui.horizontal(|ui| {
+        if let Some(k) = &task
+            && pro
+            && !task_cache.contains_key(k)
+            && rv.editor.requested_tasks.insert(k.clone())
+        {
+            actions.push(Action::FetchTask(k.clone()));
+        }
+        target_line(ui, rv, commit_id.as_deref());
+        if compact && rv.editor.target.is_some() {
+            ui.add_space(6.0);
+            if crate::widgets::primary_button(ui, "Write note").clicked() {
+                rv.editor.preview = false;
+                ui.ctx().memory_mut(|m| m.request_focus(edit_id()));
+            }
+        }
+        if let (NoteTab::Branch, Some(b)) = (rv.editor.tab, &branch) {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| task_link(ui, b, task.as_deref(), task_cache, task_url, actions));
+        }
+    });
+    if compact {
+        return;
     }
 
     // Second row: Edit / Split / Preview, formatting, + Entry, save state; Link task on the right.
@@ -414,8 +427,6 @@ pub fn show(
                 ui.label(RichText::new(txt).small().color(color));
             }
         }
-        ui.add_space(6.0);
-        link_task(ui, actions);
     });
     ui.separator();
 
@@ -472,34 +483,10 @@ pub fn show(
         }
     }
 
-    // ---- PR card (branch tab) / task card (task tab)
-    if rv.editor.tab == NoteTab::Branch {
-        if let Some(b) = &branch {
-            // Own scroll region so a long review never hides the note below.
-            let max = (ui.available_height() * 0.5).max(80.0);
-            egui::ScrollArea::vertical().id_salt("pr_scroll").max_height(max).auto_shrink([false, true]).show(ui, |ui| {
-                if pro {
-                    crate::pr_view::card(ui, rv, b, actions);
-                } else if rv.looks_github {
-                    crate::pro::lock_hint(ui, "GitHub PR status", license, actions);
-                }
-            });
-        }
-    }
-    if rv.editor.tab == NoteTab::Task {
-        if let Some(k) = &task {
-            if tasks_enabled && !pro {
-                crate::pro::lock_hint(ui, "Jira ticket details", license, actions);
-            }
-            task_card(ui, k, task_cache.get(k), tasks_enabled && pro, task_url(k), &mut rv.editor.requested_tasks, actions);
-        }
-    }
-
     let ed = &mut rv.editor;
     if ed.target.is_none() {
         ui.weak(match ed.tab {
             NoteTab::Branch => "Detached HEAD — no branch to attach notes to.",
-            NoteTab::Task => "No task linked. Name the branch like feature/PROJ-123-… or use “Link task…”.",
             _ => "Nothing selected.",
         });
         return;
@@ -586,17 +573,10 @@ pub fn show(
 
 /// The note would be an empty editor: show one line instead (and shrink the panel).
 fn is_compact(rv: &RepoView, pro: bool) -> bool {
+    let _ = pro;
     let ed = &rv.editor;
-    if ed.tab == NoteTab::Task || ed.tab == NoteTab::Pinned || ed.dirty || ed.external || ed.error.is_some() {
+    if ed.tab == NoteTab::Pinned || ed.tab == NoteTab::Pr || ed.dirty || ed.external || ed.error.is_some() {
         return false;
-    }
-    if ed.tab == NoteTab::Branch {
-        // The PR card (or its Pro hint) lives in the branch tab.
-        if let Some(b) = rv.note_branch() {
-            if rv.prs.contains_key(&b) || (!pro && rv.looks_github) {
-                return false;
-            }
-        }
     }
     let banner = ed.target.as_ref().is_some_and(|t| rv.reattached.iter().any(|e| e.to == t.to_string()));
     !banner && ed.preview && ed.text.trim().is_empty()
@@ -696,86 +676,60 @@ pub fn short_target(t: &NoteTarget) -> String {
     }
 }
 
-fn task_card(
+/// What the note is attached to: "Note on commit 5c070c2 “subject” — stays
+/// with this exact commit" / "Note on branch feature/x — follows the branch…".
+fn target_line(ui: &mut Ui, rv: &RepoView, commit: Option<&str>) {
+    let has = rv.editor.target.as_ref().is_some_and(|t| rv.has_note(t));
+    let empty = if has { "" } else { " · no note yet" };
+    let dim = |ui: &mut Ui, t: String| ui.label(RichText::new(t).small().color(theme::TEXT_DIM()));
+    match (&rv.editor.tab, &rv.editor.target) {
+        (NoteTab::Commit, _) => {
+            let Some(id) = commit else { return };
+            let subject = rv.snap.as_ref().and_then(|s| s.commits.iter().find(|c| c.id == id)).map(|c| c.subject.as_str()).unwrap_or("");
+            ui.label(RichText::new(format!("Note on commit {}", &id[..7.min(id.len())])).strong());
+            if !subject.is_empty() {
+                ui.add(egui::Label::new(RichText::new(format!("“{subject}”")).color(theme::TEXT())).truncate()).on_hover_text(subject);
+            }
+            dim(ui, format!("stays with this exact commit{empty}"));
+        }
+        (NoteTab::Branch, Some(NoteTarget::Branch(b))) => {
+            ui.label(RichText::new(format!("Note on branch {b}")).strong());
+            dim(ui, format!("follows the branch through rebase, amend and rename{empty}"));
+        }
+        _ => {}
+    }
+}
+
+/// The branch's task as a link to its ticket, or "Link task…".
+fn task_link(
     ui: &mut Ui,
-    key: &str,
-    t: Option<&Result<Task, String>>,
-    enabled: bool,
-    url: Option<String>,
-    requested: &mut HashSet<String>,
+    branch: &str,
+    task: Option<&str>,
+    task_cache: &HashMap<String, Result<Task, String>>,
+    task_url: &dyn Fn(&str) -> Option<String>,
     actions: &mut Vec<Action>,
 ) {
-    if !enabled {
-        // No API configured: still one click to the tracker (Linear, Asana, Jira…).
-        match url {
-            Some(u) => {
-                if ui.link(format!("Open {key} ↗")).on_hover_text(&u).clicked() {
-                    actions.push(Action::OpenUrl(u));
-                }
-            }
-            None => {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(key).color(theme::ACCENT()));
-                    if ui.link(RichText::new("Set the ticket link in Settings to open it").small()).clicked() {
-                        actions.push(Action::OpenSettings);
-                    }
-                });
-            }
+    let Some(k) = task else {
+        if ui.small_button("Link task…").on_hover_text("Link a Jira / Linear / Asana task to this branch").clicked() {
+            actions.push(Action::LinkTaskDialog { branch: branch.to_string() });
         }
-        ui.separator();
         return;
-    }
-    match t {
+    };
+    let text = match task_cache.get(k) {
+        Some(Ok(t)) => format!("{k} · {}", t.summary),
+        _ => k.to_string(),
+    };
+    match task_url(k) {
+        Some(u) => {
+            // (long ticket titles are cut short)
+            let short: String = if text.chars().count() > 48 { text.chars().take(47).chain(['…']).collect() } else { text.clone() };
+            let r = ui.link(RichText::new(format!("{short} ↗")).color(theme::ACCENT()));
+            if r.on_hover_text(format!("Open {u}")).clicked() {
+                actions.push(Action::OpenUrl(u));
+            }
+        }
         None => {
-            if requested.insert(key.to_string()) {
-                actions.push(Action::FetchTask(key.to_string()));
-            }
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.weak(format!("Loading {key}…"));
-            });
-        }
-        Some(Err(e)) => {
-            ui.horizontal(|ui| {
-                ui.colored_label(theme::ERROR(), e);
-                if ui.small_button("Retry").clicked() {
-                    actions.push(Action::FetchTask(key.to_string()));
-                }
-            });
-        }
-        Some(Ok(t)) => {
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(&t.summary);
-            });
-            ui.horizontal(|ui| {
-                let color = match t.status_category.as_str() {
-                    "done" => theme::ADDED(),
-                    "indeterminate" => theme::lane(0),
-                    _ => theme::TEXT_DIM(),
-                };
-                ui.label(RichText::new(&t.status).small().color(color));
-                ui.label(RichText::new(&t.issue_type).small().color(theme::TEXT_DIM()));
-                if let Some(a) = &t.assignee {
-                    ui.label(RichText::new(a).small().color(theme::TEXT_DIM()));
-                }
-                if let Some(p) = &t.priority {
-                    ui.label(RichText::new(p).small().color(theme::TEXT_DIM()));
-                }
-                if ui.small_button("Open").clicked() {
-                    actions.push(Action::OpenUrl(t.url.clone()));
-                }
-                if ui.small_button("⟳").clicked() {
-                    actions.push(Action::FetchTask(key.to_string()));
-                }
-            });
-            if !t.description.is_empty() {
-                egui::CollapsingHeader::new(RichText::new("Description").small()).id_salt(("taskdesc", key)).show(ui, |ui| {
-                    egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
-                        ui.label(&t.description);
-                    });
-                });
-            }
+            ui.add(egui::Label::new(RichText::new(text).color(theme::ACCENT())).truncate()).on_hover_text("Set the ticket site in Settings → Tasks to link it");
         }
     }
-    ui.separator();
 }
