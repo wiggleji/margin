@@ -75,6 +75,10 @@ pub enum Action {
     /// Reload PR status for all local branches (`force` ignores the 60 s throttle).
     FetchPrs { force: bool },
     FetchPrDetail(String),
+    /// Reply to a PR review thread (id) on the PR for `branch`.
+    ReplyThread { id: String, branch: String, body: String },
+    /// Resolve or reopen a PR review thread.
+    ResolveThread { id: String, branch: String, resolve: bool },
     RenameBranchDialog(String),
     RenameBranch { old: String, new: String },
     /// Show any note (e.g. a detached one) in the notes panel.
@@ -696,6 +700,8 @@ impl MarginApp {
                     old_side: t.old_side,
                     resolved: t.resolved,
                     outdated: t.outdated && t.original_commit != id,
+                    id: t.id.clone(),
+                    branch: b.clone(),
                     pr: d.summary.number,
                     comments: t.comments.iter().map(|c| (c.author.clone(), c.body.clone(), c.created_at.chars().take(10).collect(), c.url.clone())).collect(),
                 };
@@ -705,6 +711,24 @@ impl MarginApp {
             }
         }
         rv.commit_diff.set_threads(out);
+    }
+
+    /// Run a review-thread mutation in the background (see `Msg::ThreadOp`).
+    fn thread_op(&mut self, id: String, branch: String, what: &'static str, f: impl FnOnce(&margin_core::github::GitHub, &str) -> margin_core::Result<()> + Send + 'static) {
+        if !self.pro() {
+            return;
+        }
+        let Some(rv) = &mut self.rv else { return };
+        let Some(gh) = rv.github.clone() else {
+            rv.commit_diff.thread_done(&id, false);
+            self.err("GitHub isn't connected");
+            return;
+        };
+        let workdir = rv.repo.workdir.clone();
+        self.jobs.spawn(move || {
+            let result = f(&gh, &id).map_err(|e| e.0);
+            Msg::ThreadOp { workdir, branch, thread: id, what, result }
+        });
     }
 
     fn save_note(&mut self) {
@@ -1283,6 +1307,10 @@ impl MarginApp {
                     branch,
                 });
             }
+            ReplyThread { id, branch, body } => self.thread_op(id, branch, "Reply", move |gh, id| gh.reply_thread(id, &body)),
+            ResolveThread { id, branch, resolve } => {
+                self.thread_op(id, branch, if resolve { "Resolve" } else { "Unresolve" }, move |gh, id| gh.set_thread_resolved(id, resolve))
+            }
             ScanDetached => {
                 let Some(rv) = &mut self.rv else { return };
                 let Some(snap) = &rv.snap else { return };
@@ -1683,6 +1711,15 @@ impl MarginApp {
                 let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
                 rv.pr_detail.insert(branch, result.and_then(|d| d.ok_or_else(|| "No pull request for this branch".to_string())));
                 self.update_threads();
+            }
+            Msg::ThreadOp { branch, thread, what, result, .. } => {
+                let Some(rv) = &mut self.rv else { return };
+                rv.commit_diff.thread_done(&thread, result.is_ok());
+                match result {
+                    // Reload the PR so the card shows the new comment / state.
+                    Ok(()) => self.handle(Action::FetchPrDetail(branch)),
+                    Err(e) => self.err(format!("{what} failed: {e}")),
+                }
             }
             Msg::Refreshed { result: r, .. } => {
                 let Some(rv) = &mut self.rv else { return };

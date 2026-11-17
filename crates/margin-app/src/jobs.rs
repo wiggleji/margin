@@ -52,6 +52,8 @@ pub enum Msg {
     GithubReady { workdir: PathBuf, result: Result<Option<Arc<GitHub>>, String> },
     Prs { workdir: PathBuf, result: Result<HashMap<String, PrSummary>, String> },
     PrDetail { workdir: PathBuf, branch: String, result: Result<Option<PrDetail>, String> },
+    /// A review-thread reply or resolve finished.
+    ThreadOp { workdir: PathBuf, branch: String, thread: String, what: &'static str, result: Result<(), String> },
     /// Branch notes moved after renames, and the notes left detached.
     Detached {
         workdir: PathBuf,
@@ -73,6 +75,7 @@ impl Msg {
             | Msg::GithubReady { workdir, .. }
             | Msg::Prs { workdir, .. }
             | Msg::PrDetail { workdir, .. }
+            | Msg::ThreadOp { workdir, .. }
             | Msg::Detached { workdir, .. } => Some(workdir),
             Msg::Task { .. } | Msg::MyTasks(_) => None,
         }

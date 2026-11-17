@@ -52,6 +52,9 @@ pub enum Section {
 /// A PR review thread to show inside the diff, on `line` of `path`.
 #[derive(Clone, PartialEq, Debug)]
 pub struct InlineThread {
+    /// GraphQL node id, and the branch whose PR it's on (for reply / resolve).
+    pub id: String,
+    pub branch: String,
     pub path: String,
     pub line: u64,
     pub old_side: bool,
@@ -80,6 +83,9 @@ pub enum DiffEvent {
     Discard(Vec<String>),
     CopyPath(String),
     OpenUrl(String),
+    /// Reply to a review thread / resolve or reopen it.
+    ThreadReply { id: String, branch: String, body: String },
+    ThreadResolve { id: String, branch: String, resolve: bool },
     /// The focus button: give the diff the whole window, or bring the rest back.
     ToggleFocus,
 }
@@ -145,6 +151,11 @@ pub struct DiffView {
     thread_open: Vec<bool>,
     thread_w: f32,
     thread_at: Vec<(usize, usize, usize)>,
+    /// Thread being replied to (id) and the draft; threads with a request in flight.
+    reply: Option<String>,
+    reply_text: String,
+    reply_focus: bool,
+    thread_busy: std::collections::HashSet<String>,
     /// Scroll smoothly to this offset (next / previous change).
     glide_to: Option<f32>,
     /// Row of the change last jumped to, and the viewport height.
@@ -379,12 +390,30 @@ impl DiffView {
         if t == self.threads {
             return;
         }
-        // open by default, unless resolved or outdated (those fold to one line)
-        self.thread_open = t.iter().map(|t| !(t.resolved || t.outdated)).collect();
+        // open by default, unless resolved or outdated (those fold to one line);
+        // a thread already shown keeps its state unless it was just resolved / reopened
+        let open = |n: &InlineThread| {
+            let old = self.threads.iter().position(|o| o.id == n.id && !n.id.is_empty() && o.resolved == n.resolved);
+            old.map_or(!(n.resolved || n.outdated), |i| self.thread_open[i])
+        };
+        self.thread_open = t.iter().map(open).collect();
+        if self.reply.as_ref().is_some_and(|id| !t.iter().any(|n| &n.id == id)) {
+            self.reply = None;
+        }
         self.threads = t;
         self.thread_w = 0.0; // re-measure
         self.thread_h.clear();
         self.rebuild();
+    }
+
+    /// A reply / resolve for thread `id` finished (the PR reloads after a success).
+    pub fn thread_done(&mut self, id: &str, ok: bool) {
+        self.thread_busy.remove(id);
+        if ok && self.reply.as_deref() == Some(id) {
+            self.reply = None;
+            self.reply_text.clear();
+        }
+        self.thread_w = 0.0; // re-measure
     }
 
     pub fn section(&self, fi: usize) -> Option<Section> {
@@ -612,11 +641,14 @@ impl DiffView {
                 .threads
                 .iter()
                 .enumerate()
-                .map(|(i, t)| ((layout_thread(ui, t, card_w, self.thread_open[i]).h + 10.0) / row_h).ceil() as usize)
+                .map(|(i, t)| ((layout_thread(ui, t, card_w, self.thread_open[i], self.thread_state(t)).h + 6.0) / row_h).ceil() as usize)
                 .collect();
             self.rebuild();
         }
         let mut thread_toggle: Option<usize> = None;
+        let mut thread_act: Option<(usize, CardAct)> = None;
+        let mut reply_text = std::mem::take(&mut self.reply_text);
+        let reply_focus = std::mem::take(&mut self.reply_focus);
 
         // Next / previous change = the next hunk header below / above the top of the view.
         // (a hunk lands just under the sticky toolbar)
@@ -1016,7 +1048,8 @@ impl DiffView {
                     }
                     let t = &self.threads[ti];
                     let open_t = self.thread_open[ti];
-                    let card = layout_thread(page, t, card_w, open_t);
+                    let state = self.thread_state(t);
+                    let card = layout_thread(page, t, card_w, open_t, state);
                     let y0 = top + rows_y + first_r as f32 * row_h + 3.0;
                     let rect = Rect::from_min_size(pos2(x0 + card_left, y0), vec2(card_w, n as f32 * row_h - 6.0));
                     let p = page.painter();
@@ -1044,14 +1077,57 @@ impl DiffView {
                     if hr.on_hover_text(if open_t { "Fold this thread" } else { "Show this thread" }).clicked() {
                         thread_toggle = Some(ti);
                     }
-                    if let (Some((lx, ly, lw, lh)), Some(url)) = (card.link, t.comments.first().map(|c| c.3.clone())) {
-                        let lr = Rect::from_min_size(pos2(rect.left() + lx, rect.top() + ly), vec2(lw, lh));
-                        let resp = page.interact(lr, base_id.with(("thread-link", ti)), Sense::click());
+                    // footer links: Reply · Resolve · Open on GitHub
+                    for (k, (lx, ly, lw, lh)) in &card.acts {
+                        let lr = Rect::from_min_size(pos2(rect.left() + lx, rect.top() + ly), vec2(*lw, *lh)).expand2(vec2(3.0, 2.0));
+                        let resp = page.interact(lr, base_id.with(("thread-act", ti, *k as u8)), Sense::click());
                         if resp.hovered() {
                             page.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            page.painter().rect_filled(lr, 3.0, theme::HOVER().gamma_multiply(0.6));
+                            // (repaint the label over the hover fill)
+                            if let Some((_, _, g, c)) = card.items.iter().find(|(x, y, ..)| x == lx && y == ly) {
+                                page.painter().galley(pos2(rect.left() + lx, rect.top() + ly), g.clone(), *c);
+                            }
                         }
-                        if resp.on_hover_text(&url).clicked() {
-                            events.push(DiffEvent::OpenUrl(url));
+                        let tip = match k {
+                            CardAct::Link => t.comments.first().map_or(String::new(), |c| c.3.clone()),
+                            CardAct::Reply => "Reply to this thread".into(),
+                            CardAct::Resolve if t.resolved => "Reopen this conversation".into(),
+                            CardAct::Resolve => "Mark this conversation as resolved".into(),
+                            _ => String::new(),
+                        };
+                        if resp.on_hover_text(tip).clicked() {
+                            thread_act = Some((ti, *k));
+                        }
+                    }
+                    // reply box: a text field and Comment / Cancel
+                    if let Some((ex, ey, ew, eh)) = card.editor {
+                        let er = Rect::from_min_size(pos2(rect.left() + ex, rect.top() + ey), vec2(ew, eh));
+                        let busy = state.busy;
+                        let te = egui::TextEdit::multiline(&mut reply_text)
+                            .id(base_id.with(("thread-reply", ti)))
+                            .hint_text("Reply…  (⌘↩ to send)")
+                            .font(egui::TextStyle::Body)
+                            .desired_width(ew)
+                            .margin(vec2(8.0, 6.0))
+                            .background_color(page.visuals().panel_fill)
+                            .interactive(!busy);
+                        let r = page.put(er, te);
+                        if reply_focus {
+                            r.request_focus();
+                        }
+                        let send = r.has_focus() && page.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
+                        // (Esc takes the focus away before we look, so check both)
+                        let cancel = (r.has_focus() || r.lost_focus()) && page.input(|i| i.key_pressed(egui::Key::Escape));
+                        let br = Rect::from_min_size(pos2(er.left(), er.bottom() + 8.0), vec2(ew, 26.0));
+                        let mut bui = page.new_child(egui::UiBuilder::new().max_rect(br).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                        let can = !busy && !reply_text.trim().is_empty();
+                        let comment = bui.add_enabled_ui(can, |ui| crate::widgets::primary_button(ui, if busy { "Sending…" } else { "Comment" })).inner.clicked();
+                        let cancel_b = bui.add_enabled(!busy, egui::Button::new("Cancel")).clicked();
+                        if (comment || send) && can {
+                            thread_act = Some((ti, CardAct::Send));
+                        } else if cancel || cancel_b {
+                            thread_act = Some((ti, CardAct::Cancel));
                         }
                     }
                 }
@@ -1074,6 +1150,38 @@ impl DiffView {
                 self.header_h = h;
                 ui.ctx().request_repaint();
             }
+        }
+        self.reply_text = reply_text;
+        if let Some((ti, act)) = thread_act {
+            let t = &self.threads[ti];
+            match act {
+                CardAct::Link => {
+                    if let Some(c) = t.comments.first() {
+                        events.push(DiffEvent::OpenUrl(c.3.clone()));
+                    }
+                }
+                CardAct::Reply => {
+                    if self.reply.as_ref() != Some(&t.id) {
+                        self.reply = Some(t.id.clone());
+                        self.reply_text.clear();
+                    }
+                    self.reply_focus = true;
+                }
+                CardAct::Cancel => {
+                    self.reply = None;
+                    self.reply_text.clear();
+                }
+                CardAct::Send => {
+                    self.thread_busy.insert(t.id.clone());
+                    events.push(DiffEvent::ThreadReply { id: t.id.clone(), branch: t.branch.clone(), body: self.reply_text.trim().to_string() });
+                }
+                CardAct::Resolve => {
+                    self.thread_busy.insert(t.id.clone());
+                    events.push(DiffEvent::ThreadResolve { id: t.id.clone(), branch: t.branch.clone(), resolve: !t.resolved });
+                }
+            }
+            self.thread_w = 0.0; // re-measure
+            ui.ctx().request_repaint();
         }
         if let Some(ti) = thread_toggle {
             self.thread_open[ti] = !self.thread_open[ti];
@@ -1134,16 +1242,42 @@ impl DiffView {
     }
 }
 
+/// What a click on a thread card does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CardAct {
+    Reply,
+    Resolve,
+    Link,
+    Send,
+    Cancel,
+}
+
+/// A thread's interaction state, which changes its card: the reply box is
+/// open, and/or a request is in flight.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ThreadState {
+    replying: bool,
+    busy: bool,
+}
+
 /// A laid-out review thread card: galleys at (x, y) inside the card, its
-/// height, the height of the clickable header line, and the link's rect.
+/// height, the height of the clickable header line, the footer links' rects,
+/// and the reply box's rect (when replying).
 struct ThreadCard {
     items: Vec<(f32, f32, std::sync::Arc<egui::Galley>, Color32)>,
     h: f32,
     header_h: f32,
-    link: Option<(f32, f32, f32, f32)>,
+    acts: Vec<(CardAct, (f32, f32, f32, f32))>,
+    editor: Option<(f32, f32, f32, f32)>,
 }
 
-fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool) -> ThreadCard {
+impl DiffView {
+    fn thread_state(&self, t: &InlineThread) -> ThreadState {
+        ThreadState { replying: self.reply.as_ref() == Some(&t.id), busy: self.thread_busy.contains(&t.id) }
+    }
+}
+
+fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool, state: ThreadState) -> ThreadCard {
     let pad = 12.0;
     let body_font = egui::TextStyle::Body.resolve(ui.style());
     let small = egui::TextStyle::Small.resolve(ui.style());
@@ -1166,12 +1300,16 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool) -> ThreadCard {
     } else {
         head = format!("▾ {head}");
     }
-    let hg = p.layout_no_wrap(head, small.clone(), theme::TEXT_DIM());
+    // one line, cut short before the GitHub mark + PR number on the right
+    let mut job = egui::text::LayoutJob::simple(head, small.clone(), theme::TEXT_DIM(), (w - pad - 90.0).max(60.0));
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let hg = p.layout_job(job);
     let header_h = y + hg.size().y + 6.0;
     items.push((pad, y, hg.clone(), theme::TEXT_DIM()));
     y += hg.size().y + 8.0;
     if !open {
-        return ThreadCard { items, h: header_h + 2.0, header_h, link: None };
+        return ThreadCard { items, h: header_h - 2.0, header_h, acts: vec![], editor: None };
     }
     for (i, (author, body, date, _)) in t.comments.iter().enumerate() {
         if i > 0 {
@@ -1188,11 +1326,42 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool) -> ThreadCard {
         y += bg.size().y;
     }
     y += 8.0;
-    let lg = p.layout_no_wrap("Open on GitHub ↗".to_string(), small, theme::ACCENT());
-    let link = Some((pad, y, lg.size().x, lg.size().y));
-    items.push((pad, y, lg.clone(), theme::ACCENT()));
-    y += lg.size().y + 10.0;
-    ThreadCard { items, h: y, header_h, link }
+    // footer: Reply · Resolve / Unresolve · Open on GitHub ↗
+    let ThreadState { replying, busy } = state;
+    let mut acts = vec![];
+    let mut x = pad;
+    let mut fh: f32 = 0.0;
+    let mut link_item = |label: &str, k: Option<CardAct>, color: Color32, items: &mut Vec<_>, x: &mut f32| {
+        let g = p.layout_no_wrap(label.to_string(), small.clone(), color);
+        if let Some(k) = k {
+            acts.push((k, (*x, y, g.size().x, g.size().y)));
+        }
+        items.push((*x, y, g.clone(), color));
+        fh = fh.max(g.size().y);
+        *x += g.size().x + 18.0;
+    };
+    let can_write = !t.id.is_empty();
+    if busy {
+        link_item("Working…", None, theme::TEXT_DIM(), &mut items, &mut x);
+    } else if can_write {
+        if !replying {
+            link_item("Reply", Some(CardAct::Reply), theme::ACCENT(), &mut items, &mut x);
+        }
+        link_item(if t.resolved { "Unresolve" } else { "Resolve" }, Some(CardAct::Resolve), theme::ACCENT(), &mut items, &mut x);
+    }
+    if !t.comments.is_empty() {
+        link_item("Open on GitHub ↗", Some(CardAct::Link), theme::ACCENT(), &mut items, &mut x);
+    }
+    y += fh + 10.0;
+    // reply box (stays while sending, so the text isn't lost on failure)
+    let mut editor = None;
+    if replying {
+        let row = ui.fonts_mut(|f| f.row_height(&body_font));
+        let eh = row * 3.0 + 12.0;
+        editor = Some((pad, y, w - pad * 2.0, eh));
+        y += eh + 8.0 + 26.0 + 10.0;
+    }
+    ThreadCard { items, h: y, header_h, acts, editor }
 }
 
 /// Word changes for each removed/added line pair (runs paired in order, as

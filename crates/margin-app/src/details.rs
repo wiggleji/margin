@@ -99,6 +99,8 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             DiffEvent::CopyPath(p) => Action::Copy(p),
             DiffEvent::ToggleFocus => Action::ToggleFocusDiff,
             DiffEvent::OpenUrl(u) => Action::OpenUrl(u),
+            // (no review threads in the working directory)
+            DiffEvent::ThreadReply { .. } | DiffEvent::ThreadResolve { .. } => continue,
         });
     }
 }
@@ -222,6 +224,8 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
         match e {
             DiffEvent::ToggleFocus => actions.push(Action::ToggleFocusDiff),
             DiffEvent::OpenUrl(u) => actions.push(Action::OpenUrl(u)),
+            DiffEvent::ThreadReply { id, branch, body } => actions.push(Action::ReplyThread { id, branch, body }),
+            DiffEvent::ThreadResolve { id, branch, resolve } => actions.push(Action::ResolveThread { id, branch, resolve }),
             _ => {}
         }
     }

@@ -184,7 +184,7 @@ Sync notes between your computers through a folder your cloud provider already s
 The git client, notes, agents (MCP), tabs, and Git Flow are free. **Margin Pro** ($29 one-time, **$19 launch price**, including a year of updates) unlocks:
 
 - **GitHub PR status:** readiness, CI checks, and review comments.
-- **Review threads in the diff:** a PR's inline review threads appear as cards under the line they're on, in commit diffs: on the commit a thread was written on (at its original line) and, for open threads, on the PR's latest commit. Each card shows every comment and links to GitHub; resolved and outdated threads fold to one line (click to open).
+- **Review threads in the diff:** a PR's inline review threads appear as cards under the line they're on, in commit diffs: on the commit a thread was written on (at its original line) and, for open threads, on the PR's latest commit. Each card shows every comment, with **Reply** (a box opens in the card; ⌘↩ sends, Esc cancels), **Resolve** / **Unresolve**, and a link to GitHub. The card reloads with the new comment or state; on an error the draft stays. Resolved and outdated threads fold to one line (click to open).
 - **Task trackers:** Jira ticket details, My tasks, and creating a branch from a ticket.
 - **Notes sync for more than one repository.**
 

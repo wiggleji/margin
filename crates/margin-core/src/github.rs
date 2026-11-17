@@ -165,6 +165,8 @@ pub struct ThreadComment {
 /// An inline review thread (a conversation on a line of the PR's diff).
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewThread {
+    /// GraphQL node id (for replying / resolving).
+    pub id: String,
     pub path: String,
     /// Line in the PR's current head (new side) or base (old side); `None` when outdated.
     pub line: Option<u64>,
@@ -205,7 +207,7 @@ const DETAIL: &str = "
   baseRefName
   comments(last: 30) { nodes { author { login } body createdAt url } }
   reviews(last: 30) { nodes { author { login } state body submittedAt url } }
-  reviewThreads(last: 80) { nodes { isResolved isOutdated path line originalLine diffSide
+  reviewThreads(last: 80) { nodes { id isResolved isOutdated path line originalLine diffSide
     comments(first: 50) { totalCount nodes { author { login } body createdAt url originalCommit { oid } } } } }
   checks: commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
     __typename
@@ -304,6 +306,22 @@ impl GitHub {
         Ok(out)
     }
 
+    /// Reply to a review thread.
+    pub fn reply_thread(&self, thread_id: &str, body: &str) -> Result<()> {
+        let q = "mutation($id: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $id, body: $body}) { comment { id } } }";
+        self.graphql(q, json!({ "id": thread_id, "body": body })).map(drop)
+    }
+
+    /// Resolve (or reopen) a review thread.
+    pub fn set_thread_resolved(&self, thread_id: &str, resolved: bool) -> Result<()> {
+        let q = if resolved {
+            "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
+        } else {
+            "mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
+        };
+        self.graphql(q, json!({ "id": thread_id })).map(drop)
+    }
+
     pub fn pr_detail(&self, head: &str) -> Result<Option<PrDetail>> {
         let q = format!(
             "query($owner: String!, $name: String!, $head: String!) {{ repository(owner: $owner, name: $name) {{
@@ -374,6 +392,7 @@ fn parse_detail(pr: &Value) -> PrDetail {
             .map(|c| ThreadComment { author: author(c), body: s(&c["body"]), created_at: s(&c["createdAt"]), url: s(&c["url"]) })
             .collect();
         threads.push(ReviewThread {
+            id: s(&t["id"]),
             path: s(&t["path"]),
             line: t["line"].as_u64(),
             original_line: t["originalLine"].as_u64().or(t["line"].as_u64()),
@@ -474,7 +493,7 @@ pub(crate) mod tests {
         { "author": { "login": "lee" }, "state": "CHANGES_REQUESTED", "body": "Please add a test.", "submittedAt": "2026-11-10T09:00:00Z", "url": "u2" },
         { "author": { "login": "lee" }, "state": "COMMENTED", "body": "", "submittedAt": "2026-11-10T09:00:01Z", "url": "u3" } ] },
       "reviewThreads": { "nodes": [
-        { "isResolved": false, "isOutdated": false, "path": "src/auth.rs", "line": 42, "originalLine": 40, "diffSide": "RIGHT", "comments": { "totalCount": 3, "nodes": [
+        { "id": "T1", "isResolved": false, "isOutdated": false, "path": "src/auth.rs", "line": 42, "originalLine": 40, "diffSide": "RIGHT", "comments": { "totalCount": 3, "nodes": [
           { "author": { "login": "lee" }, "body": "Handle 429 here", "createdAt": "2026-11-10T08:00:00Z", "url": "u4", "originalCommit": { "oid": "c1" } },
           { "author": { "login": "kim" }, "body": "Done in the next commit", "createdAt": "2026-11-10T09:00:00Z", "url": "u6", "originalCommit": { "oid": "c1" } },
           { "author": { "login": "lee" }, "body": "Thanks", "createdAt": "2026-11-10T09:30:00Z", "url": "u7", "originalCommit": { "oid": "c1" } } ] } },
@@ -504,7 +523,7 @@ pub(crate) mod tests {
         assert_eq!(d.threads.len(), 2);
         let t = &d.threads[0];
         assert_eq!((t.path.as_str(), t.line, t.original_line, t.old_side), ("src/auth.rs", Some(42), Some(40), false));
-        assert_eq!(t.original_commit, "c1");
+        assert_eq!((t.original_commit.as_str(), t.id.as_str()), ("c1", "T1"));
         assert_eq!(t.comments.iter().map(|c| c.author.as_str()).collect::<Vec<_>>(), ["lee", "kim", "lee"]);
         assert!(d.threads[1].resolved);
     }
