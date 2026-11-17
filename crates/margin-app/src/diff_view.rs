@@ -168,29 +168,31 @@ fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: 
         // controls on the right; the title fills the space between (no shifting)
         let right = ui.available_width();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            use crate::widgets::{Glyph, Seg, icon_button, segmented, toggle_chip};
             let key = if cfg!(target_os = "macos") { "⌘⇧↩" } else { "Ctrl+Shift+Enter" };
             let tip = if focused { format!("Show the branches and history again ({key})") } else { format!("Focus on the diff: hide the branches and history ({key})") };
-            if focus_button(ui, focused).on_hover_text(tip).clicked() {
+            if icon_button(ui, Glyph::Focus { on: focused }, &tip).clicked() {
                 out.focus = true;
             }
+            ui.add_space(2.0);
+            // (right-to-left: the segments are laid out left to right inside)
+            let layouts = [Seg::glyph(Glyph::Inline).tip("Inline"), Seg::glyph(Glyph::SideBySide).tip("Side by side")];
+            if let Some(i) = segmented(ui, &layouts, Some(prefs.split as usize)) {
+                out.split = Some(i == 1);
+            }
             ui.add_space(4.0);
-            if layout_button(ui, true, prefs.split).on_hover_text("Side by side").clicked() {
-                out.split = Some(true);
-            }
-            if layout_button(ui, false, !prefs.split).on_hover_text("Inline").clicked() {
-                out.split = Some(false);
-            }
-            ui.add_space(6.0);
-            let t = egui::RichText::new("Ignore whitespace").small();
-            if ui.selectable_label(prefs.ignore_ws, t).on_hover_text("Hide changes that only touch spaces, tabs or indentation (git diff -w)").clicked() {
+            if toggle_chip(ui, prefs.ignore_ws, "Ignore whitespace")
+                .on_hover_text("Hide changes that only touch spaces, tabs or indentation (git diff -w)")
+                .clicked()
+            {
                 out.ws = Some(!prefs.ignore_ws);
             }
             ui.add_space(4.0);
             let alt = if cfg!(target_os = "macos") { "⌥" } else { "Alt+" };
-            if ui.small_button("↓").on_hover_text(format!("Next change ({alt}↓)")).clicked() {
+            if icon_button(ui, Glyph::ArrowDown, &format!("Next change ({alt}↓)")).clicked() {
                 out.nav = 1;
             }
-            if ui.small_button("↑").on_hover_text(format!("Previous change ({alt}↑)")).clicked() {
+            if icon_button(ui, Glyph::ArrowUp, &format!("Previous change ({alt}↑)")).clicked() {
                 out.nav = -1;
             }
             if let (Some(t), true) = (title, stuck) {
@@ -1084,54 +1086,6 @@ impl Seg<'_> {
         let chunk: String = self.text.replace('\t', "    ").chars().skip(from).take(to - from).collect();
         p.text(pos2(text_x, rect.center().y), Align2::LEFT_CENTER, chunk, font.clone(), fg);
     }
-}
-
-/// Focus toggle: four corner brackets pointing out (expand) or in (restore).
-fn focus_button(ui: &mut Ui, on: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 18.0), Sense::click());
-    let p = ui.painter();
-    if on || resp.hovered() {
-        p.rect_filled(rect, 3.0, if on { theme::SELECTED() } else { theme::HOVER() });
-    }
-    let c = if on || resp.hovered() { theme::TEXT() } else { theme::TEXT_DIM() };
-    let st = Stroke::new(1.3, c);
-    let b = Rect::from_center_size(rect.center(), vec2(12.0, 10.0));
-    let l = 3.5;
-    // corners: (point, horizontal dir, vertical dir)
-    for (pt, dx, dy) in [(b.left_top(), 1.0, 1.0), (b.right_top(), -1.0, 1.0), (b.left_bottom(), 1.0, -1.0), (b.right_bottom(), -1.0, -1.0)] {
-        // expanded: brackets at the corners; focused: brackets pulled inward
-        let pt = if on { pt + vec2(dx * 3.0, dy * 2.5) } else { pt };
-        let (hx, vy) = if on { (-dx, -dy) } else { (dx, dy) };
-        p.line_segment([pt, pt + vec2(hx * l, 0.0)], st);
-        p.line_segment([pt, pt + vec2(0.0, vy * l)], st);
-    }
-    resp
-}
-
-/// Small icon toggle: three lines (inline) or two columns of lines (side by side).
-fn layout_button(ui: &mut Ui, split: bool, on: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 18.0), Sense::click());
-    let p = ui.painter();
-    if on || resp.hovered() {
-        p.rect_filled(rect, 3.0, if on { theme::SELECTED() } else { theme::HOVER() });
-    }
-    let c = if on { theme::TEXT() } else { theme::TEXT_DIM() };
-    let b = Rect::from_center_size(rect.center(), vec2(14.0, 11.0));
-    let st = Stroke::new(1.2, c);
-    p.rect_stroke(b, 1.5, st, egui::StrokeKind::Inside);
-    let ys = [b.top() + 3.5, b.center().y, b.bottom() - 3.5];
-    if split {
-        p.line_segment([pos2(b.center().x, b.top()), pos2(b.center().x, b.bottom())], st);
-        for y in ys {
-            p.line_segment([pos2(b.left() + 2.5, y), pos2(b.center().x - 2.0, y)], Stroke::new(1.0, c));
-            p.line_segment([pos2(b.center().x + 2.0, y), pos2(b.right() - 2.5, y)], Stroke::new(1.0, c));
-        }
-    } else {
-        for y in ys {
-            p.line_segment([pos2(b.left() + 2.5, y), pos2(b.right() - 2.5, y)], Stroke::new(1.0, c));
-        }
-    }
-    resp
 }
 
 fn tri(p: &egui::Painter, c: egui::Pos2, open: bool, color: Color32) {
