@@ -795,7 +795,7 @@ impl DiffView {
                         let pad = ui.spacing().button_padding.x * 2.0 + 6.0;
                         let bw = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), small.clone(), Color32::WHITE).size().x) + pad;
                         let r = Rect::from_min_size(pos2(x, rect.top() + 2.0), vec2(bw, row_h - 4.0));
-                        let clicked = ui.put(r, action_button(text, &small)).clicked();
+                        let clicked = row_button(ui, r, base_id.with(("row-btn", i, text)), text, &small).clicked();
                         (clicked, bw)
                     };
                     let (rect, resp) = ui.allocate_exact_size(vec2(width, row_h), sense);
@@ -832,22 +832,23 @@ impl DiffView {
                             p.rect_filled(rect, 0.0, theme::BG_DARK());
                             let open = open[fi];
                             tri(&p, pos2(rect.left() + 10.0, rect.center().y), open, theme::TEXT_DIM());
-                            // A word for what happened to the file, except the usual
-                            // case (modified), which needs none.
+                            // An icon for what happened to the file (named on hover),
+                            // except the usual case, modified, which needs none.
+                            use crate::icons::Icon;
                             let status = match (&f.old_path, &f.new_path) {
-                                _ if sec == Section::Conflicted => Some(("Conflict", theme::ERROR())),
-                                (None, Some(_)) => Some(("Added", theme::ADDED())),
-                                (Some(_), None) => Some(("Deleted", theme::REMOVED())),
-                                (Some(o), Some(n)) if o != n => Some(("Renamed", theme::lane(0))),
+                                _ if sec == Section::Conflicted => Some((Icon::Alert, "Conflict", theme::ERROR())),
+                                (None, Some(_)) => Some((Icon::DiffAdded, "Added", theme::ADDED())),
+                                (Some(_), None) => Some((Icon::DiffRemoved, "Deleted", theme::REMOVED())),
+                                (Some(o), Some(n)) if o != n => Some((Icon::DiffRenamed, "Renamed", theme::lane(0))),
                                 _ => None,
                             };
                             let mut x = rect.left() + 22.0;
-                            if let Some((word, color)) = status {
-                                let g = p.layout_no_wrap(word.to_string(), small.clone(), color);
-                                let pill = Rect::from_min_size(pos2(x, rect.center().y - (row_h - 6.0) / 2.0), vec2(g.size().x + 12.0, row_h - 6.0));
-                                p.rect_filled(pill, (row_h - 6.0) / 2.0, color.gamma_multiply(0.18));
-                                p.galley(pos2(pill.left() + 6.0, pill.center().y - g.size().y / 2.0), g, color);
-                                x = pill.right() + 8.0;
+                            if let Some((icon, word, color)) = status {
+                                let sz = (row_h - 6.0).clamp(10.0, 16.0);
+                                let ir = Rect::from_min_size(pos2(x, rect.center().y - sz / 2.0), vec2(sz, sz));
+                                crate::icons::paint(&p, icon, ir, color);
+                                ui.interact(ir.expand(2.0), base_id.with(("file-status", i)), Sense::hover()).on_hover_text(word);
+                                x = ir.right() + 8.0;
                             }
                             // path: the folder dim, the file name bright (renames: old → new)
                             let mut job = egui::text::LayoutJob::default();
@@ -970,7 +971,7 @@ impl DiffView {
                                 let pad = ui.spacing().button_padding.x * 2.0 + 6.0;
                                 let bw = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), small.clone(), Color32::WHITE).size().x) + pad;
                                 let r = Rect::from_min_size(pos2(x, rect.top() + 2.0), vec2(bw, row_h - 4.0));
-                                let btn = ui.put(r, action_button(text, &small));
+                                let btn = row_button(ui, r, base_id.with(("hunk-btn", i, *text)), text, &small);
                                 if btn.clicked() {
                                     events.push(DiffEvent::Hunk(DiffAction { file: fi, hunk: hi, op: *op }));
                                 }
@@ -1413,18 +1414,33 @@ struct ThreadState {
     busy: bool,
 }
 
-/// A small button in a diff row. Discarding throws work away, so those
-/// buttons look different from Stage / Unstage (red text on a faint red
-/// tint), so they're not mistaken for each other.
-fn action_button(text: &str, font: &FontId) -> egui::Button<'static> {
+/// A small button in a diff row, drawn to fit inside the row exactly (an
+/// egui button would be taller than a row with a large font and spill into
+/// the next one). Discarding throws work away, so those buttons look
+/// different from Stage / Unstage: red text on a faint red tint.
+fn row_button(ui: &mut Ui, r: Rect, id: egui::Id, text: &str, font: &FontId) -> egui::Response {
+    let resp = ui.interact(r, id, Sense::click());
     let danger = text.starts_with("Discard");
-    let label = egui::RichText::new(text.to_string()).font(font.clone());
-    let b = if danger {
-        egui::Button::new(label.color(theme::ERROR())).fill(theme::ERROR().gamma_multiply(0.15))
-    } else {
-        egui::Button::new(label)
+    let hot = resp.hovered() || resp.has_focus();
+    // Neutral buttons: the page colour with a thin outline, so they stand
+    // out from the (darker) row in light and dark themes alike.
+    let (fg, bg, edge) = match (danger, hot) {
+        (true, false) => (theme::ERROR(), theme::ERROR().gamma_multiply(0.12), Color32::TRANSPARENT),
+        (true, true) => (theme::ERROR(), theme::ERROR().gamma_multiply(0.24), Color32::TRANSPARENT),
+        (false, false) => (theme::TEXT(), ui.visuals().panel_fill, theme::TEXT_DIM().gamma_multiply(0.35)),
+        (false, true) => (theme::TEXT(), theme::HOVER(), theme::TEXT_DIM().gamma_multiply(0.6)),
     };
-    b.wrap_mode(egui::TextWrapMode::Extend)
+    let p = ui.painter();
+    p.rect_filled(r, 4.0, bg);
+    p.rect_stroke(r, 4.0, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+    if resp.has_focus() {
+        p.rect_stroke(r, 4.0, Stroke::new(1.0, theme::ACCENT()), egui::StrokeKind::Inside);
+    }
+    p.text(r.center(), Align2::CENTER_CENTER, text, font.clone(), fg);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
 }
 
 /// "@@ -78,3 +78,4 @@ fn login()" → ("Lines 78–81", "fn login()"): the new
