@@ -170,10 +170,13 @@ pub struct Settings {
     /// Colour theme id (Settings → Appearance); `None` = Margin.
     #[serde(default)]
     pub theme: Option<String>,
-    /// Text size in points (Settings → Appearance); `None` = config.json's
-    /// `font_size`, else 13.
+    /// Code and notes text size in points (Settings → Appearance); `None` =
+    /// config.json's `font_size`, else 13.
     #[serde(default)]
     pub font_size: Option<f32>,
+    /// Interface text size (lists, toolbar, menus); `None` = 13.
+    #[serde(default)]
+    pub ui_font_size: Option<f32>,
 }
 
 fn default_fetch_minutes() -> u32 {
@@ -182,7 +185,7 @@ fn default_fetch_minutes() -> u32 {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None, font_size: None }
+        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None, font_size: None, ui_font_size: None }
     }
 }
 

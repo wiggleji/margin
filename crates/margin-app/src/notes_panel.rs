@@ -645,6 +645,7 @@ fn trash_button(ui: &mut Ui) -> egui::Response {
 
 /// The Markdown editor, filling the space it's given.
 fn editor(ui: &mut Ui, ed: &mut NoteEditor, now: f64) {
+    theme::content_style(ui);
     let out = egui::TextEdit::multiline(&mut ed.text)
         .font(egui::TextStyle::Monospace)
         .desired_width(f32::INFINITY)
@@ -666,7 +667,10 @@ fn editor(ui: &mut Ui, ed: &mut NoteEditor, now: f64) {
 
 /// Rendered note; checkboxes toggle and save, links open.
 fn preview(ui: &mut Ui, ed: &mut NoteEditor, notes: &NoteStore, actions: &mut Vec<Action>) -> egui::Response {
-    let resp = ui.scope(|ui| markdown_view::render(ui, &ed.text));
+    let resp = ui.scope(|ui| {
+        theme::content_style(ui);
+        markdown_view::render(ui, &ed.text)
+    });
     match resp.inner {
         Some(MdAction::Link(url)) => actions.push(Action::OpenUrl(url)),
         Some(MdAction::ToggleTask { offset, checked }) => {

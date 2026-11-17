@@ -8,7 +8,7 @@
 //! and graph lanes are mixed from them.
 
 use eframe::egui::{self, Color32, FontId, TextStyle};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 /// Everything the UI paints with.
 #[derive(Clone, Copy)]
@@ -337,8 +337,29 @@ pub fn lane(i: u16) -> Color32 {
     l[i as usize % l.len()]
 }
 
-/// Apply the current palette and text sizes to egui.
-pub fn apply(ctx: &egui::Context, font_size: f32) {
+/// Code and notes text size (f32 bits), set by `apply`.
+static CONTENT: AtomicU32 = AtomicU32::new(0x4150_0000); // 13.0
+
+/// Text size for code, notes and commit messages.
+pub fn content_size() -> f32 {
+    f32::from_bits(CONTENT.load(Ordering::Relaxed))
+}
+
+/// Make `ui` use the code / notes text size (for notes and commit messages;
+/// diffs get it through the monospace style).
+pub fn content_style(ui: &mut egui::Ui) {
+    let f = content_size();
+    let s = ui.style_mut();
+    s.text_styles.insert(TextStyle::Body, FontId::proportional(f));
+    s.text_styles.insert(TextStyle::Small, FontId::proportional(f - 2.0));
+    s.text_styles.insert(TextStyle::Heading, FontId::proportional(f + 3.0));
+    s.text_styles.insert(TextStyle::Monospace, FontId::monospace(f - 0.5));
+}
+
+/// Apply the current palette and text sizes to egui: `font_size` for the
+/// interface, `content` for code (monospace) and, via `content_style`, notes.
+pub fn apply(ctx: &egui::Context, font_size: f32, content: f32) {
+    CONTENT.store(content.to_bits(), Ordering::Relaxed);
     let p = cur();
     let ec = |c: Color32| [c.r(), c.g(), c.b()];
     let shade = |t: u32| mix(ec(p.bg), ec(p.text), t);
@@ -374,7 +395,7 @@ pub fn apply(ctx: &egui::Context, font_size: f32) {
         let f = font_size;
         s.text_styles.insert(TextStyle::Body, FontId::proportional(f));
         s.text_styles.insert(TextStyle::Button, FontId::proportional(f));
-        s.text_styles.insert(TextStyle::Monospace, FontId::monospace(f - 0.5));
+        s.text_styles.insert(TextStyle::Monospace, FontId::monospace(content - 0.5));
         s.text_styles.insert(TextStyle::Small, FontId::proportional(f - 2.0));
         s.text_styles.insert(TextStyle::Heading, FontId::proportional(f + 3.0));
         s.spacing.item_spacing = egui::vec2(6.0, 3.0);

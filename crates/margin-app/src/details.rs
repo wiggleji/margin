@@ -122,7 +122,9 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
         egui::Grid::new("commit_meta").num_columns(2).spacing([10.0, 3.0]).show(ui, |ui| {
             ui.weak("Commit");
             ui.horizontal(|ui| {
-                ui.monospace(&d.id[..12.min(d.id.len())]);
+                // interface-sized (not the code size)
+                let ui_size = ui.style().text_styles[&egui::TextStyle::Body].size;
+                ui.label(RichText::new(&d.id[..12.min(d.id.len())]).family(egui::FontFamily::Monospace).size(ui_size - 0.5));
                 if ui.small_button("Copy").clicked() {
                     actions.push(Action::Copy(d.id.clone()));
                 }
@@ -140,7 +142,8 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 ui.weak("Parents");
                 ui.horizontal(|ui| {
                     for p in &d.parents {
-                        if ui.link(RichText::new(&p[..8.min(p.len())]).monospace()).clicked() {
+                        let ui_size = ui.style().text_styles[&egui::TextStyle::Body].size;
+                        if ui.link(RichText::new(&p[..8.min(p.len())]).family(egui::FontFamily::Monospace).size(ui_size - 0.5)).clicked() {
                             actions.push(Action::JumpTo(p.clone()));
                         }
                     }
@@ -201,7 +204,8 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
         ui.separator();
         // ---- then the message: subject, and the body (selectable; scrolls when long)
         let (subject, body) = split_message(&d.message);
-        let size = ui.style().text_styles[&egui::TextStyle::Body].size;
+        // the message is reading text: code / notes size
+        let size = crate::theme::content_size();
         let big = size + 2.0;
         // Roomier line spacing for reading (wrapped lines and the body).
         ui.add(egui::Label::new(RichText::new(subject).strong().size(big).line_height(Some(big * 1.4))).selectable(true).wrap());
