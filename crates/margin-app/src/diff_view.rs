@@ -103,6 +103,8 @@ enum Row {
     Section(Section),
     /// Space for a PR review thread under its line (the card is painted over it).
     Thread,
+    /// Blank space before a file (after the first), so files read apart.
+    Gap,
     /// (file, hunk, line, wrapped segment)
     Line(usize, usize, usize, usize),
     /// Side by side: (file, hunk, old line, new line, wrapped segment) — either side may be empty.
@@ -368,6 +370,14 @@ impl DiffView {
     }
 
     /// The selectable text of `row` on `side`, positioned by `geo`.
+    /// The file a row belongs to (rows between files: the one above).
+    fn file_at(&self, row: usize) -> Option<usize> {
+        self.rows[..=row.min(self.rows.len().saturating_sub(1))].iter().rev().find_map(|r| match *r {
+            Row::File(fi) | Row::Hunk(fi, _) | Row::Line(fi, ..) | Row::Pair(fi, ..) | Row::Note(fi) => Some(fi),
+            _ => None,
+        })
+    }
+
     fn row_text(&self, row: usize, side: Side, geo: &Geo) -> Option<RowText<'_>> {
         let top = geo.top0 + row as f32 * geo.row_h;
         let (fi, hi, li, seg, left, right) = match (*self.rows.get(row)?, side) {
@@ -507,6 +517,9 @@ impl DiffView {
             let sec = self.sections.get(fi).copied().unwrap_or(Section::Commit);
             if matches!(sec, Section::Unstaged | Section::Staged) && last != Some(sec) {
                 self.rows.push(Row::Section(sec));
+            }
+            if last == Some(sec) {
+                self.rows.push(Row::Gap);
             }
             last = Some(sec);
             self.rows.push(Row::File(fi));
@@ -673,7 +686,8 @@ impl DiffView {
 
         let font = FontId::monospace(ui.style().text_styles[&egui::TextStyle::Monospace].size);
         let char_w = ui.fonts_mut(|f| f.glyph_width(&font, 'm'));
-        let row_h = font.size + 5.0;
+        // roomy lines (about 1.4× the text) so code reads easily at any size
+        let row_h = (font.size * 1.4 + 2.0).round();
         // Page layout (content coordinates): header, toolbar slot, rows.
         let bar_h = ui.spacing().interact_size.y + 8.0;
         let head_h = if header.is_some() { self.header_h } else { 0.0 };
@@ -764,6 +778,7 @@ impl DiffView {
         let n_rows = self.rows.len();
         let prefs_now = *prefs;
         let mut glide = self.glide_to.take();
+        let mut sticky_jump: Option<f32> = None;
         let out = area.show_viewport(ui, |page, vp| {
                 let top = page.max_rect().top();
                 let x0 = page.max_rect().left();
@@ -963,6 +978,7 @@ impl DiffView {
                             });
                         }
                         Row::Thread => {} // the card is painted over these rows below
+                        Row::Gap => {}
                         Row::Note(fi) => {
                             let f = &self.files[fi];
                             let msg = if self.sections.get(fi) == Some(&Section::Conflicted) {
@@ -1296,6 +1312,50 @@ impl DiffView {
                         }
                     }
                 }
+                // ---- sticky file header: the file the top of the view is in,
+                // pinned under the toolbar once its own header has scrolled away
+                {
+                    let under_bar = head_h.max(vp.min.y) + bar_h;
+                    let r = ((under_bar - rows_y) / row_h).floor();
+                    if r >= 0.0 && (r as usize) < self.rows.len() {
+                        let r = r as usize;
+                        if let Some((fi, hr)) = self.file_at(r).and_then(|fi| self.rows.iter().position(|x| matches!(x, Row::File(f) if *f == fi)).map(|hr| (fi, hr)))
+                            && hr < r
+                            && open[fi]
+                        {
+                            let f = &self.files[fi];
+                            let rect = Rect::from_min_size(pos2(x0, top + under_bar), vec2(page_w, row_h));
+                            let p = page.painter();
+                            p.rect_filled(rect, 0.0, theme::BG_DARK());
+                            p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, theme::HOVER()));
+                            tri(p, pos2(rect.left() + 10.0, rect.center().y), true, theme::TEXT_DIM());
+                            let path = match (&f.old_path, &f.new_path) {
+                                (Some(o), Some(n)) if o != n => format!("{o} → {n}"),
+                                _ => f.display_path().to_string(),
+                            };
+                            let max_cells = ((page_w - 120.0) / char_w).max(8.0) as usize;
+                            let g = p.layout_no_wrap(crate::path_elide::elide_path(&path, max_cells), font.clone(), theme::TEXT());
+                            let gw = g.size().x;
+                            p.galley(pos2(rect.left() + 22.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT());
+                            let mut cx = rect.left() + 22.0 + gw + 14.0;
+                            for (n, sign, color) in [(f.added, "+", theme::ADDED()), (f.removed, "−", theme::REMOVED())] {
+                                if n > 0 {
+                                    let g = p.layout_no_wrap(format!("{sign}{n}"), font.clone(), color);
+                                    let w = g.size().x;
+                                    p.galley(pos2(cx, rect.center().y - g.size().y / 2.0), g, color);
+                                    cx += w + char_w;
+                                }
+                            }
+                            let resp = page.interact(rect, base_id.with("sticky-file"), Sense::click());
+                            if resp.hovered() {
+                                page.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            if resp.on_hover_text(format!("{path}\nClick to go to the top of this file")).clicked() {
+                                sticky_jump = Some(rows_y + hr as f32 * row_h - bar_h);
+                            }
+                        }
+                    }
+                }
                 // ---- toolbar: in its slot under the header, then stuck to the top
                 let stuck = header.is_some() && vp.min.y > head_h + 0.5;
                 let title_a = page.ctx().animate_bool_with_time(stuck_id, stuck, 0.15);
@@ -1310,6 +1370,10 @@ impl DiffView {
                 let title = header.as_ref().map(|h| h.title.as_str());
                 bar_out = diff_bar(&mut bar_ui, n_files, added, removed, collapsed_all, &prefs_now, title, title_a, loading, prefs_now.focused);
             });
+        if let Some(y) = sticky_jump {
+            self.glide_to = Some(y.max(0.0));
+            ui.ctx().request_repaint();
+        }
         if let Some(h) = measured_head {
             if (h - self.header_h).abs() > 0.5 {
                 self.header_h = h;
