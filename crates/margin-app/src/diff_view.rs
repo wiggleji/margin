@@ -159,7 +159,8 @@ fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: 
             ui.label(egui::RichText::new(format!("+{added}")).small().color(theme::ADDED()));
             ui.label(egui::RichText::new(format!("−{removed}")).small().color(theme::REMOVED()));
         }
-        if n > 1 && !stuck && ui.small_button(if collapsed_all { "Expand all" } else { "Collapse all" }).clicked() {
+        let fold_tip = if collapsed_all { "Expand all files" } else { "Collapse all files" };
+        if n > 1 && !stuck && crate::widgets::icon_button(ui, crate::widgets::Glyph::Fold { fold: !collapsed_all }, fold_tip).clicked() {
             out.all = Some(!collapsed_all);
         }
         if loading {

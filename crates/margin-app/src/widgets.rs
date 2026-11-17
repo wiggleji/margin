@@ -127,6 +127,8 @@ pub enum Glyph {
     Focus { on: bool },
     ArrowUp,
     ArrowDown,
+    /// Fold (chevrons pointing together) / unfold (pointing apart).
+    Fold { fold: bool },
 }
 
 /// A square icon button (full button height, centred), with a hover background.
@@ -205,6 +207,12 @@ pub fn paint_glyph(p: &egui::Painter, glyph: Glyph, rect: Rect, c: Color32) {
                 p.line_segment([pt, pt + vec2(hx * l, 0.0)], st);
                 p.line_segment([pt, pt + vec2(0.0, vy * l)], st);
             }
+        }
+        Glyph::Fold { fold } => {
+            // two chevrons: towards the middle line (fold) or away from it (unfold)
+            let d = if fold { 1.0 } else { -1.0 };
+            p.add(egui::Shape::line(vec![m + vec2(-4.0, -5.5 + 1.5 * (1.0 - d)), m + vec2(0.0, -5.5 + 1.5 * (1.0 + d)), m + vec2(4.0, -5.5 + 1.5 * (1.0 - d))], st));
+            p.add(egui::Shape::line(vec![m + vec2(-4.0, 5.5 - 1.5 * (1.0 - d)), m + vec2(0.0, 5.5 - 1.5 * (1.0 + d)), m + vec2(4.0, 5.5 - 1.5 * (1.0 - d))], st));
         }
         Glyph::ArrowUp | Glyph::ArrowDown => {
             let d = if matches!(glyph, Glyph::ArrowUp) { -1.0 } else { 1.0 };
