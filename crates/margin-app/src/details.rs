@@ -52,12 +52,27 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             s.request_focus();
         }
         ui.horizontal(|ui| {
-            let can = (staged_n > 0 || rv.amend) && !rv.commit_msg.trim().is_empty();
-            if ui.add_enabled(can, egui::Button::new(if rv.amend { "Amend commit" } else { "Commit" })).clicked() {
+            let has_msg = !rv.commit_msg.trim().is_empty();
+            let can = (staged_n > 0 || rv.amend) && has_msg;
+            // Say what the button will do: "Commit 2 files" / "Amend last commit".
+            let label = if rv.amend {
+                "Amend last commit".to_string()
+            } else if staged_n > 0 {
+                format!("Commit {staged_n} file{}", if staged_n == 1 { "" } else { "s" })
+            } else {
+                "Commit".to_string()
+            };
+            let enter = if cfg!(target_os = "macos") { "⌘↵" } else { "Ctrl+↵" };
+            if ui.add_enabled_ui(can, |ui| crate::widgets::primary_button(ui, &label)).inner.on_hover_text(format!("Commit the staged changes ({enter})")).clicked() {
                 actions.push(Action::Commit);
             }
             if ui.checkbox(&mut rv.amend, "Amend").changed() && rv.amend && rv.commit_msg.trim().is_empty() {
                 rv.commit_msg = rv.repo.last_commit_message().unwrap_or_default();
+            }
+            // Why the button is off, in words.
+            if !can {
+                let why = if staged_n == 0 && !rv.amend { "Stage changes below to commit them" } else { "Write a summary to commit" };
+                ui.label(RichText::new(why).small().color(theme::TEXT_DIM()));
             }
             if let Some(t) = &task {
                 if !rv.commit_msg.contains(t.as_str()) && ui.small_button(format!("Insert {t}")).clicked() {
@@ -117,6 +132,16 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
     // toolbar sticks to the top and shows the title once they're out of view).
     let branches = rv.commit_branches.clone();
     let files: Vec<(usize, usize)> = rv.commit_diff.files.iter().map(|f| (f.added, f.removed)).collect();
+    // How many files were added / deleted / renamed (modified ones are the rest).
+    let kinds = rv.commit_diff.files.iter().fold([0usize; 3], |mut k, f| {
+        match (&f.old_path, &f.new_path) {
+            (None, Some(_)) => k[0] += 1,
+            (Some(_), None) => k[1] += 1,
+            (Some(o), Some(n)) if o != n => k[2] += 1,
+            _ => {}
+        }
+        k
+    });
     let (title, _) = split_message(&d.message);
     let title = format!("{}  {}", &d.id[..8.min(d.id.len())], title);
     let mut header = |ui: &mut Ui| {
@@ -178,8 +203,19 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 ui.weak("Changes");
                 ui.horizontal(|ui| {
                     ui.label(format!("{} file{}", files.len(), if files.len() == 1 { "" } else { "s" }));
-                    ui.label(RichText::new(format!("+{a}")).color(theme::ADDED()));
-                    ui.label(RichText::new(format!("−{r}")).color(theme::REMOVED()));
+                    if a > 0 {
+                        ui.label(RichText::new(format!("+{a}")).color(theme::ADDED()));
+                    }
+                    if r > 0 {
+                        ui.label(RichText::new(format!("−{r}")).color(theme::REMOVED()));
+                    }
+                    // "· 1 added · 1 deleted · 1 renamed"
+                    for (n, word, color) in [(kinds[0], "added", theme::ADDED()), (kinds[1], "deleted", theme::REMOVED()), (kinds[2], "renamed", theme::lane(0))] {
+                        if n > 0 {
+                            ui.label(RichText::new("·").color(theme::TEXT_DIM()));
+                            ui.label(RichText::new(format!("{n} {word}")).color(color));
+                        }
+                    }
                 });
                 ui.end_row();
             }

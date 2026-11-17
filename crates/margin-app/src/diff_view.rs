@@ -198,8 +198,13 @@ fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: 
     ui.horizontal_centered(|ui| {
         if !stuck {
             ui.label(egui::RichText::new(format!("{n} file{}", if n == 1 { "" } else { "s" })).small().color(theme::TEXT_DIM()));
-            ui.label(egui::RichText::new(format!("+{added}")).small().color(theme::ADDED()));
-            ui.label(egui::RichText::new(format!("−{removed}")).small().color(theme::REMOVED()));
+            // only the sides that changed
+            if added > 0 {
+                ui.label(egui::RichText::new(format!("+{added}")).small().color(theme::ADDED()));
+            }
+            if removed > 0 {
+                ui.label(egui::RichText::new(format!("−{removed}")).small().color(theme::REMOVED()));
+            }
         }
         let fold_tip = if collapsed_all { "Expand all files" } else { "Collapse all files" };
         if n > 1 && !stuck && crate::widgets::icon_button(ui, crate::widgets::Glyph::Fold { fold: !collapsed_all }, fold_tip).clicked() {
@@ -827,35 +832,60 @@ impl DiffView {
                             p.rect_filled(rect, 0.0, theme::BG_DARK());
                             let open = open[fi];
                             tri(&p, pos2(rect.left() + 10.0, rect.center().y), open, theme::TEXT_DIM());
-                            let label = match (&f.old_path, &f.new_path) {
-                                (Some(o), Some(n)) if o != n => format!("{o} → {n}"),
-                                (None, Some(n)) => format!("{n}  (new)"),
-                                (Some(o), None) => format!("{o}  (deleted)"),
-                                _ => f.display_path().to_string(),
+                            // A word for what happened to the file, except the usual
+                            // case (modified), which needs none.
+                            let status = match (&f.old_path, &f.new_path) {
+                                _ if sec == Section::Conflicted => Some(("Conflict", theme::ERROR())),
+                                (None, Some(_)) => Some(("Added", theme::ADDED())),
+                                (Some(_), None) => Some(("Deleted", theme::REMOVED())),
+                                (Some(o), Some(n)) if o != n => Some(("Renamed", theme::lane(0))),
+                                _ => None,
                             };
-                            // Status letter: Added / Deleted / Renamed / Modified
-                            let (letter, color) = match (&f.old_path, &f.new_path) {
-                                _ if sec == Section::Conflicted => ("U", theme::ERROR()),
-                                (None, Some(_)) => ("A", theme::ADDED()),
-                                (Some(_), None) => ("D", theme::REMOVED()),
-                                (Some(o), Some(n)) if o != n => ("R", theme::lane(0)),
-                                _ => ("M", theme::ACCENT()),
+                            let mut x = rect.left() + 22.0;
+                            if let Some((word, color)) = status {
+                                let g = p.layout_no_wrap(word.to_string(), small.clone(), color);
+                                let pill = Rect::from_min_size(pos2(x, rect.center().y - (row_h - 6.0) / 2.0), vec2(g.size().x + 12.0, row_h - 6.0));
+                                p.rect_filled(pill, (row_h - 6.0) / 2.0, color.gamma_multiply(0.18));
+                                p.galley(pos2(pill.left() + 6.0, pill.center().y - g.size().y / 2.0), g, color);
+                                x = pill.right() + 8.0;
+                            }
+                            // path: the folder dim, the file name bright (renames: old → new)
+                            let mut job = egui::text::LayoutJob::default();
+                            let path_part = |job: &mut egui::text::LayoutJob, path: &str, strike: bool| {
+                                let (dir, name) = path.rsplit_once('/').map_or(("", path), |(d, n)| (d, n));
+                                let fmt = |c: Color32| egui::TextFormat {
+                                    font_id: font.clone(),
+                                    color: c,
+                                    strikethrough: if strike { Stroke::new(1.0, c) } else { Stroke::NONE },
+                                    ..Default::default()
+                                };
+                                if !dir.is_empty() {
+                                    job.append(&format!("{dir}/"), 0.0, fmt(theme::TEXT_DIM()));
+                                }
+                                job.append(name, 0.0, fmt(if strike { theme::TEXT_DIM() } else { theme::TEXT() }));
                             };
-                            let lr = Rect::from_center_size(pos2(rect.left() + 28.0, rect.center().y), vec2(char_w + 6.0, row_h - 6.0));
-                            p.rect_filled(lr, 3.0, color.gamma_multiply(0.25));
-                            p.text(lr.center(), Align2::CENTER_CENTER, letter, font.clone(), color);
-                            let g = p.layout_no_wrap(label, font.clone(), theme::TEXT());
+                            match (&f.old_path, &f.new_path) {
+                                (Some(o), Some(n)) if o != n => {
+                                    path_part(&mut job, o, false);
+                                    job.append("  →  ", 0.0, egui::TextFormat { font_id: font.clone(), color: theme::TEXT_DIM(), ..Default::default() });
+                                    path_part(&mut job, n, false);
+                                }
+                                (Some(o), None) => path_part(&mut job, o, true),
+                                _ => path_part(&mut job, f.display_path(), false),
+                            }
+                            let g = p.layout_job(job);
                             let w = g.size().x;
-                            p.galley(pos2(lr.right() + 6.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT());
-                            let x = lr.right() + 18.0 + w;
-                            p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, format!("+{}", f.added), font.clone(), theme::ADDED());
-                            p.text(
-                                pos2(x + char_w * (f.added.to_string().len() as f32 + 2.5), rect.center().y),
-                                Align2::LEFT_CENTER,
-                                format!("-{}", f.removed),
-                                font.clone(),
-                                theme::REMOVED(),
-                            );
+                            p.galley(pos2(x, rect.center().y - g.size().y / 2.0), g, theme::TEXT());
+                            // line counts, only the sides that changed
+                            let mut x = x + w + 14.0;
+                            for (n, sign, color) in [(f.added, "+", theme::ADDED()), (f.removed, "−", theme::REMOVED())] {
+                                if n > 0 {
+                                    let g = p.layout_no_wrap(format!("{sign}{n}"), font.clone(), color);
+                                    let gw = g.size().x;
+                                    p.galley(pos2(x, rect.center().y - g.size().y / 2.0), g, color);
+                                    x += gw + char_w;
+                                }
+                            }
                             // Working directory: per-file buttons on the right, and a menu.
                             let path = f.display_path().to_string();
                             if matches!(sec, Section::Unstaged | Section::Staged | Section::Conflicted) {
@@ -946,7 +976,14 @@ impl DiffView {
                                 }
                                 x += bw + 6.0;
                             }
-                            p.text(pos2(x + 4.0, rect.center().y), Align2::LEFT_CENTER, &h.header, font.clone(), theme::TEXT_DIM());
+                            // "Lines 78–81  fn login()" instead of "@@ -78,3 +78,4 @@ fn login()"
+                            let (range, ctx) = hunk_label(&h.header);
+                            let g = p.layout_no_wrap(range, small.clone(), theme::TEXT_DIM());
+                            let gw = g.size().x;
+                            p.galley(pos2(x + 4.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT_DIM());
+                            if !ctx.is_empty() {
+                                p.text(pos2(x + 4.0 + gw + 12.0, rect.center().y), Align2::LEFT_CENTER, ctx, font.clone(), theme::TEXT_DIM().gamma_multiply(0.8));
+                            }
                         }
                         Row::Line(fi, hi, li, seg) => {
                             let l = &self.files[fi].hunks[hi].lines[li];
@@ -1376,6 +1413,28 @@ struct ThreadState {
     busy: bool,
 }
 
+/// "@@ -78,3 +78,4 @@ fn login()" → ("Lines 78–81", "fn login()"): the new
+/// side's lines (the old side's for a pure deletion) and the context git found.
+fn hunk_label(header: &str) -> (String, String) {
+    let parse = |s: &str| -> Option<(u64, u64)> {
+        let s = &s[1..];
+        let (a, n) = s.split_once(',').unwrap_or((s, "1"));
+        Some((a.parse().ok()?, n.parse().ok()?))
+    };
+    let mut parts = header.splitn(4, ' ');
+    let (Some("@@"), Some(old), Some(new)) = (parts.next(), parts.next(), parts.next()) else {
+        return (header.to_string(), String::new());
+    };
+    let ctx = parts.next().unwrap_or("").trim_start_matches("@@").trim().to_string();
+    let (start, n) = match (parse(old), parse(new)) {
+        (_, Some((s, n))) if n > 0 => (s, n),
+        (Some((s, n)), _) => (s, n),
+        _ => return (header.to_string(), String::new()),
+    };
+    let range = if n <= 1 { format!("Line {start}") } else { format!("Lines {start}–{}", start + n - 1) };
+    (range, ctx)
+}
+
 /// A laid-out review thread card: galleys at (x, y) inside the card, its
 /// height, the height of the clickable header line, the footer links' rects,
 /// and the reply box's rect (when replying).
@@ -1633,5 +1692,19 @@ mod tests {
         assert_eq!(slice_cols("\tfoo()", 0, 7), "\tfoo");
         assert_eq!(slice_cols("\tfoo()", 4, 99), "foo()");
         assert_eq!(slice_cols("한글 텍스트", 3, 6), "텍스트");
+    }
+}
+
+#[cfg(test)]
+mod hunk_label_tests {
+    use super::hunk_label;
+
+    #[test]
+    fn labels() {
+        assert_eq!(hunk_label("@@ -78,3 +78,4 @@ line 76 value = 228;"), ("Lines 78–81".into(), "line 76 value = 228;".into()));
+        assert_eq!(hunk_label("@@ -1 +1 @@"), ("Line 1".into(), String::new()));
+        // all lines removed: the old side's range
+        assert_eq!(hunk_label("@@ -5,3 +4,0 @@ fn x()"), ("Lines 5–7".into(), "fn x()".into()));
+        assert_eq!(hunk_label("garbage"), ("garbage".into(), String::new()));
     }
 }
