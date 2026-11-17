@@ -98,6 +98,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             }
             DiffEvent::CopyPath(p) => Action::Copy(p),
             DiffEvent::ToggleFocus => Action::ToggleFocusDiff,
+            DiffEvent::OpenUrl(u) => Action::OpenUrl(u),
         });
     }
 }
@@ -218,8 +219,10 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
         ui.add_space(4.0);
     };
     for e in rv.commit_diff.show(ui, DiffMode::Commit, "commitdiff", prefs, Some(crate::diff_view::Header { ui: &mut header, title })) {
-        if let DiffEvent::ToggleFocus = e {
-            actions.push(Action::ToggleFocusDiff);
+        match e {
+            DiffEvent::ToggleFocus => actions.push(Action::ToggleFocusDiff),
+            DiffEvent::OpenUrl(u) => actions.push(Action::OpenUrl(u)),
+            _ => {}
         }
     }
 }

@@ -655,6 +655,58 @@ impl MarginApp {
         self.jobs.spawn(move || Msg::OpDone { workdir: repo.workdir.clone(), result: f(&repo).map_err(|e| e.0), label, refresh: true });
     }
 
+    /// Load PR details for the branches containing the selected commit (their
+    /// review threads may sit on it).
+    fn request_pr_threads(&mut self) {
+        if !self.pro() {
+            return;
+        }
+        let Some(rv) = &self.rv else { return };
+        if !matches!(rv.sel, Sel::Commit(_)) {
+            return;
+        }
+        let want: Vec<String> = rv.commit_branches.iter().filter(|b| rv.prs.contains_key(*b) && !rv.pr_requested.contains(*b)).cloned().collect();
+        for b in want {
+            self.handle(Action::FetchPrDetail(b));
+        }
+    }
+
+    /// Review threads to show in the selected commit's diff: threads written
+    /// on this commit (at their original line), and, on the PR's latest
+    /// commit, the open threads at their current line.
+    fn update_threads(&mut self) {
+        let Some(rv) = &mut self.rv else { return };
+        let Sel::Commit(id) = rv.sel.clone() else { return };
+        let mut out: Vec<crate::diff_view::InlineThread> = vec![];
+        for b in &rv.commit_branches {
+            let Some(Ok(d)) = rv.pr_detail.get(b) else { continue };
+            let head = d.summary.head_oid.as_deref() == Some(id.as_str());
+            for t in &d.threads {
+                let line = if t.original_commit == id {
+                    t.original_line
+                } else if head && !t.outdated {
+                    t.line
+                } else {
+                    None
+                };
+                let Some(line) = line else { continue };
+                let it = crate::diff_view::InlineThread {
+                    path: t.path.clone(),
+                    line,
+                    old_side: t.old_side,
+                    resolved: t.resolved,
+                    outdated: t.outdated && t.original_commit != id,
+                    pr: d.summary.number,
+                    comments: t.comments.iter().map(|c| (c.author.clone(), c.body.clone(), c.created_at.chars().take(10).collect(), c.url.clone())).collect(),
+                };
+                if !out.contains(&it) {
+                    out.push(it);
+                }
+            }
+        }
+        rv.commit_diff.set_threads(out);
+    }
+
     fn save_note(&mut self) {
         if let Some(rv) = &mut self.rv {
             rv.editor.save(&rv.notes);
@@ -1622,6 +1674,7 @@ impl MarginApp {
                         // Details are reloaded lazily for whatever is on screen.
                         rv.pr_detail.clear();
                         rv.pr_requested.clear();
+                        self.request_pr_threads();
                     }
                     Err(e) => rv.github_error = Some(e),
                 }
@@ -1629,6 +1682,7 @@ impl MarginApp {
             Msg::PrDetail { workdir, branch, result } => {
                 let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
                 rv.pr_detail.insert(branch, result.and_then(|d| d.ok_or_else(|| "No pull request for this branch".to_string())));
+                self.update_threads();
             }
             Msg::Refreshed { result: r, .. } => {
                 let Some(rv) = &mut self.rv else { return };
@@ -1684,6 +1738,9 @@ impl MarginApp {
                         rv.commit_detail = Some(d);
                         rv.commit_branches = b;
                         rv.commit_diff.set(f, t);
+                        // PR review threads on this commit (Pro): load what's needed, show what's loaded.
+                        self.request_pr_threads();
+                        self.update_threads();
                     }
                     Err(e) => rv.commit_diff.set_error(e),
                 }

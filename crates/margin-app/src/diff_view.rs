@@ -49,6 +49,19 @@ pub enum Section {
     Staged,
 }
 
+/// A PR review thread to show inside the diff, on `line` of `path`.
+#[derive(Clone, PartialEq, Debug)]
+pub struct InlineThread {
+    pub path: String,
+    pub line: u64,
+    pub old_side: bool,
+    pub resolved: bool,
+    pub outdated: bool,
+    pub pr: u64,
+    /// (author, body, date, url), oldest first.
+    pub comments: Vec<(String, String, String, String)>,
+}
+
 /// Working-directory diff, loaded in the background.
 pub struct WorkDiff {
     pub unstaged: Vec<FileDiff>,
@@ -66,6 +79,7 @@ pub enum DiffEvent {
     /// Asks for confirmation first.
     Discard(Vec<String>),
     CopyPath(String),
+    OpenUrl(String),
     /// The focus button: give the diff the whole window, or bring the rest back.
     ToggleFocus,
 }
@@ -76,6 +90,8 @@ enum Row {
     Hunk(usize, usize),
     /// "UNSTAGED (3)" / "STAGED (1)" header with stage-all buttons.
     Section(Section),
+    /// Space for a PR review thread under its line (the card is painted over it).
+    Thread,
     /// (file, hunk, line, wrapped segment)
     Line(usize, usize, usize, usize),
     /// Side by side: (file, hunk, old line, new line, wrapped segment) — either side may be empty.
@@ -121,6 +137,14 @@ pub struct DiffView {
     header_h: f32,
     /// ↑/↓ clicked in the toolbar, applied next frame.
     pending_nav: i32,
+    /// PR review threads shown under their lines (commit diffs).
+    threads: Vec<InlineThread>,
+    /// Rows each thread takes (measured at `thread_w`), which are open, and
+    /// where they sit: (thread, first row, rows).
+    thread_h: Vec<usize>,
+    thread_open: Vec<bool>,
+    thread_w: f32,
+    thread_at: Vec<(usize, usize, usize)>,
     /// Scroll smoothly to this offset (next / previous change).
     glide_to: Option<f32>,
     /// Row of the change last jumped to, and the viewport height.
@@ -292,6 +316,8 @@ impl DiffView {
         self.loading = false;
         self.error = None;
         self.words = word_highlights(&self.files);
+        self.threads.clear();
+        self.thread_at.clear();
         self.sel = None;
         self.dragging = false;
         self.nav_row = None;
@@ -346,6 +372,19 @@ impl DiffView {
             prev = Some(t.line);
         }
         out
+    }
+
+    /// PR review threads for this diff (commit view). Rebuilds when they change.
+    pub fn set_threads(&mut self, t: Vec<InlineThread>) {
+        if t == self.threads {
+            return;
+        }
+        // open by default, unless resolved or outdated (those fold to one line)
+        self.thread_open = t.iter().map(|t| !(t.resolved || t.outdated)).collect();
+        self.threads = t;
+        self.thread_w = 0.0; // re-measure
+        self.thread_h.clear();
+        self.rebuild();
     }
 
     pub fn section(&self, fi: usize) -> Option<Section> {
@@ -431,6 +470,57 @@ impl DiffView {
                 }
             }
         }
+        self.place_threads();
+    }
+
+    /// Insert each review thread's rows right after the (last wrapped row of
+    /// the) line it's on.
+    fn place_threads(&mut self) {
+        self.thread_at.clear();
+        if self.threads.is_empty() {
+            return;
+        }
+        let rows = std::mem::take(&mut self.rows);
+        let mut placed = vec![false; self.threads.len()];
+        // (file, old line no, new line no) of the source line a row shows
+        let line_of = |r: &Row| -> Option<(usize, Option<u32>, Option<u32>)> {
+            let ln = |fi: usize, hi: usize, li: usize| &self.files[fi].hunks[hi].lines[li];
+            match *r {
+                Row::Line(fi, hi, li, _) => {
+                    let l = ln(fi, hi, li);
+                    Some((fi, l.old_no.filter(|_| l.kind != LineKind::Added), l.new_no.filter(|_| l.kind != LineKind::Removed)))
+                }
+                Row::Pair(fi, hi, o, n, _) => Some((fi, o.and_then(|o| ln(fi, hi, o).old_no), n.and_then(|n| ln(fi, hi, n).new_no))),
+                _ => None,
+            }
+        };
+        let same_line = |a: &Row, b: &Row| match (a, b) {
+            (Row::Line(f, h, l, _), Row::Line(f2, h2, l2, _)) => (f, h, l) == (f2, h2, l2),
+            (Row::Pair(f, h, o, n, _), Row::Pair(f2, h2, o2, n2, _)) => (f, h, o, n) == (f2, h2, o2, n2),
+            _ => false,
+        };
+        let mut out = Vec::with_capacity(rows.len() + 16);
+        for (i, r) in rows.iter().enumerate() {
+            out.push(*r);
+            if rows.get(i + 1).is_some_and(|n| same_line(r, n)) {
+                continue; // not the last wrapped row of this line yet
+            }
+            let Some((fi, old, new)) = line_of(r) else { continue };
+            let path = self.files[fi].display_path();
+            for (ti, t) in self.threads.iter().enumerate() {
+                if placed[ti] || t.path != path {
+                    continue;
+                }
+                let at = if t.old_side { old } else { new };
+                if at.map(u64::from) == Some(t.line) {
+                    placed[ti] = true;
+                    let n = self.thread_h.get(ti).copied().unwrap_or(1).max(1);
+                    self.thread_at.push((ti, out.len(), n));
+                    out.extend((0..n).map(|_| Row::Thread));
+                }
+            }
+        }
+        self.rows = out;
     }
 
     /// `prefs` are changed from the bar above the diff (layout, whitespace);
@@ -513,6 +603,20 @@ impl DiffView {
             self.rebuild();
             self.sel = None;
         }
+        // Review thread cards: measure their height at this width (rows reserved under the line).
+        let card_left = if self.split { 8.0 } else { gutter };
+        let card_w = (avail - card_left - 6.0).max(220.0);
+        if !self.threads.is_empty() && ((card_w - self.thread_w).abs() > 0.5 || self.thread_h.len() != self.threads.len()) {
+            self.thread_w = card_w;
+            self.thread_h = self
+                .threads
+                .iter()
+                .enumerate()
+                .map(|(i, t)| ((layout_thread(ui, t, card_w, self.thread_open[i]).h + 10.0) / row_h).ceil() as usize)
+                .collect();
+            self.rebuild();
+        }
+        let mut thread_toggle: Option<usize> = None;
 
         // Next / previous change = the next hunk header below / above the top of the view.
         // (a hunk lands just under the sticky toolbar)
@@ -722,6 +826,7 @@ impl DiffView {
                                 }
                             });
                         }
+                        Row::Thread => {} // the card is painted over these rows below
                         Row::Note(fi) => {
                             let f = &self.files[fi];
                             let msg = if self.sections.get(fi) == Some(&Section::Conflicted) {
@@ -904,6 +1009,52 @@ impl DiffView {
                     }
                 }
                 }
+                // ---- review thread cards, over the rows reserved for them
+                for &(ti, first_r, n) in &self.thread_at {
+                    if first_r + n < first_row || first_r > last_row {
+                        continue;
+                    }
+                    let t = &self.threads[ti];
+                    let open_t = self.thread_open[ti];
+                    let card = layout_thread(page, t, card_w, open_t);
+                    let y0 = top + rows_y + first_r as f32 * row_h + 3.0;
+                    let rect = Rect::from_min_size(pos2(x0 + card_left, y0), vec2(card_w, n as f32 * row_h - 6.0));
+                    let p = page.painter();
+                    let muted = t.resolved || t.outdated;
+                    p.rect_filled(rect, 6.0, theme::BG_DARK());
+                    p.rect_stroke(rect, 6.0, Stroke::new(1.0, theme::HOVER()), egui::StrokeKind::Inside);
+                    let bar = Rect::from_min_size(rect.min, vec2(3.0, rect.height()));
+                    p.rect_filled(bar, egui::CornerRadius { nw: 6, sw: 6, ne: 0, se: 0 }, if muted { theme::TEXT_DIM() } else { theme::ACCENT() });
+                    // GitHub mark + PR number, top right
+                    let isz = 14.0;
+                    let pr_g = p.layout_no_wrap(format!("#{}", t.pr), egui::TextStyle::Small.resolve(page.style()), theme::TEXT_DIM());
+                    let pr_x = rect.right() - 10.0 - pr_g.size().x;
+                    crate::icons::paint(p, crate::icons::Icon::Github, Rect::from_min_size(pos2(pr_x - isz - 4.0, rect.top() + 9.0), vec2(isz, isz)), theme::TEXT_DIM());
+                    p.galley(pos2(pr_x, rect.top() + 9.0), pr_g, theme::TEXT_DIM());
+                    let clip = p.with_clip_rect(rect.shrink2(vec2(0.0, 1.0)).intersect(page.clip_rect()));
+                    for (x, y, g, color) in &card.items {
+                        clip.galley(pos2(rect.left() + x, rect.top() + y), g.clone(), *color);
+                    }
+                    // click the header line to fold / unfold
+                    let head = Rect::from_min_size(rect.min, vec2(rect.width() - 80.0, card.header_h));
+                    let hr = page.interact(head, base_id.with(("thread-head", ti)), Sense::click());
+                    if hr.hovered() {
+                        page.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if hr.on_hover_text(if open_t { "Fold this thread" } else { "Show this thread" }).clicked() {
+                        thread_toggle = Some(ti);
+                    }
+                    if let (Some((lx, ly, lw, lh)), Some(url)) = (card.link, t.comments.first().map(|c| c.3.clone())) {
+                        let lr = Rect::from_min_size(pos2(rect.left() + lx, rect.top() + ly), vec2(lw, lh));
+                        let resp = page.interact(lr, base_id.with(("thread-link", ti)), Sense::click());
+                        if resp.hovered() {
+                            page.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if resp.on_hover_text(&url).clicked() {
+                            events.push(DiffEvent::OpenUrl(url));
+                        }
+                    }
+                }
                 // ---- toolbar: in its slot under the header, then stuck to the top
                 let stuck = header.is_some() && vp.min.y > head_h + 0.5;
                 let title_a = page.ctx().animate_bool_with_time(stuck_id, stuck, 0.15);
@@ -923,6 +1074,11 @@ impl DiffView {
                 self.header_h = h;
                 ui.ctx().request_repaint();
             }
+        }
+        if let Some(ti) = thread_toggle {
+            self.thread_open[ti] = !self.thread_open[ti];
+            self.thread_w = 0.0; // re-measure next frame
+            ui.ctx().request_repaint();
         }
         // apply toolbar actions
         if let Some(collapse) = bar_out.all {
@@ -976,6 +1132,67 @@ impl DiffView {
         }
         events
     }
+}
+
+/// A laid-out review thread card: galleys at (x, y) inside the card, its
+/// height, the height of the clickable header line, and the link's rect.
+struct ThreadCard {
+    items: Vec<(f32, f32, std::sync::Arc<egui::Galley>, Color32)>,
+    h: f32,
+    header_h: f32,
+    link: Option<(f32, f32, f32, f32)>,
+}
+
+fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool) -> ThreadCard {
+    let pad = 12.0;
+    let body_font = egui::TextStyle::Body.resolve(ui.style());
+    let small = egui::TextStyle::Small.resolve(ui.style());
+    let p = ui.painter();
+    let mut items = vec![];
+    let mut y = 9.0;
+    let n = t.comments.len();
+    let status = match (t.resolved, t.outdated) {
+        (true, _) => "Resolved",
+        (false, true) => "Outdated",
+        _ => "Review",
+    };
+    // header: "Review · 3 comments" (folded: also the first comment's start)
+    let mut head = format!("{status} · {n} comment{}", if n == 1 { "" } else { "s" });
+    if !open {
+        if let Some((a, b, _, _)) = t.comments.first() {
+            let first: String = b.lines().next().unwrap_or("").chars().take(80).collect();
+            head = format!("▸ {head} · {a}: {first}");
+        }
+    } else {
+        head = format!("▾ {head}");
+    }
+    let hg = p.layout_no_wrap(head, small.clone(), theme::TEXT_DIM());
+    let header_h = y + hg.size().y + 6.0;
+    items.push((pad, y, hg.clone(), theme::TEXT_DIM()));
+    y += hg.size().y + 8.0;
+    if !open {
+        return ThreadCard { items, h: header_h + 2.0, header_h, link: None };
+    }
+    for (i, (author, body, date, _)) in t.comments.iter().enumerate() {
+        if i > 0 {
+            y += 6.0;
+        }
+        let mut job = egui::text::LayoutJob::default();
+        job.append(author, 0.0, egui::TextFormat { font_id: body_font.clone(), color: theme::TEXT(), ..Default::default() });
+        job.append(&format!("   {date}"), 0.0, egui::TextFormat { font_id: small.clone(), color: theme::TEXT_DIM(), ..Default::default() });
+        let ag = p.layout_job(job);
+        items.push((pad, y, ag.clone(), theme::TEXT()));
+        y += ag.size().y + 2.0;
+        let bg = p.layout(body.trim().to_string(), body_font.clone(), theme::TEXT(), (w - pad * 2.0).max(80.0));
+        items.push((pad, y, bg.clone(), theme::TEXT()));
+        y += bg.size().y;
+    }
+    y += 8.0;
+    let lg = p.layout_no_wrap("Open on GitHub ↗".to_string(), small, theme::ACCENT());
+    let link = Some((pad, y, lg.size().x, lg.size().y));
+    items.push((pad, y, lg.clone(), theme::ACCENT()));
+    y += lg.size().y + 10.0;
+    ThreadCard { items, h: y, header_h, link }
 }
 
 /// Word changes for each removed/added line pair (runs paired in order, as

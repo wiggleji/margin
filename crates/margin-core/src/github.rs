@@ -153,6 +153,34 @@ pub struct PrComment {
     pub kind: CommentKind,
 }
 
+/// One comment in a review thread.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadComment {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
+/// An inline review thread (a conversation on a line of the PR's diff).
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewThread {
+    pub path: String,
+    /// Line in the PR's current head (new side) or base (old side); `None` when outdated.
+    pub line: Option<u64>,
+    /// Line in the version the first comment was written on.
+    pub original_line: Option<u64>,
+    /// The thread is on the old (removed / left) side of the diff.
+    pub old_side: bool,
+    /// Commit the first comment was written on.
+    pub original_commit: String,
+    pub resolved: bool,
+    /// The code it was written on has changed since.
+    pub outdated: bool,
+    /// Oldest first.
+    pub comments: Vec<ThreadComment>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PrDetail {
     #[serde(flatten)]
@@ -163,6 +191,8 @@ pub struct PrDetail {
     pub comments: Vec<PrComment>,
     pub unresolved_threads: usize,
     pub resolved_threads: usize,
+    /// All review threads with every comment (for showing them in the diff).
+    pub threads: Vec<ReviewThread>,
 }
 
 const SUMMARY: &str = "fragment S on PullRequest {
@@ -175,8 +205,8 @@ const DETAIL: &str = "
   baseRefName
   comments(last: 30) { nodes { author { login } body createdAt url } }
   reviews(last: 30) { nodes { author { login } state body submittedAt url } }
-  reviewThreads(last: 80) { nodes { isResolved path line
-    comments(first: 1) { totalCount nodes { author { login } body createdAt url } } } }
+  reviewThreads(last: 80) { nodes { isResolved isOutdated path line originalLine diffSide
+    comments(first: 50) { totalCount nodes { author { login } body createdAt url originalCommit { oid } } } } }
   checks: commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
     __typename
     ... on CheckRun { name status conclusion detailsUrl }
@@ -335,7 +365,24 @@ fn parse_detail(pr: &Value) -> PrDetail {
         });
     }
     let (mut unresolved, mut resolved) = (0, 0);
+    let mut threads = vec![];
     for t in pr["reviewThreads"]["nodes"].as_array().into_iter().flatten() {
+        let tc: Vec<ThreadComment> = t["comments"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| ThreadComment { author: author(c), body: s(&c["body"]), created_at: s(&c["createdAt"]), url: s(&c["url"]) })
+            .collect();
+        threads.push(ReviewThread {
+            path: s(&t["path"]),
+            line: t["line"].as_u64(),
+            original_line: t["originalLine"].as_u64().or(t["line"].as_u64()),
+            old_side: t["diffSide"].as_str() == Some("LEFT"),
+            original_commit: s(&t["comments"]["nodes"][0]["originalCommit"]["oid"]),
+            resolved: t["isResolved"].as_bool().unwrap_or(false),
+            outdated: t["isOutdated"].as_bool().unwrap_or(false),
+            comments: tc,
+        });
         if t["isResolved"].as_bool().unwrap_or(false) {
             resolved += 1;
             continue;
@@ -396,6 +443,7 @@ fn parse_detail(pr: &Value) -> PrDetail {
         checks,
         comments,
         unresolved_threads: unresolved,
+        threads,
         resolved_threads: resolved,
     }
 }
@@ -426,7 +474,10 @@ pub(crate) mod tests {
         { "author": { "login": "lee" }, "state": "CHANGES_REQUESTED", "body": "Please add a test.", "submittedAt": "2026-11-10T09:00:00Z", "url": "u2" },
         { "author": { "login": "lee" }, "state": "COMMENTED", "body": "", "submittedAt": "2026-11-10T09:00:01Z", "url": "u3" } ] },
       "reviewThreads": { "nodes": [
-        { "isResolved": false, "path": "src/auth.rs", "line": 42, "comments": { "totalCount": 3, "nodes": [ { "author": { "login": "lee" }, "body": "Handle 429 here", "createdAt": "2026-11-10T08:00:00Z", "url": "u4" } ] } },
+        { "isResolved": false, "isOutdated": false, "path": "src/auth.rs", "line": 42, "originalLine": 40, "diffSide": "RIGHT", "comments": { "totalCount": 3, "nodes": [
+          { "author": { "login": "lee" }, "body": "Handle 429 here", "createdAt": "2026-11-10T08:00:00Z", "url": "u4", "originalCommit": { "oid": "c1" } },
+          { "author": { "login": "kim" }, "body": "Done in the next commit", "createdAt": "2026-11-10T09:00:00Z", "url": "u6", "originalCommit": { "oid": "c1" } },
+          { "author": { "login": "lee" }, "body": "Thanks", "createdAt": "2026-11-10T09:30:00Z", "url": "u7", "originalCommit": { "oid": "c1" } } ] } },
         { "isResolved": true, "path": "x", "line": 1, "comments": { "totalCount": 1, "nodes": [ { "author": null, "body": "ok", "createdAt": "2026-11-01T00:00:00Z", "url": "u5" } ] } } ] },
       "checks": { "nodes": [ { "commit": { "statusCheckRollup": { "contexts": { "nodes": [
         { "__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "d1" },
@@ -449,6 +500,13 @@ pub(crate) mod tests {
         assert_eq!(d.comments.len(), 3);
         assert_eq!(d.comments[0].author, "lee"); // newest first
         assert!(matches!(d.comments[1].kind, CommentKind::Thread { line: Some(42), replies: 2, .. }));
+        // full threads for the diff
+        assert_eq!(d.threads.len(), 2);
+        let t = &d.threads[0];
+        assert_eq!((t.path.as_str(), t.line, t.original_line, t.old_side), ("src/auth.rs", Some(42), Some(40), false));
+        assert_eq!(t.original_commit, "c1");
+        assert_eq!(t.comments.iter().map(|c| c.author.as_str()).collect::<Vec<_>>(), ["lee", "kim", "lee"]);
+        assert!(d.threads[1].resolved);
     }
 
     #[test]
