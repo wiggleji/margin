@@ -34,7 +34,8 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             None => Some((format!("All {total} branches shown"), "", HistoryFilter::reset(false, f.hide_tags))),
         };
         if let Some((text, button, to)) = line {
-            ui.horizontal(|ui| {
+            // (wraps in a narrow column so the button stays reachable)
+            ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(text).small().color(theme::TEXT_DIM()))
                     .on_hover_text("Use the eye next to each branch in the sidebar to show or hide it.");
                 if !button.is_empty() && ui.small_button(button).clicked() {
@@ -283,9 +284,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 if let Some(pr) = rv.prs.get(b) {
                     let tone = crate::pr_view::tone_color(pr.readiness().1);
                     // [GitHub mark] #12 ● (CI) — coloured by merge readiness
-                    let dot_x = rx - 6.0;
-                    p.circle_filled(pos2(dot_x, y2), 2.5, ci_color(pr.ci));
-                    rx = outline_chip_right(&p, rx, y2, &format!("#{}   ", pr.number), Some(Icon::Github), tone, &small, isz) - 4.0;
+                    rx = outline_chip_dot(&p, rx, y2, &format!("#{}", pr.number), Some(Icon::Github), Some(ci_color(pr.ci)), tone, &small, isz) - 4.0;
                     hover_extra += &format!("\n\n{}", crate::pr_view::hover_summary(pr));
                 }
             }
@@ -335,15 +334,27 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
 /// Outlined label (optional icon + text) whose right edge is `right`; returns its left edge.
 #[allow(clippy::too_many_arguments)]
 fn outline_chip_right(p: &egui::Painter, right: f32, y: f32, text: &str, icon: Option<Icon>, color: Color32, font: &FontId, isz: f32) -> f32 {
+    outline_chip_dot(p, right, y, text, icon, None, color, font, isz)
+}
+
+/// Same, with an optional status dot after the text (a fixed few pixels, not
+/// spaces, so it stays tight in a wide or monospace font).
+#[allow(clippy::too_many_arguments)]
+fn outline_chip_dot(p: &egui::Painter, right: f32, y: f32, text: &str, icon: Option<Icon>, dot: Option<Color32>, color: Color32, font: &FontId, isz: f32) -> f32 {
     let g = p.layout_no_wrap(text.to_string(), font.clone(), color);
     let icon_w = if icon.is_some() { isz + 3.0 } else { 0.0 };
-    let size = g.size() + vec2(icon_w + 10.0, 2.0);
+    let dot_w = if dot.is_some() { 9.0 } else { 0.0 };
+    let size = g.size() + vec2(icon_w + dot_w + 8.0, 2.0);
     let chip = Rect::from_min_size(pos2(right - size.x, y - size.y / 2.0), size);
     p.rect_stroke(chip, 3.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
     if let Some(i) = icon {
         icons::paint(p, i, Rect::from_center_size(pos2(chip.left() + 3.0 + isz / 2.0, chip.center().y), vec2(isz, isz)), color);
     }
-    p.galley(chip.min + vec2(5.0 + icon_w, 1.0), g, color);
+    let text_x = chip.left() + 4.0 + icon_w;
+    p.galley(pos2(text_x, chip.top() + 1.0), g.clone(), color);
+    if let Some(d) = dot {
+        p.circle_filled(pos2(text_x + g.size().x + 5.0, chip.center().y), 2.5, d);
+    }
     chip.left()
 }
 

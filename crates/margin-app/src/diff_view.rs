@@ -195,9 +195,12 @@ fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: 
     // Stuck under a scrolled-away header: the commit title takes the place of
     // the counts (they're in the header); it fades in.
     let stuck = title.is_some() && title_a > 0.01;
+    // A narrow column gets shorter labels instead of pushing past its edge.
+    let narrow = ui.available_width() < 420.0 * (ui.style().text_styles[&egui::TextStyle::Body].size / 13.0).max(1.0);
     ui.horizontal_centered(|ui| {
         if !stuck {
-            ui.label(egui::RichText::new(format!("{n} file{}", if n == 1 { "" } else { "s" })).small().color(theme::TEXT_DIM()));
+            let files = if narrow { format!("{n}") } else { format!("{n} file{}", if n == 1 { "" } else { "s" }) };
+            ui.label(egui::RichText::new(files).small().color(theme::TEXT_DIM())).on_hover_text(format!("{n} changed file{}", if n == 1 { "" } else { "s" }));
             // only the sides that changed
             if added > 0 {
                 ui.label(egui::RichText::new(format!("+{added}")).small().color(theme::ADDED()));
@@ -229,7 +232,7 @@ fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: 
                 out.split = Some(i == 1);
             }
             ui.add_space(4.0);
-            if toggle_chip(ui, prefs.ignore_ws, "Ignore whitespace")
+            if toggle_chip(ui, prefs.ignore_ws, if narrow { "Ignore ws" } else { "Ignore whitespace" })
                 .on_hover_text("Hide changes that only touch spaces, tabs or indentation (git diff -w)")
                 .clicked()
             {

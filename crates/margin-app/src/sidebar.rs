@@ -9,6 +9,30 @@ use margin_core::tasks::Task;
 use std::collections::BTreeMap;
 
 pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Option<&Result<Vec<Task>, String>>, actions: &mut Vec<Action>) {
+    if rv.snap.is_none() {
+        return;
+    }
+    // ---- filter box (stays on top while the list scrolls); Esc or × clears
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let fid = egui::Id::unique("sidebar_filter");
+        let clear_w = if rv.sidebar_filter.is_empty() { 0.0 } else { 24.0 };
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut rv.sidebar_filter)
+                .id(fid)
+                .hint_text("Filter branches…")
+                .desired_width((ui.available_width() - clear_w).max(40.0)),
+        );
+        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            rv.sidebar_filter.clear();
+        }
+        if !rv.sidebar_filter.is_empty() && ui.small_button("×").on_hover_text("Clear the filter (Esc)").clicked() {
+            rv.sidebar_filter.clear();
+        }
+    });
+    let q = rv.sidebar_filter.trim().to_lowercase();
+    let filtering = !q.is_empty();
+    let matches = |name: &str| !filtering || name.to_lowercase().contains(&q);
     let Some(snap) = rv.snap.as_ref() else { return };
     let ctx = ui.ctx().clone();
     let isz = ui.text_style_height(&egui::TextStyle::Small) + 1.0;
@@ -36,11 +60,21 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         // ---------------------------------------------------------------- local
         // Grouped by prefix (feature/, hotfix/, projectA/…) when 2+ branches share one.
         let n_local = snap.refs.iter().filter(|r| r.kind == RefKind::Local).count();
-        section(ui, &format!("BRANCHES ({n_local})"), "branches", true, |ui| {
+        let local: Vec<&RefInfo> = snap.refs.iter().filter(|r| r.kind == RefKind::Local && matches(&r.name)).collect();
+        let title = if filtering { format!("BRANCHES ({} of {n_local})", local.len()) } else { format!("BRANCHES ({n_local})") };
+        section_f(ui, &title, "branches", true, filtering, |ui| {
+            if filtering {
+                // matches as a flat list with full names (no folders to open)
+                if local.is_empty() {
+                    ui.weak("    No matching branches");
+                }
+                for r in &local {
+                    local_row(ui, rv, r, &r.name, 0, isz, actions);
+                }
+                return;
+            }
             // refs arrive newest-first (for-each-ref --sort=-committerdate)
-            let tree = branch_tree::build(
-                snap.refs.iter().filter(|r| r.kind == RefKind::Local).map(|r| (r.name.clone(), r)).collect(),
-            );
+            let tree = branch_tree::build(local.iter().map(|r| (r.name.clone(), *r)).collect());
             let focus = rv.focus_branch.clone();
             let open_if = |r: &&RefInfo| r.is_head || focus.as_deref() == Some(r.name.as_str());
             render_tree(ui, &tree, "local", 0, &open_if, &mut |ui, label, depth, r| local_row(ui, rv, r, label, depth, isz, actions));
@@ -49,7 +83,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         // ------------------------------------------------------------ worktrees
         // Listed like branches (by the branch they have checked out); only
         // when the repository has more than one.
-        if snap.worktrees.len() > 1 {
+        if snap.worktrees.len() > 1 && !filtering {
             section(ui, &format!("WORKTREES ({})", snap.worktrees.len()), "worktrees", true, |ui| {
                 for w in &snap.worktrees {
                     worktree_row(ui, rv, w, isz, actions);
@@ -58,7 +92,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         }
 
         // ------------------------------------------------- recently re-attached
-        if !rv.reattached.is_empty() {
+        if !rv.reattached.is_empty() && !filtering {
             list_section(ui, &format!("RE-ATTACHED ({})", rv.reattached.len()), "reattached", true, |ui| {
                     for e in &rv.reattached {
                         let short = |t: &str| t.strip_prefix("commit:").map(|c| c[..7.min(c.len())].to_string()).unwrap_or_else(|| t.to_string());
@@ -86,7 +120,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         }
 
         // ------------------------------------------------------- detached notes
-        if !rv.detached.is_empty() {
+        if !rv.detached.is_empty() && !filtering {
             list_section(ui, &format!("DETACHED NOTES ({})", rv.detached.len()), "detached", true, |ui| {
                     for d in &rv.detached {
                         let mut atoms = egui::Atoms::new(note_icon(theme::TEXT_DIM()));
@@ -125,75 +159,92 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
 
         // -------------------------------------------------------------- remotes
         let mut remotes: BTreeMap<&str, Vec<&RefInfo>> = BTreeMap::new();
-        for r in snap.refs.iter().filter(|r| r.kind == RefKind::Remote) {
+        for r in snap.refs.iter().filter(|r| r.kind == RefKind::Remote && matches(&r.name)) {
             let remote = r.name.split('/').next().unwrap_or("");
             remotes.entry(remote).or_default().push(r);
         }
         let n_remotes = remotes.len();
         let up = margin_core::history::head_upstream(&snap.refs);
-        section(ui, &format!("REMOTES ({n_remotes})"), "remotes", false, |ui| {
-            for (remote, refs) in remotes {
-                // Each remote is a group row like "feature/", one level deep.
-                if !group_row(ui, ("remote", remote), remote, refs.len(), 0, false) {
-                    continue;
-                }
-                {
-                    // Same prefix grouping as local branches, on the part after "origin/".
-                    let tree = branch_tree::build(
-                        refs.into_iter().map(|r| (r.name.split_once('/').map_or(r.name.clone(), |(_, b)| b.to_string()), r)).collect(),
-                    );
-                    render_tree(ui, &tree, remote, 1, &|_| false, &mut |ui, label, depth, r| {
-                        let shown = rv.graph_filter.shows(r, up.as_deref());
-                        let h = ui.spacing().interact_size.y;
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
-                        if resp.hovered() {
-                            ui.painter().rect_filled(rect, 3.0, theme::HOVER());
-                        }
-                        let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-                        gutter(&mut row, depth, None);
-                        let w = (row.available_width() - h - 6.0 - EYE_MARGIN).max(30.0);
-                        row.allocate_ui_with_layout(egui::vec2(w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.add(egui::Label::new(RichText::new(label)).truncate());
-                        });
-                        row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(EYE_MARGIN);
-                            if eye(ui, shown).clicked() {
-                                let mut f = rv.graph_filter.clone();
-                                f.set(r, !shown);
-                                actions.push(Action::SetGraphFilter(f));
+        let n_remote_refs: usize = remotes.values().map(Vec::len).sum();
+        let remotes_title = if filtering { format!("REMOTES ({n_remote_refs} matching)") } else { format!("REMOTES ({n_remotes})") };
+        // (while filtering, only shown when something matches)
+        if !filtering || n_remote_refs > 0 {
+            section_f(ui, &remotes_title, "remotes", false, filtering, |ui| {
+                for (remote, refs) in remotes {
+                    // Each remote is a group row like "feature/", one level deep.
+                    if !group_row(ui, ("remote", remote), remote, refs.len(), 0, false) && !filtering {
+                        continue;
+                    }
+                    {
+                        // Same prefix grouping as local branches, on the part after
+                        // "origin/" (a flat list of matches while filtering).
+                        let tree = if filtering {
+                            refs.into_iter().map(|r| branch_tree::Node::Leaf { label: r.name.split_once('/').map_or(r.name.clone(), |(_, b)| b.to_string()), item: r }).collect()
+                        } else {
+                            branch_tree::build(refs.into_iter().map(|r| (r.name.split_once('/').map_or(r.name.clone(), |(_, b)| b.to_string()), r)).collect())
+                        };
+                        render_tree(ui, &tree, remote, 1, &|_| false, &mut |ui, label, depth, r| {
+                            let shown = rv.graph_filter.shows(r, up.as_deref());
+                            let h = ui.spacing().interact_size.y;
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+                            if resp.hovered() {
+                                ui.painter().rect_filled(rect, 3.0, theme::HOVER());
                             }
-                        });
-                        if resp.clicked() {
-                            actions.push(Action::JumpTo(r.target.clone()));
-                        }
-                        let name = r.name.clone();
-                        resp.on_hover_text(&name).context_menu(|ui| {
-                            if ui.button("Checkout as tracking branch").clicked() {
-                                actions.push(Action::CheckoutRemote(name.clone()));
-                                ui.close();
+                            let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                            gutter(&mut row, depth, None);
+                            let w = (row.available_width() - h - 6.0 - EYE_MARGIN).max(30.0);
+                            row.allocate_ui_with_layout(egui::vec2(w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.add(egui::Label::new(RichText::new(label)).truncate());
+                            });
+                            row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_space(EYE_MARGIN);
+                                if eye(ui, shown).clicked() {
+                                    let mut f = rv.graph_filter.clone();
+                                    f.set(r, !shown);
+                                    actions.push(Action::SetGraphFilter(f));
+                                }
+                            });
+                            if resp.clicked() {
+                                actions.push(Action::JumpTo(r.target.clone()));
                             }
-                            if ui.button("Merge into current branch").clicked() {
-                                actions.push(Action::Confirm { msg: format!("Merge {name}?"), action: Box::new(Action::Merge(name.clone())) });
-                                ui.close();
-                            }
+                            let name = r.name.clone();
+                            resp.on_hover_text(&name).context_menu(|ui| {
+                                if ui.button("Checkout as tracking branch").clicked() {
+                                    actions.push(Action::CheckoutRemote(name.clone()));
+                                    ui.close();
+                                }
+                                if ui.button("Merge into current branch").clicked() {
+                                    actions.push(Action::Confirm { msg: format!("Merge {name}?"), action: Box::new(Action::Merge(name.clone())) });
+                                    ui.close();
+                                }
 
+                            });
                         });
-                    });
+                    }
                 }
-            }
-        });
+            });
+
+        }
 
         // ----------------------------------------------------------------- tags
         let n_tags = snap.refs.iter().filter(|r| r.kind == RefKind::Tag).count();
-        list_section(ui, &format!("TAGS ({n_tags})"), "tags", false, |ui| {
-            for r in snap.refs.iter().filter(|r| r.kind == RefKind::Tag) {
-                if ui.selectable_label(false, &r.name).clicked() {
-                    actions.push(Action::JumpTo(r.target.clone()));
+        let tags: Vec<&RefInfo> = snap.refs.iter().filter(|r| r.kind == RefKind::Tag && matches(&r.name)).collect();
+        let tags_title = if filtering { format!("TAGS ({} matching)", tags.len()) } else { format!("TAGS ({n_tags})") };
+        if !filtering || !tags.is_empty() {
+            list_section_f(ui, &tags_title, "tags", false, filtering, |ui| {
+                for r in tags {
+                    if ui.selectable_label(false, &r.name).clicked() {
+                        actions.push(Action::JumpTo(r.target.clone()));
+                    }
                 }
-            }
-        });
+            });
+        }
 
         // -------------------------------------------------------------- stashes
+        // (stashes and tasks aren't branches: out of the way while filtering)
+        if filtering {
+            return;
+        }
         list_section(ui, &format!("STASHES ({})", snap.stashes.len()), "stashes", false, |ui| {
                 for s in &snap.stashes {
                     let resp = ui.selectable_label(false, &s.message);
@@ -349,10 +400,15 @@ fn group_row(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, label: &st
 /// Section heading ("BRANCHES (34)"). Its rows use depth 0, so top-level
 /// branch names line up under the heading text.
 fn section(ui: &mut Ui, title: &str, id: &str, default_open: bool, body: impl FnOnce(&mut Ui)) -> bool {
+    section_f(ui, title, id, default_open, false, body)
+}
+
+/// Same; `force` shows the body even when the section is folded (filtering).
+fn section_f(ui: &mut Ui, title: &str, id: &str, default_open: bool, force: bool, body: impl FnOnce(&mut Ui)) -> bool {
     let open = toggle_row(ui, egui::Id::unique(("section", id)), 0, default_open, |ui| {
         ui.label(RichText::new(title).small().strong());
     });
-    if open {
+    if open || force {
         body(ui);
     }
     open
@@ -361,7 +417,11 @@ fn section(ui: &mut Ui, title: &str, id: &str, default_open: bool, body: impl Fn
 /// A section whose rows are plain widgets: pad them past the triangle column
 /// so they line up with the heading text (tree rows draw their own gutter).
 fn list_section(ui: &mut Ui, title: &str, id: &str, default_open: bool, body: impl FnOnce(&mut Ui)) -> bool {
-    section(ui, title, id, default_open, |ui| {
+    list_section_f(ui, title, id, default_open, false, body)
+}
+
+fn list_section_f(ui: &mut Ui, title: &str, id: &str, default_open: bool, force: bool, body: impl FnOnce(&mut Ui)) -> bool {
+    section_f(ui, title, id, default_open, force, |ui| {
         ui.horizontal(|ui| {
             ui.add_space(SLOT + 4.0);
             ui.vertical(|ui| body(ui));

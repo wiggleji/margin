@@ -345,6 +345,8 @@ pub struct RepoView {
     pub editor: NoteEditor,
     pub focus_branch: Option<String>,
     pub focus_task: Option<String>,
+    /// Text in the sidebar's filter box (branches, remotes, tags).
+    pub sidebar_filter: String,
     pub scroll_to_row: Option<usize>,
     /// History viewport (scroll offset, height) from the last frame.
     pub list_view: (f32, f32),
@@ -432,6 +434,7 @@ impl RepoView {
             editor: NoteEditor::default(),
             focus_branch: None,
             focus_task: None,
+            sidebar_filter: String::new(),
             scroll_to_row: None,
             list_view: (0.0, 0.0),
             loading: true,

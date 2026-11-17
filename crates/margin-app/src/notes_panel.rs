@@ -307,7 +307,9 @@ pub fn show(
     }
 
     // ---- what this note is attached to (and, when empty, a button to start it)
-    ui.horizontal(|ui| {
+    // (wraps onto more lines in a narrow panel instead of overlapping)
+    let roomy = ui.available_width() >= 560.0 * ui_scale(ui);
+    ui.horizontal_wrapped(|ui| {
         if let Some(k) = &task
             && pro
             && !task_cache.contains_key(k)
@@ -324,7 +326,11 @@ pub fn show(
             }
         }
         if let (NoteTab::Branch, Some(b)) = (rv.editor.tab, &branch) {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| task_link(ui, b, task.as_deref(), task_cache, task_url, actions));
+            if roomy {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| task_link(ui, b, task.as_deref(), task_cache, task_url, actions));
+            } else {
+                task_link(ui, b, task.as_deref(), task_cache, task_url, actions);
+            }
         }
     });
     // An empty note shrinks the panel to this one line (it grows back,
@@ -651,7 +657,10 @@ fn toolbar(
 ) -> (Option<crate::note_format::Fmt>, bool) {
     use crate::note_format::Fmt;
     let editing = !rv.editor.preview;
-    let wide = ui.available_width() >= 640.0;
+    // Three widths (scaled with the text size): one row; the formatting
+    // buttons on a row of their own; or everything wrapping left to right.
+    let w = ui.available_width() / ui_scale(ui);
+    let (wide, medium) = (w >= 640.0, w >= 430.0);
     let mut fmt = None;
     let mut done = false;
     let format_buttons = |ui: &mut Ui, fmt: &mut Option<Fmt>| {
@@ -668,8 +677,7 @@ fn toolbar(
             }
         }
     };
-    ui.horizontal(|ui| {
-        // mode
+    let modes = |ui: &mut Ui, rv: &mut RepoView, prefs: &mut margin_core::config::State, done: &mut bool| {
         use crate::widgets::Seg;
         let modes = [
             Seg::new(None, "Edit").tip("Write Markdown (double-click the note to start)"),
@@ -678,7 +686,7 @@ fn toolbar(
         ];
         let cur = if rv.editor.preview { 2 } else if prefs.notes_split { 1 } else { 0 };
         match crate::widgets::segmented(ui, &modes, Some(cur)) {
-            Some(2) => done = true,
+            Some(2) => *done = true,
             Some(m) => {
                 rv.editor.preview = false;
                 prefs.notes_split = m == 1;
@@ -687,29 +695,52 @@ fn toolbar(
             }
             None => {}
         }
-        if editing && wide {
-            ui.add_space(10.0);
-            format_buttons(ui, &mut fmt);
+    };
+    // Saved · + Entry · ⋯ · Done, in reading order (`rtl`: drawn right to left)
+    let actions_group = |ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>, done: &mut bool, rtl: bool| {
+        let mut items: Vec<u8> = vec![0, 1, 2];
+        if editing {
+            items.push(3);
         }
-        // right side, right to left: Done, ⋯, Add entry, save state
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if editing {
-                if crate::widgets::primary_button(ui, "Done").on_hover_text("Save and show the note (Esc or ⌘↩)").clicked() {
-                    done = true;
+        if rtl {
+            items.reverse();
+        }
+        for it in items {
+            match it {
+                0 => save_state(ui, rv, actions, rtl),
+                1 => {
+                    if ui.button("+ Entry").on_hover_text(format!("Add a dated entry at the end (### {} · {author})", margin_core::format_local(margin_core::time_now()))).clicked() {
+                        add_entry(&mut rv.editor, author, now);
+                        rv.editor.focus_next = true;
+                    }
                 }
-                ui.add_space(4.0);
+                2 => more_menu(ui, rv, actions),
+                _ => {
+                    if crate::widgets::primary_button(ui, "Done").on_hover_text("Save and show the note (Esc or ⌘↩)").clicked() {
+                        *done = true;
+                    }
+                }
             }
-            more_menu(ui, rv, actions);
-            if ui.button("+ Entry").on_hover_text(format!("Add a dated entry at the end (### {} · {author})", margin_core::format_local(margin_core::time_now()))).clicked() {
-                add_entry(&mut rv.editor, author, now);
-                rv.editor.focus_next = true;
+        }
+    };
+    if medium {
+        ui.horizontal(|ui| {
+            modes(ui, rv, prefs, &mut done);
+            if editing && wide {
+                ui.add_space(10.0);
+                format_buttons(ui, &mut fmt);
             }
-            ui.add_space(6.0);
-            save_state(ui, rv, actions);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| actions_group(ui, rv, actions, &mut done, true));
         });
-    });
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            modes(ui, rv, prefs, &mut done);
+            ui.add_space(6.0);
+            actions_group(ui, rv, actions, &mut done, false);
+        });
+    }
     if editing && !wide {
-        ui.horizontal(|ui| format_buttons(ui, &mut fmt));
+        ui.horizontal_wrapped(|ui| format_buttons(ui, &mut fmt));
     }
     (fmt, done)
 }
@@ -741,7 +772,8 @@ fn fmt_button(ui: &mut Ui, f: crate::note_format::Fmt) -> egui::Response {
 }
 
 /// "● Saved" / "● Unsaved…" / "● Can't save" (+ notes sync state, click → Settings).
-fn save_state(ui: &mut Ui, rv: &RepoView, actions: &mut Vec<Action>) {
+/// `rtl`: the caller lays out right to left, so draw the parts in reverse.
+fn save_state(ui: &mut Ui, rv: &RepoView, actions: &mut Vec<Action>, rtl: bool) {
     use margin_core::sync::RepoSync;
     let ed = &rv.editor;
     let (txt, color, tip) = if ed.error.is_some() || !ed.violations.is_empty() {
@@ -760,17 +792,38 @@ fn save_state(ui: &mut Ui, rv: &RepoView, actions: &mut Vec<Action>) {
         RepoSync::NoFolder => Some(("sync: no folder", theme::ACCENT())),
         RepoSync::Off => None,
     };
-    // (right-to-left: sync first, so it ends up after the save state)
-    if let Some((t, c)) = sync {
-        let stip = crate::app::sync_status_text(rv).0;
-        if ui.add(egui::Label::new(RichText::new(t).small().color(c)).sense(egui::Sense::click())).on_hover_text(stip).clicked() {
-            actions.push(Action::OpenSettings);
-        }
-        ui.label(RichText::new("·").small().color(theme::TEXT_DIM()));
+    let mut parts: Vec<u8> = vec![0, 1];
+    if sync.is_some() {
+        parts.push(2);
     }
-    ui.label(RichText::new(txt).small().color(theme::TEXT_DIM())).on_hover_text(tip);
-    let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-    ui.painter().circle_filled(r.center(), 3.5, color);
+    if rtl {
+        parts.reverse();
+    }
+    for part in parts {
+        match part {
+            0 => {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(r.center(), 3.5, color);
+            }
+            1 => {
+                ui.label(RichText::new(txt).small().color(theme::TEXT_DIM())).on_hover_text(tip);
+            }
+            _ => {
+                if let Some((t, c)) = sync {
+                    let stip = crate::app::sync_status_text(rv).0;
+                    ui.label(RichText::new("·").small().color(theme::TEXT_DIM()));
+                    if ui.add(egui::Label::new(RichText::new(t).small().color(c)).sense(egui::Sense::click())).on_hover_text(stip).clicked() {
+                        actions.push(Action::OpenSettings);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// How much bigger than the default (13 pt) the interface text is.
+fn ui_scale(ui: &Ui) -> f32 {
+    (ui.style().text_styles[&egui::TextStyle::Body].size / 13.0).max(1.0)
 }
 
 /// ⋯: less common note actions, away from the everyday buttons.

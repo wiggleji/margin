@@ -51,7 +51,8 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
         if std::mem::take(&mut rv.focus_commit_msg) {
             s.request_focus();
         }
-        ui.horizontal(|ui| {
+        // (wraps in a narrow column instead of widening it)
+        ui.horizontal_wrapped(|ui| {
             let has_msg = !rv.commit_msg.trim().is_empty();
             let can = (staged_n > 0 || rv.amend) && has_msg;
             // Say what the button will do: "Commit 2 files" / "Amend last commit".
