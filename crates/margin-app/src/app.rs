@@ -555,9 +555,7 @@ impl MarginApp {
             settings.ui_font_size.unwrap_or(DEFAULT_FONT).clamp(MIN_UI_FONT, MAX_UI_FONT),
             settings.font_size.or(cfg.font_size).unwrap_or(DEFAULT_FONT).clamp(MIN_FONT, MAX_FONT),
         );
-        if settings.ui_font.is_some() || settings.code_font.is_some() {
-            crate::fonts::apply(ctx, settings.ui_font.as_ref(), settings.code_font.as_ref());
-        }
+        crate::fonts::apply(ctx, settings.ui_font.as_ref(), settings.code_font.as_ref());
         let tasks = tasks::provider_from_config(&cfg).map(Arc::from);
         let mut app = MarginApp {
             author: cfg.note_author.clone().unwrap_or_default(),

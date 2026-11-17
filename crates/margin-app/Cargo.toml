@@ -22,6 +22,8 @@ emojis = "0.9"
 # System font list for Settings → Appearance (same versions egui uses for its fallback fonts).
 fontique = { version = "0.11", default-features = false, features = ["system", "fontconfig-dlopen"] }
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
+# Font files are memory-mapped, not copied (Apple Color Emoji is ~180 MB).
+memmap2 = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rfd = { version = "0.18", default-features = false }

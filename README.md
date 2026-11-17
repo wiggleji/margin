@@ -188,7 +188,7 @@ The git client, notes, agents (MCP), tabs, and Git Flow are free. **Margin Pro**
 - **GitHub PR status:** readiness, CI checks, and review comments.
 - **Review threads in the diff:** a PR's inline review threads appear as cards under the line they're on, in commit diffs: on the commit a thread was written on (at its original line) and, for open threads, on the PR's latest commit. Each card shows every comment, with **Reply** (a box opens in the card; ⌘↩ sends, Esc cancels), **Resolve** / **Unresolve**, and a link to GitHub. The card reloads with the new comment or state; on an error the draft stays. Resolved and outdated threads fold to one line (click to open).
 - **New comments on any line:** hover a line in a commit diff (of a commit in an open PR) and click **+** next to its number. A card opens under the line; ⌘↩ posts it to GitHub as a review comment on that commit (left side for removed lines). A line must be part of the PR's diff for GitHub to accept it.
-- **Emoji:** `:tada:`-style shortcodes in PR comments show as emoji. In the comment boxes, typing `:` and a few letters opens a dropdown (↑/↓, ↵ or Tab inserts, Esc closes).
+- **Emoji:** `:tada:`-style shortcodes in PR comments show as emoji, in colour from the system's emoji font (Apple Color Emoji, Segoe UI Emoji, or Noto Color Emoji), the same as in other apps. In the comment boxes, typing `:` and a few letters opens a dropdown (↑/↓, ↵ or Tab inserts, Esc closes).
 - **Task trackers:** Jira ticket details, My tasks, and creating a branch from a ticket.
 - **Notes sync for more than one repository.**
 

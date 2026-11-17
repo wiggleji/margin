@@ -1819,6 +1819,7 @@ dependencies = [
  "emojis",
  "fontique",
  "margin-core",
+ "memmap2",
  "muda",
  "pulldown-cmark",
  "rfd",
