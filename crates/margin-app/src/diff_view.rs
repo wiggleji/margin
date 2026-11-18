@@ -103,7 +103,8 @@ enum Row {
     Section(Section),
     /// Space for a PR review thread under its line (the card is painted over it).
     Thread,
-    /// Blank space before a file (after the first), so files read apart.
+    /// Blank space before a file that follows an open one, so the code of
+    /// one file doesn't run into the next header.
     Gap,
     /// (file, hunk, line, wrapped segment)
     Line(usize, usize, usize, usize),
@@ -518,7 +519,9 @@ impl DiffView {
             if matches!(sec, Section::Unstaged | Section::Staged) && last != Some(sec) {
                 self.rows.push(Row::Section(sec));
             }
-            if last == Some(sec) {
+            // Space only after an open file's code; collapsed files stack
+            // tightly (a thin divider between them, drawn with the row).
+            if last == Some(sec) && fi > 0 && open[fi - 1] {
                 self.rows.push(Row::Gap);
             }
             last = Some(sec);
@@ -848,6 +851,10 @@ impl DiffView {
                             let f = &self.files[fi];
                             let sec = self.sections.get(fi).copied().unwrap_or(Section::Commit);
                             p.rect_filled(rect, 0.0, theme::BG_DARK());
+                            // thin divider from the file row above (collapsed files stack)
+                            if matches!(self.rows.get(i.wrapping_sub(1)), Some(Row::File(_))) {
+                                p.line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, ui.visuals().panel_fill));
+                            }
                             let open = open[fi];
                             tri(&p, pos2(rect.left() + 10.0, rect.center().y), open, theme::TEXT_DIM());
                             // An icon for what happened to the file (named on hover),
