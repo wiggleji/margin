@@ -355,13 +355,11 @@ pub fn show(
                 rv.editor.focus_next = true;
             }
         }
-        if let (NoteTab::Branch, Some(b)) = (rv.editor.tab, &branch) {
-            // Inline after the text (and Write note), wrapping to the next
-            // line when there's no room: it never sits on top of anything.
-            ui.add_space(10.0);
-            task_link(ui, b, task.as_deref(), task_info, task_url, actions);
-        }
     });
+    // The branch's ticket on its own line, under what the note is on.
+    if let (NoteTab::Branch, Some(b)) = (rv.editor.tab, &branch) {
+        ui.horizontal_wrapped(|ui| task_link(ui, b, task.as_deref(), task_info, task_url, actions));
+    }
     // An empty note shrinks the panel to this one line (it grows back,
     // animated, on "Write note" or when switching to a note with text).
     if compact {
@@ -705,10 +703,11 @@ fn toolbar(
             }
         }
     };
+    // Layout: [Editor | Split | Preview] + Entry
     let modes = |ui: &mut Ui, rv: &mut RepoView, prefs: &mut margin_core::config::State, done: &mut bool| {
         use crate::widgets::Seg;
         let modes = [
-            Seg::new(None, "Edit").tip("Write Markdown (double-click the note to start)"),
+            Seg::new(None, "Editor").tip("Write Markdown (double-click the note to start)"),
             Seg::new(None, "Split").tip("Editor and live preview side by side"),
             Seg::new(None, "Preview").tip("The note as it reads (Esc or ⌘↩ from the editor)"),
         ];
@@ -723,29 +722,31 @@ fn toolbar(
             }
             None => {}
         }
-    };
-    // Saved · + Entry · ⋯ · Done, in reading order (`rtl`: drawn right to left)
-    let actions_group = |ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>, done: &mut bool, rtl: bool| {
-        let mut items: Vec<u8> = vec![0, 1, 2];
-        if editing {
-            items.push(3);
+        ui.add_space(4.0);
+        if ui.button("+ Entry").on_hover_text(format!("Add a dated entry at the end (### {} · {author})", margin_core::format_local(margin_core::time_now()))).clicked() {
+            add_entry(&mut rv.editor, author, now);
+            rv.editor.focus_next = true;
         }
+    };
+    // Saved · ⋯ · Edit (Done while editing), in reading order (`rtl`: drawn right to left)
+    let actions_group = |ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>, done: &mut bool, rtl: bool| {
+        let mut items: Vec<u8> = vec![0, 2, 3];
         if rtl {
             items.reverse();
         }
         for it in items {
             match it {
                 0 => save_state(ui, rv, actions, rtl),
-                1 => {
-                    if ui.button("+ Entry").on_hover_text(format!("Add a dated entry at the end (### {} · {author})", margin_core::format_local(margin_core::time_now()))).clicked() {
-                        add_entry(&mut rv.editor, author, now);
-                        rv.editor.focus_next = true;
-                    }
-                }
                 2 => more_menu(ui, rv, actions),
-                _ => {
+                _ if editing => {
                     if crate::widgets::primary_button(ui, "Done").on_hover_text("Save and show the note (Esc or ⌘↩)").clicked() {
                         *done = true;
+                    }
+                }
+                _ => {
+                    if crate::widgets::primary_button(ui, "Edit").on_hover_text("Write in this note (or double-click it)").clicked() {
+                        rv.editor.preview = false;
+                        rv.editor.focus_next = true;
                     }
                 }
             }
