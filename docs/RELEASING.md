@@ -52,17 +52,14 @@ Bump the version in the root `Cargo.toml` (`[workspace.package] version`) before
 
 ## Release from GitHub Actions
 
-Push a tag matching the Cargo version. The workflow builds, signs, notarizes, and publishes a release with the DMG attached (marked latest, so the README download link points to it):
+1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`) and merge it into `main`.
+2. *Actions → Release macOS → Run workflow*, on `main`, with **Publish a release** ticked.
 
-```bash
-git tag v0.1.0
-```
+The workflow builds, signs, notarizes, creates the tag `v<version>` on that commit, and publishes the release with the DMG and the in-app update zip attached (marked latest, so the README download link and Margin's updater pick it up). It refuses a version that's already released, or a run from another branch.
 
-```bash
-git push origin v0.1.0
-```
+Untick **Publish a release** to only build: the DMG and zip are then artifacts of the run.
 
-Or run *Actions → Release macOS → Run workflow* to only build the DMG as a downloadable artifact.
+Pushing a tag works too (`git tag v0.2.0 && git push origin v0.2.0`); the tag must match the Cargo version.
 
 **Without the Apple secrets** the same workflow still builds and releases a DMG, ad-hoc signed instead of notarized: macOS blocks the first open until the user runs `xattr -dr com.apple.quarantine /Applications/Margin.app` or clicks **Open Anyway** in System Settings → Privacy & Security, and the release notes say so. Add the secrets later and the next release is signed and notarized.
 
