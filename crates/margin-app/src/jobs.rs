@@ -47,6 +47,10 @@ pub enum Msg {
     MyTasks(Result<Vec<Task>, String>),
     /// Settings → Accounts "Test": who the token signs in as ("github" / "jira").
     AccountTest { which: &'static str, result: Result<String, String> },
+    /// The update check finished: the latest release, if any.
+    UpdateChecked { manual: bool, result: Result<Option<margin_core::update::Release>, String> },
+    /// The update was downloaded and checked: the new Margin.app.
+    UpdateStaged(Result<(margin_core::update::Release, PathBuf), String>),
     /// Installing the `margin` terminal command finished.
     CliInstalled(Result<String, String>),
     /// Background auto-fetch finished (kept separate from `OpDone` so it never
@@ -81,7 +85,7 @@ impl Msg {
             | Msg::PrDetail { workdir, .. }
             | Msg::ThreadOp { workdir, .. }
             | Msg::Detached { workdir, .. } => Some(workdir),
-            Msg::Task { .. } | Msg::MyTasks(_) | Msg::AccountTest { .. } | Msg::CliInstalled(_) => None,
+            Msg::Task { .. } | Msg::MyTasks(_) | Msg::AccountTest { .. } | Msg::CliInstalled(_) | Msg::UpdateChecked { .. } | Msg::UpdateStaged(_) => None,
         }
     }
 }

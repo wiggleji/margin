@@ -15,6 +15,7 @@ pub enum Cmd {
     // Margin
     Settings,
     InstallCli,
+    CheckUpdates,
     // File
     OpenFolder,
     OpenRecent(String),
@@ -130,6 +131,7 @@ mod mac {
                 true,
                 &[
                     &PredefinedMenuItem::about(Some("About Margin"), Some(about)),
+                    &b.item("Check for Updates…", None, Cmd::CheckUpdates),
                     &sep(),
                     &b.item("Settings…", Some("cmd+Comma"), Cmd::Settings),
                     &b.item("Install 'margin' Command…", None, Cmd::InstallCli),

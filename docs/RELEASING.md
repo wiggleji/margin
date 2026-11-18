@@ -37,7 +37,7 @@ export MARGIN_NOTARY_PROFILE=margin-notary
 scripts/package-macos.sh
 ```
 
-This produces `dist/Margin-<version>.dmg` and `.sha256`. Notarization usually takes 1–5 minutes per submission, and the app and the DMG are submitted separately.
+This produces `dist/Margin-<version>.dmg` and `dist/Margin-<version>-macos.zip` (the app for in-app updates), each with a `.sha256`. Notarization usually takes 1–5 minutes per submission, and the app and the DMG are submitted separately.
 
 Other modes:
 

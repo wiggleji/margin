@@ -10,6 +10,7 @@ use margin_core::git::{CommitDetail, FileChange, Repo, ResetMode};
 use margin_core::graph::{self, GraphRow};
 use margin_core::notes::{NoteStore, NoteTarget};
 use margin_core::tasks::{self, Task, TaskProvider};
+use margin_core::update::{self, Release};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -112,6 +113,12 @@ pub enum Action {
     OpenSettings,
     /// Install the `margin` terminal command.
     InstallCli,
+    /// Look for a new Margin release now (`manual`: say so when up to date).
+    CheckUpdate { manual: bool },
+    /// Download the available release and get it ready to install.
+    DownloadUpdate,
+    /// Install the downloaded release now and reopen Margin.
+    RestartToUpdate,
     /// Enable/disable notes sync for the active repo.
     SetNotesSync(bool),
     SetSyncFolder(Option<String>),
@@ -151,6 +158,19 @@ const MIN_UI_FONT: f32 = 12.0;
 const MAX_UI_FONT: f32 = 15.0;
 
 /// Sections of the Settings window.
+/// Updating Margin itself.
+pub enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    /// A newer release (not downloaded).
+    Available(Release),
+    Downloading(Release),
+    /// Downloaded and checked: installs on quit, or now with Restart.
+    Ready(Release, PathBuf),
+    Failed(String),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     Appearance,
@@ -159,10 +179,11 @@ pub enum SettingsTab {
     Fetch,
     Tasks,
     Diffs,
+    Updates,
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 6] = [SettingsTab::Appearance, SettingsTab::Accounts, SettingsTab::Sync, SettingsTab::Fetch, SettingsTab::Tasks, SettingsTab::Diffs];
+    const ALL: [SettingsTab; 7] = [SettingsTab::Appearance, SettingsTab::Accounts, SettingsTab::Sync, SettingsTab::Fetch, SettingsTab::Tasks, SettingsTab::Diffs, SettingsTab::Updates];
     fn label(self) -> &'static str {
         match self {
             SettingsTab::Appearance => "Appearance",
@@ -171,6 +192,7 @@ impl SettingsTab {
             SettingsTab::Fetch => "Fetch",
             SettingsTab::Tasks => "Tasks",
             SettingsTab::Diffs => "Diffs",
+            SettingsTab::Updates => "Updates",
         }
     }
     fn intro(self) -> &'static str {
@@ -181,6 +203,7 @@ impl SettingsTab {
             SettingsTab::Fetch => "Keep remote branches up to date in the background.",
             SettingsTab::Tasks => "Where task keys such as PROJ-123 or #123 come from, for each repository.",
             SettingsTab::Diffs => "How diffs open.",
+            SettingsTab::Updates => "New versions of Margin, straight from GitHub Releases.",
         }
     }
 }
@@ -563,6 +586,10 @@ pub struct MarginApp {
     menu: crate::menu_bar::MenuBar,
     /// Folders sent by `margin <dir>` from a terminal (see cli.rs).
     cli_rx: Option<std::sync::mpsc::Receiver<PathBuf>>,
+    /// Where updating Margin itself stands (see core::update).
+    update: UpdateState,
+    /// The installer for a downloaded update has been started.
+    update_scheduled: bool,
     ctx: egui::Context,
 }
 
@@ -611,6 +638,8 @@ impl MarginApp {
             focus_diff: false,
             menu: crate::menu_bar::MenuBar::new(ctx),
             cli_rx: crate::cli::listen(ctx),
+            update: UpdateState::Idle,
+            update_scheduled: false,
             ctx: ctx.clone(),
         };
         // Restore open tabs without loading them; only the active one loads.
@@ -848,6 +877,7 @@ impl MarginApp {
         let a = match cmd {
             Cmd::Settings => Action::OpenSettings,
             Cmd::InstallCli => Action::InstallCli,
+            Cmd::CheckUpdates => Action::CheckUpdate { manual: true },
             Cmd::OpenFolder => Action::OpenFolderDialog,
             Cmd::OpenRecent(p) => Action::OpenRepo(PathBuf::from(p)),
             Cmd::SaveNote => return self.save_note(),
@@ -1333,6 +1363,38 @@ impl MarginApp {
             }
             OpenSettings => self.show_settings = true,
             InstallCli => self.jobs.spawn(|| Msg::CliInstalled(crate::cli::install())),
+            CheckUpdate { manual } => {
+                if matches!(self.update, UpdateState::Checking | UpdateState::Downloading(_)) {
+                    return;
+                }
+                self.state.update_checked_at = Some(margin_core::time_now());
+                let _ = config::save_state(&self.state);
+                self.update = UpdateState::Checking;
+                self.jobs.spawn(move || Msg::UpdateChecked { manual, result: update::latest().map_err(|e| e.0) });
+            }
+            DownloadUpdate => {
+                let UpdateState::Available(r) = &self.update else { return };
+                let r = r.clone();
+                match update::can_install() {
+                    Ok(app) if r.zip.is_some() => {
+                        self.update = UpdateState::Downloading(r.clone());
+                        self.jobs.spawn(move || Msg::UpdateStaged(update::stage(&r, &app).map(|p| (r, p)).map_err(|e| e.0)));
+                    }
+                    // can't update in place: the release page has the DMG
+                    _ => self.handle(Action::OpenUrl(r.page.clone())),
+                }
+            }
+            RestartToUpdate => {
+                let UpdateState::Ready(_, new) = &self.update else { return };
+                let res = update::can_install().map_err(margin_core::Error).and_then(|app| update::install_after_exit(new, &app, true));
+                match res {
+                    Ok(()) => {
+                        self.update_scheduled = true;
+                        self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
             OpenRepoSettings => {
                 if self.rv.is_some() {
                     self.show_settings = false;
@@ -1971,10 +2033,51 @@ impl MarginApp {
             Msg::AccountTest { which, result } => {
                 self.acct_test.insert(which, Some(result));
             }
+            Msg::UpdateChecked { manual, result } => {
+                if let Ok(r) = &result {
+                    self.state.update_latest = r.as_ref().map(|r| r.version.clone());
+                    let _ = config::save_state(&self.state);
+                }
+                self.on_update_checked(manual, result);
+            }
+            Msg::UpdateStaged(r) => match r {
+                Ok((rel, path)) => self.update = UpdateState::Ready(rel, path),
+                Err(e) => {
+                    self.err(format!("Update: {e}"));
+                    self.update = UpdateState::Failed(e);
+                }
+            },
             Msg::CliInstalled(r) => match r {
                 Ok(m) => self.info(m),
                 Err(e) => self.err(e),
             },
+        }
+    }
+
+    fn on_update_checked(&mut self, manual: bool, result: Result<Option<Release>, String>) {
+        match result {
+            Err(e) => {
+                if manual {
+                    self.err(&e);
+                }
+                self.update = UpdateState::Failed(e);
+            }
+            Ok(Some(r)) if update::is_newer(&r.version, env!("CARGO_PKG_VERSION")) => {
+                let auto = self.settings.update_auto && r.zip.is_some() && update::can_install().is_ok();
+                if manual && !auto {
+                    self.info(format!("Margin {} is available", r.version));
+                }
+                self.update = UpdateState::Available(r);
+                if auto {
+                    self.handle(Action::DownloadUpdate);
+                }
+            }
+            Ok(_) => {
+                if manual {
+                    self.info(format!("Margin {} is up to date", env!("CARGO_PKG_VERSION")));
+                }
+                self.update = UpdateState::UpToDate;
+            }
         }
     }
 
@@ -2314,6 +2417,21 @@ impl MarginApp {
                     }
                 });
             });
+            // a new Margin: ready to install, or available to download
+            match &self.update {
+                UpdateState::Ready(r, _) => {
+                    let tip = format!("Margin {} is downloaded. Restart now, or it installs when you quit.", r.version);
+                    if crate::widgets::primary_button(&mut right, "Restart to update").on_hover_text(tip).clicked() {
+                        actions.push(Action::RestartToUpdate);
+                    }
+                }
+                UpdateState::Available(r) => {
+                    if right.button(format!("Update to {}", r.version)).on_hover_text("Download and install the new version").clicked() {
+                        actions.push(Action::DownloadUpdate);
+                    }
+                }
+                _ => {}
+            }
             let right_start = right.min_rect().left();
 
             // ---- center: command palette + commit search, centred in the window
@@ -2609,6 +2727,7 @@ impl eframe::App for MarginApp {
             }
         }
         self.auto_fetch_tick(&ctx);
+        self.update_tick(&ctx);
         self.dialogs(&ctx);
         self.settings_window(&ctx, &mut actions);
         self.repo_settings_window(&ctx, &mut actions);
@@ -2639,11 +2758,35 @@ impl eframe::App for MarginApp {
         for t in &mut self.others {
             t.editor.save_if_dirty(&t.notes);
         }
+        // a downloaded update installs once Margin has quit
+        if let UpdateState::Ready(_, new) = &self.update
+            && !self.update_scheduled
+            && let Ok(app) = update::can_install()
+        {
+            let _ = update::install_after_exit(new, &app, false);
+        }
         self.save_tabs();
     }
 }
 
 impl MarginApp {
+    /// Check for a new release once a day (Settings → Updates), waking up
+    /// when the next check is due.
+    fn update_tick(&mut self, ctx: &egui::Context) {
+        if !self.settings.update_check || !matches!(self.update, UpdateState::Idle | UpdateState::UpToDate | UpdateState::Failed(_)) {
+            return;
+        }
+        let now = margin_core::time_now();
+        // an update found earlier and not installed yet: look again right away
+        let waiting = matches!(self.update, UpdateState::Idle) && self.state.update_latest.as_deref().is_some_and(|v| update::is_newer(v, env!("CARGO_PKG_VERSION")));
+        let due = if waiting { now } else { self.state.update_checked_at.map_or(now, |t| t + update::CHECK_EVERY_SECS) };
+        if now >= due {
+            self.handle(Action::CheckUpdate { manual: false });
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs((due - now).clamp(60, 3600) as u64));
+        }
+    }
+
     /// Start a background fetch when due; otherwise ask egui to wake us at the
     /// due time (no polling thread, no repaints in between).
     fn auto_fetch_tick(&mut self, ctx: &egui::Context) {
@@ -2733,6 +2876,7 @@ impl MarginApp {
                             SettingsTab::Fetch => changed |= self.settings_fetch(ui, actions),
                             SettingsTab::Tasks => changed |= self.settings_tasks(ui),
                             SettingsTab::Diffs => self.settings_diffs(ui),
+                            SettingsTab::Updates => changed |= self.settings_updates(ui, actions),
                         }
                     });
                 });
@@ -2919,6 +3063,76 @@ impl MarginApp {
                 changed = true;
             }
         });
+        changed
+    }
+
+    fn settings_updates(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) -> bool {
+        let mut changed = false;
+        let here = update::can_install();
+        setting(ui, "Version", "", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("Margin {}", env!("CARGO_PKG_VERSION")));
+                ui.add_space(8.0);
+                match &self.update {
+                    UpdateState::Checking => {
+                        ui.spinner();
+                        ui.weak("Checking…");
+                    }
+                    UpdateState::UpToDate => {
+                        ui.label(egui::RichText::new("Up to date").color(theme::ADDED()));
+                    }
+                    UpdateState::Available(r) => {
+                        ui.label(egui::RichText::new(format!("Margin {} is available", r.version)).strong());
+                        let label = if here.is_ok() && r.zip.is_some() { "Download and install" } else { "Download…" };
+                        if ui.button(label).clicked() {
+                            actions.push(Action::DownloadUpdate);
+                        }
+                        if ui.link("What's new").clicked() {
+                            actions.push(Action::OpenUrl(r.page.clone()));
+                        }
+                    }
+                    UpdateState::Downloading(r) => {
+                        ui.spinner();
+                        ui.weak(format!("Downloading Margin {}…", r.version));
+                    }
+                    UpdateState::Ready(r, _) => {
+                        ui.label(egui::RichText::new(format!("Margin {} is ready", r.version)).strong());
+                        if crate::widgets::primary_button(ui, "Restart to update").clicked() {
+                            actions.push(Action::RestartToUpdate);
+                        }
+                    }
+                    UpdateState::Failed(e) => {
+                        ui.label(egui::RichText::new(e).color(theme::ERROR()));
+                    }
+                    UpdateState::Idle => {}
+                }
+            });
+        });
+        let last = self.state.update_checked_at.map(|t| margin_core::format_local(t)).unwrap_or_else(|| "never".into());
+        setting(ui, "Last checked", "", |ui| {
+            ui.horizontal(|ui| {
+                ui.label(&last);
+                let busy = matches!(self.update, UpdateState::Checking | UpdateState::Downloading(_));
+                if ui.add_enabled(!busy, egui::Button::new("Check now").small()).clicked() {
+                    actions.push(Action::CheckUpdate { manual: true });
+                }
+            });
+        });
+        setting(
+            ui,
+            "Automatic updates",
+            "Margin asks GitHub for the latest release once a day. With automatic install on, a new version downloads in the background (checked against its checksum and signature) and replaces Margin when you quit, or right away with Restart to update.",
+            |ui| {
+                changed |= ui.checkbox(&mut self.settings.update_check, "Check for updates once a day").changed();
+                ui.add_enabled_ui(self.settings.update_check, |ui| {
+                    changed |= ui.checkbox(&mut self.settings.update_auto, "Download and install updates automatically").changed();
+                });
+            },
+        );
+        if let Err(why) = here {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(format!("{why}.")).small().color(theme::TEXT_DIM()));
+        }
         changed
     }
 
