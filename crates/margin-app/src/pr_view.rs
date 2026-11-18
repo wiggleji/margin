@@ -202,6 +202,92 @@ fn badge(ui: &mut Ui, text: &str, color: egui::Color32) {
 }
 
 /// Strip HTML comments (PR templates) and cap length — this is a glance view.
+/// GitHub comments (bots especially) mix in HTML: keep the words, as
+/// Markdown. `<strong>` / `<b>` → bold (markers kept against the words, so
+/// Markdown reads them), a `<summary>` gets its own paragraph, `<br>` and block ends →
+/// line breaks; images and wrappers go. Only known tag names count, so text
+/// like `Vec<String>` or `a < b` stays.
+fn strip_html(s: &str) -> String {
+    const TAGS: &[&str] = &[
+        "details", "summary", "strong", "b", "em", "i", "br", "p", "div", "span", "img", "picture", "source", "dl", "dd", "dt", "ul", "ol",
+        "li", "blockquote", "code", "pre", "table", "thead", "tbody", "tr", "td", "th", "a", "sub", "sup", "h1", "h2", "h3", "h4", "hr", "kbd",
+    ];
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    // after an opening marker ("**", "_", "`"): drop the spaces that follow
+    let mut opened = false;
+    let push_text = |out: &mut String, t: &str, opened: &mut bool| {
+        if *opened {
+            let t2 = t.trim_start();
+            if !t2.is_empty() {
+                *opened = false;
+            }
+            out.push_str(t2);
+        } else {
+            out.push_str(t);
+        }
+    };
+    while let Some(i) = rest.find('<') {
+        push_text(&mut out, &rest[..i], &mut opened);
+        let after = &rest[i + 1..];
+        let close = after.starts_with('/');
+        let name: String = after.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        let end = after.find('>').filter(|&e| !after[..e].contains('\n') || name == "img" || name == "source");
+        match end {
+            Some(e) if TAGS.contains(&name.as_str()) => {
+                let marker = match (name.as_str(), close) {
+                    ("strong" | "b", _) => "**",
+                    ("em" | "i", _) => "_",
+                    ("code", _) => "`",
+                    _ => "",
+                };
+                if !marker.is_empty() {
+                    if close {
+                        // closing: right after the last word
+                        let t = out.trim_end().len();
+                        out.truncate(t);
+                    }
+                    out.push_str(marker);
+                    opened = !close;
+                    rest = &after[e + 1..];
+                    continue;
+                }
+                out.push_str(match (name.as_str(), close) {
+                    ("summary", true) => "\n\n",
+                    ("br" | "hr", _) => "\n",
+                    ("li", false) => "\n- ",
+                    ("p" | "div" | "details" | "dl" | "dd" | "dt" | "blockquote" | "pre" | "tr" | "ul" | "ol" | "h1" | "h2" | "h3" | "h4", _) => "\n",
+                    ("td" | "th", true) => " ",
+                    _ => "",
+                });
+                rest = &after[e + 1..];
+            }
+            _ => {
+                out.push('<');
+                opened = false;
+                rest = after;
+            }
+        }
+    }
+    push_text(&mut out, rest, &mut opened);
+    // no runs of blank lines left by removed blocks
+    let mut tidy = String::with_capacity(out.len());
+    let mut blank = 0;
+    for line in out.lines() {
+        if line.trim().is_empty() {
+            blank += 1;
+            if blank > 1 {
+                continue;
+            }
+        } else {
+            blank = 0;
+        }
+        tidy.push_str(line.trim_end());
+        tidy.push('\n');
+    }
+    tidy
+}
+
 fn clean_body(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
     let mut rest = body;
@@ -216,6 +302,7 @@ fn clean_body(body: &str) -> String {
         }
     }
     out.push_str(rest);
+    let out = strip_html(&out);
     let out = out.trim();
     const MAX: usize = 800;
     if out.len() <= MAX {
@@ -226,4 +313,20 @@ fn clean_body(body: &str) -> String {
         end -= 1;
     }
     format!("{}…", &out[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_html;
+
+    #[test]
+    fn github_html_becomes_text() {
+        let body = "<details>\n<summary><strong><picture><img src=\"x.svg\" width=\"16\" alt=\"\"></picture> Minor</strong> \u{b7} fix order</summary><blockquote>\n<code>report.rb:859</code></blockquote>\n</details>\nVec<String> stays, a < b too<br>end";
+        let t = strip_html(body);
+        assert!(!t.contains("<img") && !t.contains("<details") && !t.contains("<summary"), "{t}");
+        assert!(t.contains("**Minor** · fix order"), "{t}");
+        assert!(t.contains("`report.rb:859`"), "{t}");
+        assert!(t.contains("Vec<String> stays, a < b too"), "{t}");
+        assert!(t.contains("too\nend"), "{t}");
+    }
 }

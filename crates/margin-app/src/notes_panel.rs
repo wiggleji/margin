@@ -31,6 +31,26 @@ pub enum NoteTab {
     Pinned,
 }
 
+impl NoteTab {
+    /// Saved name of a tab the user picks (`State::notes_tab`).
+    fn key(self) -> Option<&'static str> {
+        match self {
+            NoteTab::Commit => Some("commit"),
+            NoteTab::Branch => Some("branch"),
+            NoteTab::Pr => Some("pr"),
+            NoteTab::Pinned => None,
+        }
+    }
+    fn from_key(k: &str) -> Option<NoteTab> {
+        match k {
+            "commit" => Some(NoteTab::Commit),
+            "branch" => Some(NoteTab::Branch),
+            "pr" => Some(NoteTab::Pr),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct NoteEditor {
     pub tab: NoteTab,
@@ -188,6 +208,22 @@ pub fn show(
     // The branch's PR (or, without Pro, a hint for it on GitHub repos).
     let pr = branch.as_ref().and_then(|b| rv.prs.get(b).cloned());
     let pr_tab = pr.is_some() || (branch.is_some() && !pro && rv.looks_github);
+    // The tab last chosen (in any repository) wins whenever it exists here;
+    // otherwise the one picked for this selection (opening an older note
+    // keeps its own tab).
+    if rv.editor.tab != NoteTab::Pinned
+        && let Some(want) = prefs.notes_tab.as_deref().and_then(NoteTab::from_key)
+    {
+        let available = match want {
+            NoteTab::Commit => commit_id.is_some(),
+            NoteTab::Branch => branch.is_some(),
+            NoteTab::Pr => pr_tab,
+            NoteTab::Pinned => false,
+        };
+        if available {
+            rv.editor.tab = want;
+        }
+    }
     // Fall back to a tab that exists for this selection.
     if rv.editor.tab == NoteTab::Commit && commit_id.is_none() {
         rv.editor.tab = NoteTab::Branch;
@@ -265,6 +301,11 @@ pub fn show(
         let (ids, segs): (Vec<NoteTab>, Vec<Seg>) = tabs.into_iter().unzip();
         if let Some(i) = segmented(ui, &segs, sel) {
             rv.editor.tab = ids[i];
+            // remembered (all repositories, across restarts)
+            if let Some(k) = ids[i].key() {
+                prefs.notes_tab = Some(k.to_string());
+                let _ = margin_core::config::save_state(prefs);
+            }
         }
         if rv.pinned_note.is_some() && ui.small_button("×").on_hover_text("Close this note").clicked() {
             rv.pinned_note = None;

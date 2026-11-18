@@ -99,6 +99,10 @@ pub struct State {
     pub notes_collapsed: bool,
     #[serde(default)]
     pub notes_split: bool,
+    /// The notes tab last chosen ("commit" / "branch" / "pr"): shown whenever
+    /// it exists, in every repository.
+    #[serde(default)]
+    pub notes_tab: Option<String>,
     /// Notes panel under the history (graph) instead of under the commit details.
     #[serde(default)]
     pub notes_under_history: bool,

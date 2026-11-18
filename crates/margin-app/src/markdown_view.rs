@@ -84,7 +84,8 @@ pub fn render(ui: &mut Ui, src: &str) -> Option<MdAction> {
                         .inner_margin(6.0)
                         .corner_radius(3.0)
                         .show(ui, |ui| {
-                            ui.add(Label::new(RichText::new(c.trim_end()).monospace()).wrap_mode(egui::TextWrapMode::Extend));
+                            // wrapped, so a long line never widens the panel
+                            ui.add(Label::new(RichText::new(c.trim_end()).monospace()).wrap_mode(egui::TextWrapMode::Wrap));
                         });
                     ui.add_space(4.0);
                 }

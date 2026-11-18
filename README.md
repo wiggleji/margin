@@ -84,7 +84,7 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 
 **Notes**
 - Notes are for **commits and branches**: the notes panel has a **Commit** tab (the selected commit) and a **Branch** tab, and a line under the tabs says which one you're editing and how it behaves. Tasks have no notes of their own: a task key links to its ticket (shown on the right of the Branch tab, with its title when the Jira API is set up). Older `repo` and `task:<KEY>` notes (and ones written over MCP) still open from the sidebar, ⌘P, or `note:` search.
-- **PR tab:** when the branch has a pull request, a **PR #123** tab next to Branch shows its status, checks, and conversation using the whole panel.
+- **PR tab:** when the branch has a pull request, a **PR #123** tab next to Branch shows its status, checks, and conversation using the whole panel. The tab you last chose (Commit, Branch, or PR) is kept across selections, repositories, and restarts whenever it exists. HTML in comments (bots like CodeRabbit use `<details>`, `<summary>`, images) is shown as plain text and Markdown, and code wraps inside the panel.
 - **Two kinds of git notes:**
   - **Branch note:** bound to the branch name. It's shown on the branch's **top commit** (a chip in the graph, and the default tab when you select the tip). It follows the branch through rebase, amend, and new commits. Use it for ongoing work.
   - **Commit note:** bound to one exact SHA. After a rebase or amend it stays with the old commit. Use it for facts about that exact snapshot (benchmarks, review of that revision).
