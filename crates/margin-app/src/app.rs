@@ -110,12 +110,10 @@ pub enum Action {
     NavBack,
     NavForward,
     OpenSettings,
-    InstallLicense(String),
     /// Enable/disable notes sync for the active repo.
     SetNotesSync(bool),
     SetSyncFolder(Option<String>),
     SyncNow,
-    RemoveLicense,
     SwitchTab(usize),
     NextTab,
     PrevTab,
@@ -155,7 +153,6 @@ const MAX_UI_FONT: f32 = 15.0;
 pub enum SettingsTab {
     Appearance,
     Accounts,
-    Pro,
     Sync,
     Fetch,
     Tasks,
@@ -163,12 +160,11 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 7] = [SettingsTab::Appearance, SettingsTab::Accounts, SettingsTab::Pro, SettingsTab::Sync, SettingsTab::Fetch, SettingsTab::Tasks, SettingsTab::Diffs];
+    const ALL: [SettingsTab; 6] = [SettingsTab::Appearance, SettingsTab::Accounts, SettingsTab::Sync, SettingsTab::Fetch, SettingsTab::Tasks, SettingsTab::Diffs];
     fn label(self) -> &'static str {
         match self {
             SettingsTab::Appearance => "Appearance",
             SettingsTab::Accounts => "Accounts",
-            SettingsTab::Pro => "Margin Pro",
             SettingsTab::Sync => "Notes sync",
             SettingsTab::Fetch => "Fetch",
             SettingsTab::Tasks => "Tasks",
@@ -179,7 +175,6 @@ impl SettingsTab {
         match self {
             SettingsTab::Appearance => "How Margin looks. Themes apply right away.",
             SettingsTab::Accounts => "Connect GitHub and Jira: pull request status, issue titles and My tasks.",
-            SettingsTab::Pro => "GitHub PR status, Jira ticket details and My tasks, and notes sync for more than one repository.",
             SettingsTab::Sync => "Keep notes in a folder that iCloud Drive, Dropbox or Google Drive already syncs, so they follow you to other computers.",
             SettingsTab::Fetch => "Keep remote branches up to date in the background.",
             SettingsTab::Tasks => "Where task keys such as PROJ-123 or #123 come from, for each repository.",
@@ -378,9 +373,9 @@ pub struct RepoView {
     pub stale: bool,
     /// Loaded once (GitHub connection, notes watcher) on first activation.
     pub activated: bool,
-    /// GitHub connection attempted (reset when Pro becomes active).
+    /// GitHub connection attempted (reset when the accounts change).
     pub github_checked: bool,
-    /// `origin` looks like a GitHub remote (computed once; for the Pro hint).
+    /// `origin` looks like a GitHub remote (computed once).
     pub looks_github: bool,
     /// Where this repository's tasks come from (Repository settings), and what
     /// its task keys look like.
@@ -525,12 +520,6 @@ pub struct MarginApp {
     pub cfg: Config,
     pub state: State,
     pub settings: margin_core::config::Settings,
-    /// Margin Pro status (licensed / trial / expired); recomputed on focus.
-    pub license: margin_core::license::Status,
-    pub license_input: String,
-    pub license_error: Option<String>,
-    /// The free notes-sync limit was hit (shows the Pro hint in Settings).
-    pub sync_limit_hit: bool,
     /// Typed sync folder path (non-macOS; macOS uses the folder picker).
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub sync_folder_input: String,
@@ -591,10 +580,6 @@ impl MarginApp {
             cfg: cfg.clone(),
             settings,
             settings_tab: SettingsTab::Appearance,
-            license: margin_core::license::current(now_unix()),
-            license_input: String::new(),
-            license_error: None,
-            sync_limit_hit: false,
             sync_folder_input: String::new(),
             show_settings: false,
             show_repo_settings: false,
@@ -765,9 +750,6 @@ impl MarginApp {
     /// Load PR details for the branches containing the selected commit (their
     /// review threads may sit on it).
     fn request_pr_threads(&mut self) {
-        if !self.pro() {
-            return;
-        }
         let Some(rv) = &self.rv else { return };
         if !matches!(rv.sel, Sel::Commit(_)) {
             return;
@@ -824,9 +806,6 @@ impl MarginApp {
 
     /// Run a review-thread mutation in the background (see `Msg::ThreadOp`).
     fn thread_op(&mut self, id: String, branch: String, what: &'static str, f: impl FnOnce(&margin_core::github::GitHub, &str) -> margin_core::Result<()> + Send + 'static) {
-        if !self.pro() {
-            return;
-        }
         let Some(rv) = &mut self.rv else { return };
         let Some(gh) = rv.github.clone() else {
             rv.commit_diff.thread_done(&id, false);
@@ -912,46 +891,16 @@ impl MarginApp {
             Cmd::FocusDiff => Action::ToggleFocusDiff,
             Cmd::NextTab => Action::NextTab,
             Cmd::PrevTab => Action::PrevTab,
-            Cmd::Help => Action::OpenUrl(crate::pro::HELP_URL.into()),
-            Cmd::ReportIssue => Action::OpenUrl(crate::pro::SUPPORT_URL.into()),
+            Cmd::Help => Action::OpenUrl(HELP_URL.into()),
+            Cmd::ReportIssue => Action::OpenUrl(ISSUES_URL.into()),
         };
         self.handle(a);
     }
 
-    pub fn pro(&self) -> bool {
-        self.license.is_pro()
-    }
-
-    /// Recompute the licence status (startup, focus, key changes). Turning
-    /// Pro off drops GitHub data; turning it on reconnects.
-    fn update_license(&mut self) {
-        let was = self.pro();
-        self.license = margin_core::license::current(now_unix());
-        let now = self.pro();
-        if was == now {
-            return;
-        }
-        self.apply_sync(); // extra synced repos pause / resume with Pro
-        for t in self.rv.iter_mut().chain(self.others.iter_mut()) {
-            t.github = None;
-            t.prs.clear();
-            t.pr_detail.clear();
-            t.pr_requested.clear();
-            t.github_checked = false;
-        }
-        if !now {
-            self.my_tasks = None;
-            self.task_cache.clear();
-        } else {
-            self.connect_github();
-        }
-    }
-
     /// Point every open tab's watcher at its cloud folder (or stop syncing).
     fn apply_sync(&mut self) {
-        let pro = self.pro();
         for t in self.rv.iter_mut().chain(self.others.iter_mut()) {
-            let st = margin_core::sync::status_for(&t.repo_id, &self.settings, pro);
+            let st = margin_core::sync::status_for(&t.repo_id, &self.settings);
             let remote = match &st {
                 margin_core::sync::RepoSync::Active { remote } => Some(remote.clone()),
                 _ => None,
@@ -1062,7 +1011,7 @@ impl MarginApp {
             self.start_notes_watcher();
         }
         self.reload_notes_index();
-        self.connect_github(); // no-op without Pro or if already done
+        self.connect_github(); // no-op if already done
         self.apply_sync();
         if first || stale {
             self.refresh();
@@ -1463,9 +1412,6 @@ impl MarginApp {
                 }
             }
             FetchTask(key) => {
-                if !self.pro() {
-                    return;
-                }
                 let Some(rv) = &self.rv else { return };
                 let cache = task_cache_key(rv, &key);
                 if rv.task_source == margin_core::config::TaskSource::Github {
@@ -1478,9 +1424,6 @@ impl MarginApp {
                 self.jobs.spawn(move || Msg::Task { result: p.get(&key).map_err(|e| e.0), key: cache });
             }
             FetchPrs { force } => {
-                if !self.pro() {
-                    return;
-                }
                 let now = self.ctx.input(|i| i.time);
                 let Some(rv) = &mut self.rv else { return };
                 let Some(gh) = rv.github.clone() else { return };
@@ -1507,9 +1450,6 @@ impl MarginApp {
                 });
             }
             FetchPrDetail(branch) => {
-                if !self.pro() {
-                    return;
-                }
                 let Some(rv) = &mut self.rv else { return };
                 let Some(gh) = rv.github.clone() else { return };
                 let head = rv
@@ -1768,9 +1708,6 @@ impl MarginApp {
                 }
             }
             FetchMyTasks => {
-                if !self.pro() {
-                    return;
-                }
                 if let Some(rv) = &self.rv
                     && rv.task_source == margin_core::config::TaskSource::Github
                 {
@@ -1781,34 +1718,16 @@ impl MarginApp {
                 let Some(p) = self.tasks.clone() else { return };
                 self.jobs.spawn(move || Msg::MyTasks(p.my_open(30).map_err(|e| e.0)));
             }
-            InstallLicense(key) => match margin_core::license::install(&key) {
-                Ok(l) => {
-                    self.license_input.clear();
-                    self.license_error = None;
-                    self.update_license();
-                    self.info(format!("Margin Pro activated — thank you, {}!", l.name));
-                }
-                Err(e) => {
-                    self.license_error = Some(e.0.clone());
-                    self.err(format!("Licence key: {e}"));
-                }
-            },
             SetNotesSync(on) => {
-                let pro = self.pro();
                 let Some(rv) = &self.rv else { return };
                 let id = rv.repo_id.clone();
                 if on {
                     if !self.settings.synced_repos.contains(&id) {
-                        if !margin_core::sync::can_enable(&self.settings, pro) {
-                            self.sync_limit_hit = true;
-                            return;
-                        }
                         self.settings.synced_repos.push(id);
                     }
                 } else {
                     self.settings.synced_repos.retain(|r| *r != id);
                 }
-                self.sync_limit_hit = false;
                 if let Err(e) = config::save_settings(&self.settings) {
                     self.err(e);
                 }
@@ -1826,12 +1745,6 @@ impl MarginApp {
                     rv.sync.lock().unwrap().force = true;
                 }
             }
-            RemoveLicense => {
-                if let Err(e) = margin_core::license::remove() {
-                    self.err(e);
-                }
-                self.update_license();
-            }
             OpenUrl(url) => open_url(&url, self),
             Copy(s) => {
                 self.info(format!("Copied {s}"));
@@ -1843,9 +1756,8 @@ impl MarginApp {
     /// Resolve the GitHub remote + token off the UI thread (`gh auth token`
     /// is a subprocess), then load PR status.
     fn connect_github(&mut self) {
-        let pro = self.pro();
         let Some(rv) = &mut self.rv else { return };
-        if !pro || rv.github_checked {
+        if rv.github_checked {
             return;
         }
         rv.github_checked = true;
@@ -2007,7 +1919,7 @@ impl MarginApp {
                         rv.commit_detail = Some(d);
                         rv.commit_branches = b;
                         rv.commit_diff.set(f, t);
-                        // PR review threads on this commit (Pro): load what's needed, show what's loaded.
+                        // PR review threads on this commit: load what's needed, show what's loaded.
                         self.request_pr_threads();
                         self.update_threads();
                     }
@@ -2458,17 +2370,6 @@ impl MarginApp {
                         actions.push(Action::UndoReattach(id));
                     }
                 }
-                let reminder = match &self.license {
-                    margin_core::license::Status::Trial { days_left } if *days_left <= 3 => Some(format!("Pro trial: {days_left}d left")),
-                    margin_core::license::Status::TrialExpired => Some("Pro trial ended".to_string()),
-                    margin_core::license::Status::NeedsRenewal(_) => Some("Renew Margin Pro".to_string()),
-                    _ => None,
-                };
-                if let Some(r) = reminder {
-                    if st.small_button(egui::RichText::new(r).color(theme::ACCENT())).on_hover_text(self.license.describe()).clicked() {
-                        actions.push(Action::OpenSettings);
-                    }
-                }
                 // the message, else what's running ("Fetching…")
                 let text = match (&self.status_line, &busy) {
                     (Some((m, err)), _) => Some((m.clone(), if *err { theme::ERROR() } else { theme::TEXT_DIM() }, true)),
@@ -2510,7 +2411,6 @@ impl eframe::App for MarginApp {
         // pick up note edits made by agents (see start_notes_watcher).
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         if focused && !self.was_focused {
-            self.update_license();
             self.refresh();
         }
         self.was_focused = focused;
@@ -2596,7 +2496,6 @@ impl eframe::App for MarginApp {
             crate::tab_strip::show(ui, &tabs, &recent, &mut actions);
             self.toolbar(ui, &mut actions);
             let tasks_configured = self.rv.as_ref().is_some_and(|rv| self.tasks_available(rv));
-            let pro = self.pro();
             let links = self.task_links();
             // Sidebar: where My tasks come from, and whether to suggest GitHub Issues
             let task_side = match &self.rv {
@@ -2609,13 +2508,12 @@ impl eframe::App for MarginApp {
                         _ => "",
                     };
                     let unset = rv.task_source == TaskSource::Default && self.tasks.is_none() && self.settings.ticket_url.is_none();
-                    let suggest = unset && rv.looks_github && pro && !self.settings.tasks_prompted.contains(&rv.repo_id);
+                    let suggest = unset && rv.looks_github && !self.settings.tasks_prompted.contains(&rv.repo_id);
                     crate::sidebar::TaskSide { source: src, suggest_github: suggest }
                 }
                 None => crate::sidebar::TaskSide::default(),
             };
-            let tasks_enabled = tasks_configured && pro;
-            let license = self.license.clone();
+            let tasks_enabled = tasks_configured;
             let rv = self.rv.as_mut().unwrap();
             // Notes sit at the bottom of the details column, or under the sidebar
             // and history together (Notes → "Move notes…"); same panel either way.
@@ -2634,7 +2532,7 @@ impl eframe::App for MarginApp {
                 let notes_h = ui.ctx().animate_value_with_time(egui::Id::unique("notes_panel_h"), target, if dragging { 0.0 } else { 0.12 });
                 egui::Panel::bottom("notes").exact_size(notes_h).show(ui, |ui| {
                     let info = rv.note_task().and_then(|k| self.task_cache.get(&task_cache_key(rv, &k))).cloned();
-                    crate::notes_panel::show(ui, rv, info.as_ref(), &license, &task_url, &self.author, state, notes_h, actions);
+                    crate::notes_panel::show(ui, rv, info.as_ref(), &task_url, &self.author, state, notes_h, actions);
                 });
             };
             let before = crate::diff_view::DiffPrefs {
@@ -2814,7 +2712,6 @@ impl MarginApp {
                         match tab {
                             SettingsTab::Appearance => changed |= self.settings_appearance(ui),
                             SettingsTab::Accounts => self.settings_accounts(ui),
-                            SettingsTab::Pro => self.settings_pro(ui, actions),
                             SettingsTab::Sync => self.sync_settings(ui, actions),
                             SettingsTab::Fetch => changed |= self.settings_fetch(ui, actions),
                             SettingsTab::Tasks => changed |= self.settings_tasks(ui),
@@ -2934,36 +2831,6 @@ impl MarginApp {
         changed
     }
 
-    fn settings_pro(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let color = if self.license.is_pro() { theme::ADDED() } else { theme::ACCENT() };
-        setting(ui, "Status", if margin_core::license::is_dev_build() { "Development build: accepts development keys only." } else { "" }, |ui| {
-            ui.label(egui::RichText::new(self.license.describe()).color(color));
-        });
-        if matches!(self.license, margin_core::license::Status::Pro(_)) {
-            setting(ui, "This computer", "Frees the licence for use on another computer.", |ui| {
-                if ui.button("Remove licence from this computer").clicked() {
-                    actions.push(Action::RemoveLicense);
-                }
-            });
-            return;
-        }
-        setting(ui, "Licence key", "Paste the key from your purchase email (it starts with MARGIN1.).", |ui| {
-            ui.add(egui::TextEdit::multiline(&mut self.license_input).hint_text("MARGIN1.…").desired_rows(3).desired_width(f32::INFINITY));
-            if let Some(e) = &self.license_error {
-                ui.colored_label(theme::ERROR(), e);
-            }
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!self.license_input.trim().is_empty(), egui::Button::new("Activate")).clicked() {
-                    actions.push(Action::InstallLicense(self.license_input.clone()));
-                }
-                if ui.button("Buy Margin Pro").clicked() {
-                    actions.push(Action::OpenUrl(crate::pro::PURCHASE_URL.into()));
-                }
-            });
-        });
-    }
-
     fn settings_fetch(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) -> bool {
         let mut changed = false;
         let last = self.rv.as_ref().and_then(|rv| rv.last_fetch).map(ago);
@@ -3073,9 +2940,6 @@ impl MarginApp {
     }
 
     fn sync_settings(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        use margin_core::sync::FREE_REPOS;
-        ui.label(egui::RichText::new(format!("Free: {FREE_REPOS} repository · Margin Pro: unlimited.")).small().color(theme::TEXT_DIM()));
-        ui.add_space(12.0);
         ui.label(egui::RichText::new("Sync folder").strong());
         ui.add_space(4.0);
         // Folder
@@ -3485,7 +3349,7 @@ impl MarginApp {
     /// The active repository's notes sync switch and status (Settings → Notes
     /// sync, and Repository settings).
     fn repo_sync_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        use margin_core::sync::{FREE_REPOS, RepoSync};
+        use margin_core::sync::RepoSync;
         let Some(rv) = &self.rv else { return };
         let on = self.settings.synced_repos.contains(&rv.repo_id);
         let mut want = on;
@@ -3501,9 +3365,6 @@ impl MarginApp {
                 }
             });
         }
-        if self.sync_limit_hit || matches!(rv.sync_state, RepoSync::Paused) {
-            crate::pro::lock_hint(ui, &format!("Syncing more than {FREE_REPOS} repository"), &self.license, actions);
-        }
         let n = self.settings.synced_repos.len();
         if n > 0 {
             ui.label(egui::RichText::new(format!("{n} repositor{} with sync on", if n == 1 { "y" } else { "ies" })).small().color(theme::TEXT_DIM()));
@@ -3517,7 +3378,6 @@ pub fn sync_status_text(rv: &RepoView) -> (String, egui::Color32) {
     match &rv.sync_state {
         RepoSync::Off => (String::new(), theme::TEXT_DIM()),
         RepoSync::NoFolder => ("Sync is on, but no sync folder is set (or it's not available)".into(), theme::ACCENT()),
-        RepoSync::Paused => ("Sync paused — this repository is over the free limit".into(), theme::ACCENT()),
         RepoSync::Active { remote } => match &rv.sync.lock().unwrap().last {
             None => (format!("Syncing with {}", remote.display()), theme::TEXT_DIM()),
             Some((t, Ok(_))) => (format!("Synced {} · {}", ago(*t), remote.display()), theme::ADDED()),
@@ -3534,10 +3394,6 @@ fn ago(t: std::time::Instant) -> String {
         60..=3599 => format!("{} min ago", s / 60),
         _ => format!("{} h ago", s / 3600),
     }
-}
-
-fn now_unix() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 fn open_path(path: &std::path::Path, terminal: bool, app: &mut MarginApp) {
@@ -3581,6 +3437,10 @@ impl TaskLinks {
 pub fn task_cache_key(rv: &RepoView, key: &str) -> String {
     if rv.task_style == margin_core::tasks::KeyStyle::Github { format!("{}{key}", rv.repo_id) } else { key.to_string() }
 }
+
+/// Help → Margin Help, and Help → Report an Issue…
+const HELP_URL: &str = "https://github.com/wiggleji/margin#readme";
+const ISSUES_URL: &str = "https://github.com/wiggleji/margin/issues/new";
 
 fn open_url(url: &str, app: &mut MarginApp) {
     if let Some(target) = url.strip_prefix("margin:") {

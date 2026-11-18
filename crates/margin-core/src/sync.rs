@@ -13,8 +13,7 @@
 //! * iCloud placeholders (`.name.md.icloud`, not downloaded yet) are skipped,
 //!   so a not-yet-downloaded note is never mistaken for a deletion.
 //!
-//! Free: one repository syncs. Margin Pro: unlimited. Repos over the limit
-//! "pause" — local notes keep working; they catch up when Pro returns.
+//! Any number of repositories can sync.
 
 use crate::config::Settings;
 use crate::git::Repo;
@@ -24,8 +23,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Repositories that sync without Pro.
-pub const FREE_REPOS: usize = 1;
 const STATE: &str = ".sync-state.json";
 
 /// Stable id for "the same repository on another computer": derived only
@@ -62,26 +59,18 @@ pub enum RepoSync {
     Off,
     /// Enabled, but no sync folder chosen (or it's missing/unmounted).
     NoFolder,
-    /// Enabled but over the free limit without Pro.
-    Paused,
     Active { remote: PathBuf },
 }
 
-/// What sync should do for `id` given the settings and Pro status.
-pub fn status_for(id: &str, settings: &Settings, pro: bool) -> RepoSync {
-    let Some(pos) = settings.synced_repos.iter().position(|r| r == id) else { return RepoSync::Off };
+/// What sync should do for `id` given the settings.
+pub fn status_for(id: &str, settings: &Settings) -> RepoSync {
+    if !settings.synced_repos.iter().any(|r| r == id) {
+        return RepoSync::Off;
+    }
     let Some(folder) = settings.sync_folder.as_ref().map(PathBuf::from).filter(|f| f.is_dir()) else {
         return RepoSync::NoFolder;
     };
-    if !pro && pos >= FREE_REPOS {
-        return RepoSync::Paused;
-    }
     RepoSync::Active { remote: remote_dir(&folder, id) }
-}
-
-/// Can another repo be enabled right now?
-pub fn can_enable(settings: &Settings, pro: bool) -> bool {
-    pro || settings.synced_repos.len() < FREE_REPOS
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -292,12 +281,11 @@ pub fn mirror(local: &Path, remote: &Path) -> Result<Report> {
     Ok(rep)
 }
 
-/// Run one sync pass for a repo if its sync is active (settings + licence).
-/// `None` when sync is off/paused/unavailable for it.
+/// Run one sync pass for a repo if its sync is active (settings).
+/// `None` when sync is off or unavailable for it.
 pub fn sync_repo_now(repo: &Repo, local_notes: &Path) -> Option<Result<Report>> {
     let settings = crate::config::load_settings();
-    let pro = crate::license::current(crate::time::now_unix()).is_pro();
-    match status_for(&repo_id(repo), &settings, pro) {
+    match status_for(&repo_id(repo), &settings) {
         RepoSync::Active { remote } => Some(mirror(local_notes, &remote)),
         _ => None,
     }
@@ -520,18 +508,15 @@ mod tests {
     }
 
     #[test]
-    fn limit_and_status() {
-        let root = tmp("limit");
+    fn status() {
+        let root = tmp("status");
         let mut s = Settings::default();
-        assert_eq!(status_for("a", &s, false), RepoSync::Off);
+        assert_eq!(status_for("a", &s), RepoSync::Off);
         s.synced_repos = vec!["a".into(), "b".into()];
-        assert_eq!(status_for("a", &s, false), RepoSync::NoFolder);
+        assert_eq!(status_for("a", &s), RepoSync::NoFolder);
         s.sync_folder = Some(root.display().to_string());
-        assert_eq!(status_for("a", &s, false), RepoSync::Active { remote: root.join("Margin/a") });
-        assert_eq!(status_for("b", &s, false), RepoSync::Paused, "second repo needs Pro");
-        assert!(matches!(status_for("b", &s, true), RepoSync::Active { .. }));
-        assert!(!can_enable(&s, false) && can_enable(&s, true));
-        s.synced_repos.truncate(0);
-        assert!(can_enable(&s, false));
+        assert_eq!(status_for("a", &s), RepoSync::Active { remote: root.join("Margin/a") });
+        // any number of repositories sync
+        assert_eq!(status_for("b", &s), RepoSync::Active { remote: root.join("Margin/b") });
     }
 }

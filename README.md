@@ -15,7 +15,7 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 
 ## What it does
 
-**Settings (⌘,)**: sections for Appearance, Margin Pro, Notes sync, Fetch, Tasks, and Diffs, each setting with a short explanation. Changes save automatically.
+**Settings (⌘,)**: sections for Appearance, Accounts, Notes sync, Fetch, Tasks, and Diffs, each setting with a short explanation. Changes save automatically.
 
 **Text size** (Settings → Appearance), applied right away: **Code and notes** (11–20 pt; diffs, notes, and commit messages; overrides `font_size` in config.json) and **Interface** (12–15 pt; lists, sidebar, toolbar, menus), kept separate so a bigger reading size doesn't reflow the whole window.
 
@@ -175,38 +175,17 @@ Sync notes between your computers through a folder your cloud provider already s
 - **Where notes live:** they stay in `.git/margin/notes` and are mirrored two-way with `<folder>/Margin/<repo-id>/`. The repo id comes from the remote URL (ssh and https forms match), so clones in differently named folders find each other.
 - **Edits:** they sync within a second or two while Margin runs. Agent edits made through MCP are mirrored too, even when the app is closed. If both computers edit the same note, both versions are kept (merged under a marker).
 - **Safety:** pointing sync at a different or empty folder is treated as a first sync, so nothing gets deleted. Deleted notes go to `.trash/` instead of disappearing. A pass that would delete most of your notes is refused. iCloud placeholders that aren't downloaded yet are never mistaken for deletions.
-- **Limit:** **Free syncs 1 repository; Margin Pro syncs unlimited.** Repositories over the limit pause, keep working locally, and catch up when Pro is active.
+- **Repositories:** any number can sync.
 
-## Margin Pro
+## GitHub and task trackers
 
-The git client, notes, agents (MCP), tabs, and Git Flow are free. **Margin Pro** ($29 one-time, **$19 launch price**, including a year of updates) unlocks:
+Everything in Margin is free and open source. With a GitHub account (and optionally Jira) connected in **Settings → Accounts**:
 
 - **GitHub PR status:** readiness, CI checks, and review comments.
 - **Review threads in the diff:** a PR's inline review threads appear as cards under the line they're on, in commit diffs: on the commit a thread was written on (at its original line) and, for open threads, on the PR's latest commit. Each card shows every comment, with **Reply** (a box opens in the card; ⌘↩ sends, Esc cancels), **Resolve** / **Unresolve**, and a link to GitHub. The card reloads with the new comment or state; on an error the draft stays. Resolved and outdated threads fold to one line (click to open).
 - **New comments on any line:** hover a line in a commit diff (of a commit in an open PR) and click **+** next to its number. A card opens under the line; ⌘↩ posts it to GitHub as a review comment on that commit (left side for removed lines). A line must be part of the PR's diff for GitHub to accept it.
 - **Emoji:** `:tada:`-style shortcodes in PR comments show as emoji, in colour from the system's emoji font (Apple Color Emoji, Segoe UI Emoji, or Noto Color Emoji), the same as in other apps. In the comment boxes, typing `:` and a few letters opens a dropdown (↑/↓, ↵ or Tab inserts, Esc closes).
 - **Task trackers:** Jira ticket details, My tasks, and creating a branch from a ticket.
-- **Notes sync for more than one repository.**
-
-New installs get a **14-day trial**. After that, Pro features show a lock hint (Enter licence key / Buy Margin Pro), and the MCP tools `get_pr`, `get_task`, `search_tasks`, and `my_tasks` are refused. Activate in **Settings → Margin Pro** or with ⌘P → *Enter Margin Pro licence key…*.
-
-Keys are verified **offline** (Ed25519 signature, no licence server, works on locked-down networks). A key covers every version built up to its *updates until* date.
-
-**Issuing keys** (maintainer):
-
-```bash
-cargo run -p margin-license -- keygen ~/secure/margin
-```
-
-```bash
-MARGIN_LICENSE_PUBKEY=<hex from keygen> cargo build --release
-```
-
-```bash
-cargo run -p margin-license -- issue ~/secure/margin/margin-license.private --name "Kim Dev" --email kim@example.com --years 1
-```
-
-Keep `margin-license.private` secret and backed up (`*.private` is git-ignored). Builds without `MARGIN_LICENSE_PUBKEY` accept development keys only (`issue --dev`), and release builds warn about it. Set `PURCHASE_URL` in `crates/margin-app/src/pro.rs` to your store's checkout page. Store and pricing plan: [docs/SELLING.md](docs/SELLING.md).
 
 ## License
 

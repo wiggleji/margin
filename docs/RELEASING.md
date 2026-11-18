@@ -26,16 +26,9 @@ scripts/make-icon.py           regenerates the placeholder icon
    xcrun notarytool store-credentials margin-notary --key AuthKey_XXXX.p8 --key-id XXXX --issuer YYYY
    ```
 
-4. **Licence signing key** (Margin Pro). Generate it once, keep it secret, and back it up:
-   ```bash
-   cargo run -p margin-license -- keygen ~/secure/margin
-   ```
-   It prints `MARGIN_LICENSE_PUBKEY=<hex>`. The public key goes into every release build; the private key never leaves `~/secure`.
-
 ## Release from your Mac
 
 ```bash
-export MARGIN_LICENSE_PUBKEY=<hex from keygen>
 export MARGIN_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 export MARGIN_NOTARY_PROFILE=margin-notary
 ```
@@ -50,7 +43,7 @@ Other modes:
 
 | Command | Use |
 |---|---|
-| `scripts/package-macos.sh --dev` | Local test build: ad-hoc signed, not notarized, accepts development licence keys. No Apple account needed. |
+| `scripts/package-macos.sh --dev` | Local test build: ad-hoc signed and not notarized. No Apple account needed. |
 | `scripts/package-macos.sh --no-notarize` | Developer ID signed, skip notarization (e.g. to check signing). |
 | `scripts/package-macos.sh --native` | Only this Mac's architecture (faster). |
 | `scripts/package-macos.sh --dry-run` | Print every step without running anything (works on any OS). |
@@ -85,9 +78,6 @@ Configure these in *Settings → Secrets and variables → Actions*:
 | `NOTARY_API_KEY_P8` | secret | `base64 -i AuthKey_XXXX.p8` |
 | `NOTARY_API_KEY_ID` | secret | the API key's Key ID |
 | `NOTARY_API_ISSUER_ID` | secret | the Issuer ID |
-| `MARGIN_LICENSE_PUBKEY` | **variable** | public key hex (not secret) |
-
-The licence **private** key is never needed in CI.
 
 macOS runners use about 10× the minutes of Linux runners against a private repo's Actions quota. One release run takes roughly 15–25 minutes.
 
@@ -110,4 +100,3 @@ codesign -dv --verbose=4 /Applications/Margin.app
 - **`errSecInternalComponent` while signing (CI):** the keychain is locked or the partition list isn't set. The workflow handles both; check that the .p12 includes the private key.
 - **Notarization "Invalid":** fetch the log with `xcrun notarytool log <submission-id> --keychain-profile margin-notary`. Usual causes are a missing `--options runtime` or `--timestamp` (both set by the script) or an unsigned nested binary.
 - **The app opens but doesn't find Homebrew git:** Finder-launched apps get a minimal `PATH`; Margin prepends `/opt/homebrew/bin` and `/usr/local/bin` at startup. Set `MARGIN_GIT` to pin a specific git.
-- **Licence keys rejected in a release build:** the build used a different `MARGIN_LICENSE_PUBKEY` than the key that issued them, or none (development build).

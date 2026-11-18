@@ -85,9 +85,6 @@ pub struct State {
     pub open_tabs: Vec<String>,
     #[serde(default)]
     pub active_tab: usize,
-    /// First launch (unix time): start of the Margin Pro trial.
-    #[serde(default)]
-    pub trial_started: Option<i64>,
     /// Command palette: recently run commands (`Group/Title`), newest first.
     #[serde(default)]
     pub recent_commands: Vec<String>,
@@ -167,7 +164,6 @@ pub struct Settings {
     #[serde(default)]
     pub sync_folder: Option<String>,
     /// Repo ids (see sync::repo_id) with notes sync on, in the order enabled.
-    /// Without Pro only the first one syncs.
     #[serde(default)]
     pub synced_repos: Vec<String>,
     /// Where task keys link to (Settings → Tasks): a site such as

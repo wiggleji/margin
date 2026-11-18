@@ -190,14 +190,12 @@ pub fn show(
     ui: &mut Ui,
     rv: &mut RepoView,
     task_info: Option<&Result<Task, String>>,
-    license: &margin_core::license::Status,
     task_url: &dyn Fn(&str) -> Option<String>,
     author: &str,
     prefs: &mut margin_core::config::State,
     panel_h: f32,
     actions: &mut Vec<Action>,
 ) {
-    let pro = license.is_pro();
     let top = ui.cursor().top();
     let commit_id = match &rv.sel {
         Sel::Commit(id) => Some(id.clone()),
@@ -205,9 +203,9 @@ pub fn show(
     };
     let branch = rv.note_branch();
     let task = rv.note_task();
-    // The branch's PR (or, without Pro, a hint for it on GitHub repos).
+    // The branch's pull request, if it has one.
     let pr = branch.as_ref().and_then(|b| rv.prs.get(b).cloned());
-    let pr_tab = pr.is_some() || (branch.is_some() && !pro && rv.looks_github);
+    let pr_tab = pr.is_some();
     // The tab last chosen (in any repository) wins whenever it exists here;
     // otherwise the one picked for this selection (opening an older note
     // keeps its own tab).
@@ -242,7 +240,7 @@ pub fn show(
     };
     rv.editor.sync(desired, &rv.notes);
     let now = ui.input(|i| i.time);
-    let compact = is_compact(rv, pro);
+    let compact = is_compact(rv);
     let fit_before = rv.editor.fit_h;
 
     // ---- grip: drag to resize, double-click to collapse / expand
@@ -282,14 +280,11 @@ pub fn show(
             let seg = Seg::new(Some(Icon::GitBranch), format!("Branch {b}")).tip("Note on this branch. It follows the branch through rebase, amend and rename.");
             tabs.push((NoteTab::Branch, note_mark(seg, has)));
         }
-        if pr_tab {
-            let seg = match &pr {
-                // "PR ◯ #42", the number coloured by readiness
-                Some(p) => Seg::new(None, "PR")
-                    .mark(Icon::Github, Some(format!("#{}", p.number)), crate::pr_view::tone_color(p.readiness().1))
-                    .tip(format!("{} · {}", p.title, p.readiness().0)),
-                None => Seg::new(Some(Icon::Github), "PR").tip("Pull request status (Margin Pro)"),
-            };
+        if let Some(p) = &pr {
+            // "PR ◯ #42", the number coloured by readiness
+            let seg = Seg::new(None, "PR")
+                .mark(Icon::Github, Some(format!("#{}", p.number)), crate::pr_view::tone_color(p.readiness().1))
+                .tip(format!("{} · {}", p.title, p.readiness().0));
             tabs.push((NoteTab::Pr, seg));
         }
         if let Some(p) = rv.pinned_note.clone() {
@@ -334,11 +329,7 @@ pub fn show(
         ui.separator();
         if let Some(b) = &branch {
             egui::ScrollArea::vertical().id_salt("pr_scroll").auto_shrink([false, false]).show(ui, |ui| {
-                if pro {
-                    crate::pr_view::card(ui, rv, b, actions);
-                } else {
-                    crate::pro::lock_hint(ui, "GitHub PR status", license, actions);
-                }
+                crate::pr_view::card(ui, rv, b, actions);
             });
         }
         if fit_before.is_some() {
@@ -351,7 +342,6 @@ pub fn show(
     // (wraps onto more lines in a narrow panel instead of overlapping)
     ui.horizontal_wrapped(|ui| {
         if let Some(k) = &task
-            && pro
             && task_info.is_none()
             && rv.editor.requested_tasks.insert(k.clone())
         {
@@ -553,8 +543,7 @@ pub fn show(
 }
 
 /// The note would be an empty editor: show one line instead (and shrink the panel).
-fn is_compact(rv: &RepoView, pro: bool) -> bool {
-    let _ = pro;
+fn is_compact(rv: &RepoView) -> bool {
     let ed = &rv.editor;
     if ed.tab == NoteTab::Pinned || ed.tab == NoteTab::Pr || ed.dirty || ed.external || ed.error.is_some() {
         return false;
@@ -827,7 +816,6 @@ fn save_state(ui: &mut Ui, rv: &RepoView, actions: &mut Vec<Action>, rtl: bool) 
             Some((_, Err(_))) => Some(("sync failed", theme::ERROR())),
             _ => Some(("synced", theme::TEXT_DIM())),
         },
-        RepoSync::Paused => Some(("sync paused (Pro)", theme::ACCENT())),
         RepoSync::NoFolder => Some(("sync: no folder", theme::ACCENT())),
         RepoSync::Off => None,
     };
