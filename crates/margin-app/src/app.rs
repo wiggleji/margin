@@ -2398,7 +2398,10 @@ impl MarginApp {
             // palette button and the search box shrink when space is short.
             let gap = 12.0;
             let k = (ui.style().text_styles[&egui::TextStyle::Body].size / 13.0).max(1.0);
-            let avail = (right_start - left_end - 2.0 * gap).max(0.0);
+            // leave room for a status message / spinner when there is one
+            let has_status = self.status_line.is_some() || busy.is_some() || working;
+            let status_room = if has_status { 150.0 * k } else { 0.0 };
+            let avail = (right_start - left_end - 2.0 * gap - status_room).max(0.0);
             let key = if cfg!(target_os = "macos") { "⌘P" } else { "Ctrl+P" };
             // (no room at all: no button; Ctrl+P and the menu still open it)
             let (palette_label, palette_w) = if avail >= 300.0 * k {
@@ -2410,7 +2413,7 @@ impl MarginApp {
             };
             let search_w = (avail - palette_w - 8.0).clamp(0.0, 320.0 * k);
             let center_w = palette_w + 8.0 + search_w;
-            let x0 = (row.center().x - center_w / 2.0).min(right_start - gap - center_w).max(left_end + gap);
+            let x0 = (row.center().x - center_w / 2.0).min(right_start - gap - status_room - center_w).max(left_end + gap);
             let center_rect = egui::Rect::from_min_size(egui::pos2(x0, row.top()), egui::vec2(center_w, row.height()));
             let mut center = bar(ui, left_to_right, center_rect);
             if palette_w > 0.0
@@ -2444,20 +2447,15 @@ impl MarginApp {
             let status_rect = egui::Rect::from_min_max(egui::pos2(center_rect.right() + gap, row.top()), egui::pos2(right_start - 8.0, row.bottom()));
             if status_rect.width() > 24.0 {
                 let mut st = bar(ui, right_to_left, status_rect);
+                // never drawn outside its gap (over the search box or Fetch)
+                st.set_clip_rect(status_rect.intersect(st.clip_rect()));
+                // right to left: spinner next to Fetch, then the text, cut to fit
+                if busy.is_some() || working {
+                    st.spinner();
+                }
                 if !self.status_undo.is_empty() && st.small_button("Undo").clicked() {
                     for id in self.status_undo.drain(..) {
                         actions.push(Action::UndoReattach(id));
-                    }
-                }
-                if let Some((m, err)) = &self.status_line {
-                    let first = m.lines().next().unwrap_or("");
-                    let color = if *err { theme::ERROR() } else { theme::TEXT_DIM() };
-                    let resp = st
-                        .add(egui::Label::new(egui::RichText::new(first).color(color)).truncate().sense(egui::Sense::click()))
-                        .on_hover_text(format!("{m}\n\n(click to dismiss)"));
-                    if resp.clicked() {
-                        self.status_line = None;
-                        self.status_undo.clear();
                     }
                 }
                 let reminder = match &self.license {
@@ -2471,11 +2469,20 @@ impl MarginApp {
                         actions.push(Action::OpenSettings);
                     }
                 }
-                if let Some(b) = &busy {
-                    st.label(egui::RichText::new(format!("{b}…")).color(theme::TEXT_DIM()));
-                    st.spinner();
-                } else if working {
-                    st.spinner();
+                // the message, else what's running ("Fetching…")
+                let text = match (&self.status_line, &busy) {
+                    (Some((m, err)), _) => Some((m.clone(), if *err { theme::ERROR() } else { theme::TEXT_DIM() }, true)),
+                    (None, Some(b)) => Some((format!("{b}…"), theme::TEXT_DIM(), false)),
+                    _ => None,
+                };
+                if let Some((m, color, dismiss)) = text {
+                    let first = m.lines().next().unwrap_or("").to_string();
+                    let tip = if dismiss { format!("{m}\n\n(click to dismiss)") } else { m.clone() };
+                    let resp = st.add(egui::Label::new(egui::RichText::new(first).color(color)).truncate().sense(egui::Sense::click())).on_hover_text(tip);
+                    if dismiss && resp.clicked() {
+                        self.status_line = None;
+                        self.status_undo.clear();
+                    }
                 }
             }
         });
@@ -2646,7 +2653,7 @@ impl eframe::App for MarginApp {
                     notes(ui, rv, state, actions);
                 }
                 egui::CentralPanel::default().show(ui, |ui| {
-                    crate::details::show(ui, rv, diff_prefs, &task_url, actions);
+                    crate::details::show(ui, rv, diff_prefs, &task_url, &self.task_cache, actions);
                 });
             };
             if focus {
@@ -3118,6 +3125,12 @@ impl MarginApp {
     fn reload_accounts(&mut self) {
         self.cfg = config::with_accounts(config::load_config(), &self.settings);
         self.tasks = tasks::provider_from_config(&self.cfg).map(Arc::from);
+        // a Jira that can't be used: say why under its form (not just on stderr)
+        if let (Some(j), None) = (&self.cfg.jira, &self.tasks)
+            && let Err(e) = margin_core::tasks::Jira::new(j)
+        {
+            self.acct_test.insert("jira", Some(Err(e.0)));
+        }
         self.task_cache.clear();
         self.my_tasks = None;
         for t in self.rv.iter_mut().chain(self.others.iter_mut()) {
@@ -3387,10 +3400,10 @@ impl MarginApp {
         let cur = self.settings.repo_tasks.get(&rv.repo_id).cloned().unwrap_or_default();
         let mut pick = cur.clone();
         let help = match &cur {
-            TaskSource::Default => "Uses the app-wide default (Settings → Tasks): Jira from config.json, else the default ticket link.".to_string(),
+            TaskSource::Default => "Uses the app-wide default: Jira (Settings → Accounts), else the default ticket link (Settings → Tasks).".to_string(),
             TaskSource::Off => "No task keys or ticket links in this repository.".to_string(),
             TaskSource::Link { .. } => "Keys such as PROJ-123 link to this site, or to a link with {key}.".to_string(),
-            TaskSource::Jira => if jira { "Titles and status from Jira (config.json).".into() } else { "Jira isn't set up in config.json yet: keys won't link.".into() },
+            TaskSource::Jira => if jira { "Titles and status from Jira (Settings → Accounts).".into() } else { "Jira isn't connected yet (Settings → Accounts): keys won't link.".into() },
             TaskSource::Github => {
                 if has_gh {
                     "Issues of this repository on GitHub: #123 in commits, and branches like 123-fix or feature/123-x (pull request numbers are skipped). Titles, state and My tasks come from GitHub.".into()
@@ -3414,6 +3427,29 @@ impl MarginApp {
                 ui.add(egui::TextEdit::singleline(url).hint_text("https://linear.app/acme/issue/{key}").desired_width(f32::INFINITY));
             }
         });
+        // what this means right now, and the way to fix it if nothing links
+        let jira_site = self.cfg.jira.as_ref().map(|j| j.base_url.clone()).unwrap_or_default();
+        let (line, ok) = match &cur {
+            TaskSource::Default | TaskSource::Jira if jira => (format!("Keys such as PROJ-123 link to Jira ({jira_site}), with titles and status."), true),
+            TaskSource::Default if self.settings.ticket_url.is_some() => ("Keys such as PROJ-123 link to the default ticket link (no titles: connect Jira for those).".to_string(), true),
+            TaskSource::Default | TaskSource::Jira => ("Jira isn't connected: keys such as PROJ-123 don't link yet.".to_string(), false),
+            TaskSource::Github if rv.github.is_some() => ("#123 links to GitHub Issues. Keys such as PROJ-123 aren't linked in this repository.".to_string(), true),
+            TaskSource::Github => ("GitHub isn't connected for this repository: #123 links, but without titles.".to_string(), false),
+            TaskSource::Link { .. } => ("Keys link to the address above (no titles).".to_string(), true),
+            TaskSource::Off => (String::new(), true),
+        };
+        if !line.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(if ok { "✓" } else { "!" }).color(if ok { theme::ADDED() } else { theme::ACCENT() }));
+                ui.label(egui::RichText::new(line).color(theme::TEXT_DIM()));
+                if !ok && ui.link("Settings → Accounts").clicked() {
+                    self.settings_tab = SettingsTab::Accounts;
+                    self.show_repo_settings = false;
+                    self.show_settings = true;
+                }
+            });
+            ui.add_space(12.0);
+        }
         if pick != cur {
             actions.push(Action::SetRepoTasks(pick));
         }

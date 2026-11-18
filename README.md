@@ -149,6 +149,7 @@ Agent notes are signed with the client's name, or with `MARGIN_AGENT_NAME` if se
 **Settings → Accounts** (⌘, or Ctrl+,):
 
 - **GitHub:** host (`github.com` or your Enterprise host) and a token. **Test** shows who it signs in as. Nothing is needed if you use the GitHub CLI: Margin reuses `gh auth token` (a token saved here wins over it and over `GH_TOKEN` / `GITHUB_TOKEN`; `MARGIN_GITHUB_TOKEN` wins over all).
+- Where it shows: a commit's **Tasks** row lists each key with its status (To Do / In Progress / Done) and title, the notes panel's **Branch** tab shows the branch's ticket, and the sidebar has **My tasks**. **Repository settings** says what a repository's keys link to (✓) or why they don't (!), with a way to fix it.
 - **Jira:** your site, Cloud or Data Center / Server, your email (Cloud), and an API token (Cloud: id.atlassian.com → Security → API tokens; Data Center: a personal access token). **Test** shows who it signs in as.
 
 Saving applies right away (no restart). Tokens never go in Margin's settings files: they're kept in the **macOS Keychain** (services `margin-github` / `margin-jira`), or on other systems in `secrets.json` in the config folder, readable only by your user. Accounts set here are also used by Margin's MCP server, so agents don't need a second setup.

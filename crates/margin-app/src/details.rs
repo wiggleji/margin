@@ -7,10 +7,13 @@ use eframe::egui::{self, RichText, Ui};
 
 /// `prefs`: diff layout and whitespace (the diff bar changes them);
 /// `task_url`: link for a task key, if one is configured.
-pub fn show(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, task_url: &dyn Fn(&str) -> Option<String>, actions: &mut Vec<Action>) {
+/// Looked-up tasks (titles, status), by `app::task_cache_key`.
+pub type TaskCache = std::collections::HashMap<String, Result<margin_core::tasks::Task, String>>;
+
+pub fn show(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, task_url: &dyn Fn(&str) -> Option<String>, tasks: &TaskCache, actions: &mut Vec<Action>) {
     match rv.sel.clone() {
         Sel::Working => working(ui, rv, prefs, actions),
-        Sel::Commit(_) => commit(ui, rv, prefs, task_url, actions),
+        Sel::Commit(_) => commit(ui, rv, prefs, task_url, tasks, actions),
     }
 }
 
@@ -121,7 +124,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
     }
 }
 
-fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, task_url: &dyn Fn(&str) -> Option<String>, actions: &mut Vec<Action>) {
+fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, task_url: &dyn Fn(&str) -> Option<String>, tasks: &TaskCache, actions: &mut Vec<Action>) {
     let Some(d) = rv.commit_detail.clone() else {
         ui.horizontal(|ui| {
             ui.add(egui::Spinner::new().size(12.0));
@@ -145,6 +148,17 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
     });
     let (title, _) = split_message(&d.message);
     let title = format!("{}  {}", &d.id[..8.min(d.id.len())], title);
+    // Task keys in the message, with what's known about them (looked up once)
+    let task_rows: Vec<(String, Option<Result<margin_core::tasks::Task, String>>)> = margin_core::tasks::keys_in(&d.message, rv.task_style)
+        .into_iter()
+        .map(|k| {
+            let info = tasks.get(&crate::app::task_cache_key(rv, &k)).cloned();
+            if info.is_none() && rv.editor.requested_tasks.insert(k.clone()) {
+                actions.push(Action::FetchTask(k.clone()));
+            }
+            (k, info)
+        })
+        .collect();
     let mut header = |ui: &mut Ui| {
         // ---- metadata first
         let when = |t: i64| format!("{} {}", margin_core::format_local(t), margin_core::local_zone(t));
@@ -255,23 +269,51 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 });
                 ui.end_row();
             }
-            // Tasks: each key links to its ticket.
-            let keys = margin_core::tasks::keys_in(&d.message, rv.task_style);
-            if !keys.is_empty() {
+            // Tasks: each key links to its ticket, with its title and status
+            // once looked up (Jira / GitHub, through Settings → Accounts).
+            if !task_rows.is_empty() {
                 ui.weak("Tasks");
-                ui.horizontal_wrapped(|ui| {
-                    for k in keys {
-                        match task_url(&k) {
-                            Some(u) => {
-                                if ui.link(RichText::new(format!("{k} ↗")).color(theme::ACCENT())).on_hover_text(format!("Open {u}")).clicked() {
-                                    actions.push(Action::OpenUrl(u));
+                ui.vertical(|ui| {
+                    for (k, info) in &task_rows {
+                        let info = info.as_ref();
+                        ui.horizontal(|ui| {
+                            match task_url(k) {
+                                Some(u) => {
+                                    if ui.link(RichText::new(format!("{k} ↗")).color(theme::ACCENT())).on_hover_text(format!("Open {u}")).clicked() {
+                                        actions.push(Action::OpenUrl(u));
+                                    }
+                                }
+                                None => {
+                                    ui.label(RichText::new(k).color(theme::ACCENT()));
+                                    if ui.link(RichText::new("Set up tasks…").small().color(theme::TEXT_DIM())).on_hover_text("Choose where this repository's tasks come from").clicked() {
+                                        actions.push(Action::OpenRepoSettings);
+                                    }
                                 }
                             }
-                            None => {
-                                ui.label(RichText::new(&k).color(theme::ACCENT())).on_hover_text("Choose where tasks come from: repo menu → Repository settings…");
+                            match info {
+                                Some(Ok(t)) => {
+                                    let (fg, bg) = match t.status_category.as_str() {
+                                        "done" => (theme::ADDED(), theme::ADDED().gamma_multiply(0.15)),
+                                        "indeterminate" => (theme::lane(0), theme::lane(0).gamma_multiply(0.15)),
+                                        _ => (theme::TEXT_DIM(), theme::BG_DARK()),
+                                    };
+                                    if !t.status.is_empty() {
+                                        egui::Frame::new().fill(bg).corner_radius(4.0).inner_margin(egui::Margin::symmetric(5, 1)).show(ui, |ui| {
+                                            ui.label(RichText::new(&t.status).small().color(fg));
+                                        });
+                                    }
+                                    let mut tip = t.summary.clone();
+                                    if let Some(a) = &t.assignee {
+                                        tip.push_str(&format!("\nAssignee: {a}"));
+                                    }
+                                    ui.add(egui::Label::new(RichText::new(&t.summary).color(theme::TEXT())).truncate()).on_hover_text(tip);
+                                }
+                                Some(Err(e)) => {
+                                    ui.label(RichText::new("couldn't load").small().color(theme::ERROR())).on_hover_text(e);
+                                }
+                                None => {}
                             }
-                        }
-                        ui.add_space(6.0);
+                        });
                     }
                 });
                 ui.end_row();

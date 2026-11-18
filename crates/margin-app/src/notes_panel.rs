@@ -46,7 +46,7 @@ pub struct NoteEditor {
     /// Put the cursor in the editor once it's on screen (Write note, Edit…).
     focus_next: bool,
     /// Tasks already asked for (for the branch's ticket summary).
-    requested_tasks: HashSet<String>,
+    pub(crate) requested_tasks: HashSet<String>,
     last_edit: f64,
     /// Height of the content when the panel is fitted to it (collapsed, or an
     /// empty note); `None` when it uses the dragged height. Read by the layout.
