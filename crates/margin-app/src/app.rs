@@ -72,6 +72,12 @@ pub enum Action {
     ShowNote(crate::notes_panel::NoteTab),
     FetchTask(String),
     FetchMyTasks,
+    /// Repository settings for the active repository (tasks, notes sync, history).
+    OpenRepoSettings,
+    /// Set the active repository's task source (Repository settings, the GitHub suggestion).
+    SetRepoTasks(margin_core::config::TaskSource),
+    /// "Not now" on the GitHub Issues suggestion: don't ask for this repo again.
+    DismissTasksPrompt,
     /// Reload PR status for all local branches (`force` ignores the 60 s throttle).
     FetchPrs { force: bool },
     FetchPrDetail(String),
@@ -373,7 +379,7 @@ pub struct RepoView {
     pub github_checked: bool,
     /// `origin` looks like a GitHub remote (computed once; for the Pro hint).
     pub looks_github: bool,
-    /// Where this repository's tasks come from (Settings → Tasks), and what
+    /// Where this repository's tasks come from (Repository settings), and what
     /// its task keys look like.
     pub task_source: margin_core::config::TaskSource,
     pub task_style: margin_core::tasks::KeyStyle,
@@ -526,6 +532,8 @@ pub struct MarginApp {
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub sync_folder_input: String,
     pub show_settings: bool,
+    /// Repository settings (repo menu → Repository settings…) is open.
+    pub show_repo_settings: bool,
     pub settings_tab: SettingsTab,
     pub jobs: Jobs,
     /// The active tab. Other open repositories live in `others`; the visual
@@ -578,6 +586,7 @@ impl MarginApp {
             sync_limit_hit: false,
             sync_folder_input: String::new(),
             show_settings: false,
+            show_repo_settings: false,
             jobs: Jobs::new(ctx),
             rv: None,
             others: vec![],
@@ -1352,6 +1361,38 @@ impl MarginApp {
                 self.op("Fetch", |r| r.fetch())
             }
             OpenSettings => self.show_settings = true,
+            OpenRepoSettings => {
+                if self.rv.is_some() {
+                    self.show_settings = false;
+                    self.show_repo_settings = true;
+                }
+            }
+            SetRepoTasks(src) => {
+                let Some(id) = self.rv.as_ref().map(|rv| rv.repo_id.clone()) else { return };
+                if src == margin_core::config::TaskSource::Default {
+                    self.settings.repo_tasks.remove(&id);
+                } else {
+                    self.settings.repo_tasks.insert(id.clone(), src);
+                }
+                if !self.settings.tasks_prompted.contains(&id) {
+                    self.settings.tasks_prompted.push(id);
+                }
+                self.task_cache.clear();
+                self.my_tasks = None;
+                self.apply_task_sources();
+                if let Err(e) = config::save_settings(&self.settings) {
+                    self.err(e);
+                }
+            }
+            DismissTasksPrompt => {
+                let Some(id) = self.rv.as_ref().map(|rv| rv.repo_id.clone()) else { return };
+                if !self.settings.tasks_prompted.contains(&id) {
+                    self.settings.tasks_prompted.push(id);
+                }
+                if let Err(e) = config::save_settings(&self.settings) {
+                    self.err(e);
+                }
+            }
             ToggleAutoFetch => {
                 self.settings.auto_fetch = !self.settings.auto_fetch;
                 if let Err(e) = config::save_settings(&self.settings) {
@@ -1397,7 +1438,7 @@ impl MarginApp {
                 }
                 match self.task_links().link(&k) {
                     Some(u) => open_url(&u, self),
-                    None => self.err(format!("Set your ticket site in Settings → Tasks to open {k}")),
+                    None => self.err(format!("Choose where tasks come from (repo menu → Repository settings…) to open {k}")),
                 }
             }
             ShowNote(tab) => {
@@ -2207,6 +2248,11 @@ impl MarginApp {
                     }
                 }
                 ui.separator();
+                if ui.button("Repository settings…").on_hover_text("Tasks, notes sync and history for this repository").clicked() {
+                    actions.push(Action::OpenRepoSettings);
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Open folder…").clicked() {
                     actions.push(Action::OpenFolderDialog);
                     ui.close();
@@ -2526,6 +2572,22 @@ impl eframe::App for MarginApp {
             let tasks_configured = self.rv.as_ref().is_some_and(|rv| self.tasks_available(rv));
             let pro = self.pro();
             let links = self.task_links();
+            // Sidebar: where My tasks come from, and whether to suggest GitHub Issues
+            let task_side = match &self.rv {
+                Some(rv) => {
+                    use margin_core::config::TaskSource;
+                    let src = match rv.task_source {
+                        TaskSource::Github => "GitHub",
+                        TaskSource::Jira => "Jira",
+                        TaskSource::Default if self.tasks.is_some() => "Jira",
+                        _ => "",
+                    };
+                    let unset = rv.task_source == TaskSource::Default && self.tasks.is_none() && self.settings.ticket_url.is_none();
+                    let suggest = unset && rv.looks_github && pro && !self.settings.tasks_prompted.contains(&rv.repo_id);
+                    crate::sidebar::TaskSide { source: src, suggest_github: suggest }
+                }
+                None => crate::sidebar::TaskSide::default(),
+            };
             let tasks_enabled = tasks_configured && pro;
             let license = self.license.clone();
             let rv = self.rv.as_mut().unwrap();
@@ -2598,7 +2660,7 @@ impl eframe::App for MarginApp {
                     // Fill the panel: otherwise it shrinks to its content when no
                     // row has a right-aligned badge (e.g. a repo without upstreams).
                     ui.set_min_width(ui.available_width());
-                    crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &mut actions);
+                    crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &task_side, &mut actions);
                 });
                 egui::CentralPanel::default().show(ui, |ui| {
                     crate::commit_list::show(ui, rv, &mut actions);
@@ -2608,6 +2670,7 @@ impl eframe::App for MarginApp {
         self.auto_fetch_tick(&ctx);
         self.dialogs(&ctx);
         self.settings_window(&ctx, &mut actions);
+        self.repo_settings_window(&ctx, &mut actions);
         if let Some(p) = &mut self.palette {
             match p.show(&ctx) {
                 crate::palette::Outcome::Open => {}
@@ -2912,53 +2975,25 @@ impl MarginApp {
     fn settings_tasks(&mut self, ui: &mut egui::Ui) -> bool {
         use margin_core::config::TaskSource;
         let mut changed = false;
-        // ---- this repository
+        // ---- per repository: in Repository settings (repo menu)
         if let Some(rv) = &self.rv {
-            let id = rv.repo_id.clone();
-            let name = rv.repo.name();
-            let has_gh = rv.looks_github;
-            let jira = self.tasks.is_some();
-            let cur = self.settings.repo_tasks.get(&id).cloned().unwrap_or_default();
-            let mut pick = cur.clone();
-            let help = match &cur {
-                TaskSource::Default => "Uses the default below (Jira from config.json, else the ticket link).".to_string(),
-                TaskSource::Off => "No task keys or ticket links in this repository.".to_string(),
-                TaskSource::Link { .. } => "Keys such as PROJ-123 link to this site, or a link with {key}.".to_string(),
-                TaskSource::Jira => if jira { "Titles and status from Jira (config.json).".into() } else { "Jira isn't set up in config.json yet: keys won't link.".into() },
-                TaskSource::Github => {
-                    if has_gh {
-                        "Issues of this repository's GitHub remote: #123 in commits, and branches like 123-fix or feature/123-x (pull request numbers are skipped). Titles, state and My tasks come from GitHub.".into()
-                    } else {
-                        "This repository has no GitHub remote (origin).".into()
-                    }
-                }
+            let src = match self.settings.repo_tasks.get(&rv.repo_id).cloned().unwrap_or_default() {
+                TaskSource::Default => "the default below",
+                TaskSource::Off => "off",
+                TaskSource::Link { .. } => "its own ticket link",
+                TaskSource::Jira => "Jira",
+                TaskSource::Github => "GitHub Issues",
             };
-            setting(ui, &format!("This repository ({name})"), &help, |ui| {
+            let name = rv.repo.name();
+            setting(ui, "Each repository", "Each repository can use GitHub Issues, Jira, its own ticket link, or none: repo menu (top left) → Repository settings….", |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.radio_value(&mut pick, TaskSource::Default, "Default");
-                    ui.add_enabled_ui(has_gh, |ui| ui.radio_value(&mut pick, TaskSource::Github, "GitHub Issues"));
-                    ui.radio_value(&mut pick, TaskSource::Jira, "Jira");
-                    let is_link = matches!(pick, TaskSource::Link { .. });
-                    if ui.radio(is_link, "Ticket link").clicked() && !is_link {
-                        pick = TaskSource::Link { url: self.settings.ticket_url.clone().unwrap_or_default() };
+                    ui.label(format!("{name} uses {src}."));
+                    if ui.button("Repository settings…").clicked() {
+                        self.show_settings = false;
+                        self.show_repo_settings = true;
                     }
-                    ui.radio_value(&mut pick, TaskSource::Off, "Off");
                 });
-                if let TaskSource::Link { url } = &mut pick {
-                    ui.add(egui::TextEdit::singleline(url).hint_text("https://linear.app/acme/issue/{key}").desired_width(f32::INFINITY));
-                }
             });
-            if pick != cur {
-                if pick == TaskSource::Default {
-                    self.settings.repo_tasks.remove(&id);
-                } else {
-                    self.settings.repo_tasks.insert(id, pick);
-                }
-                self.task_cache.clear();
-                self.my_tasks = None;
-                self.apply_task_sources();
-                changed = true;
-            }
         }
         // ---- default for repositories set to Default
         let example = self.settings.ticket_url.as_deref().and_then(|t| tasks::ticket_link(t, "PROJ-123"));
@@ -3011,7 +3046,7 @@ impl MarginApp {
     }
 
     fn sync_settings(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        use margin_core::sync::{FREE_REPOS, RepoSync};
+        use margin_core::sync::FREE_REPOS;
         ui.label(egui::RichText::new(format!("Free: {FREE_REPOS} repository · Margin Pro: unlimited.")).small().color(theme::TEXT_DIM()));
         ui.add_space(12.0);
         ui.label(egui::RichText::new("Sync folder").strong());
@@ -3053,9 +3088,128 @@ impl MarginApp {
         });
         ui.add_space(16.0);
         // This repository
-        let Some(rv) = &self.rv else { return };
         ui.label(egui::RichText::new("This repository").strong());
         ui.add_space(4.0);
+        self.repo_sync_ui(ui, actions);
+    }
+
+    /// Repository settings: what belongs to this repository rather than the
+    /// app (tasks, notes sync, branches in the history). A fixed-size window
+    /// like Settings; Esc or Close closes it.
+    fn repo_settings_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if !self.show_repo_settings {
+            return;
+        }
+        let Some(name) = self.rv.as_ref().map(|rv| rv.repo.name()) else {
+            self.show_repo_settings = false;
+            return;
+        };
+        let k = (ctx.global_style().text_styles[&egui::TextStyle::Body].size / 13.0).max(1.0);
+        let screen = ctx.content_rect().size();
+        let (w, h) = ((560.0 * k).min(screen.x - 60.0).max(380.0), (440.0 * k).min(screen.y - 160.0).max(220.0));
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::unique("repo_settings")).show(ctx, |ui| {
+            ui.set_width(w);
+            ui.horizontal(|ui| {
+                ui.add(crate::icons::image(ui.ctx(), crate::icons::Icon::Repo, 18.0, theme::TEXT()));
+                ui.heading(&name);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                    ui.label(egui::RichText::new("Repository settings · saved automatically").small().color(theme::TEXT_DIM()));
+                });
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(h).min_scrolled_height(h).auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_width(w - 14.0);
+                ui.add_space(6.0);
+                self.repo_tasks_ui(ui, actions);
+                ui.label(egui::RichText::new("Notes sync").strong());
+                ui.add_space(4.0);
+                self.repo_sync_ui(ui, actions);
+                ui.add_space(16.0);
+                self.repo_history_ui(ui, actions);
+            });
+        });
+        if close || modal.should_close() {
+            self.show_repo_settings = false;
+        }
+    }
+
+    /// Where this repository's task keys come from.
+    fn repo_tasks_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use margin_core::config::TaskSource;
+        let Some(rv) = &self.rv else { return };
+        let has_gh = rv.looks_github;
+        let jira = self.tasks.is_some();
+        let cur = self.settings.repo_tasks.get(&rv.repo_id).cloned().unwrap_or_default();
+        let mut pick = cur.clone();
+        let help = match &cur {
+            TaskSource::Default => "Uses the app-wide default (Settings → Tasks): Jira from config.json, else the default ticket link.".to_string(),
+            TaskSource::Off => "No task keys or ticket links in this repository.".to_string(),
+            TaskSource::Link { .. } => "Keys such as PROJ-123 link to this site, or to a link with {key}.".to_string(),
+            TaskSource::Jira => if jira { "Titles and status from Jira (config.json).".into() } else { "Jira isn't set up in config.json yet: keys won't link.".into() },
+            TaskSource::Github => {
+                if has_gh {
+                    "Issues of this repository on GitHub: #123 in commits, and branches like 123-fix or feature/123-x (pull request numbers are skipped). Titles, state and My tasks come from GitHub.".into()
+                } else {
+                    "This repository has no GitHub remote (origin).".into()
+                }
+            }
+        };
+        setting(ui, "Tasks", &help, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.radio_value(&mut pick, TaskSource::Default, "Default");
+                ui.add_enabled_ui(has_gh, |ui| ui.radio_value(&mut pick, TaskSource::Github, "GitHub Issues"));
+                ui.radio_value(&mut pick, TaskSource::Jira, "Jira");
+                let is_link = matches!(pick, TaskSource::Link { .. });
+                if ui.radio(is_link, "Ticket link").clicked() && !is_link {
+                    pick = TaskSource::Link { url: self.settings.ticket_url.clone().unwrap_or_default() };
+                }
+                ui.radio_value(&mut pick, TaskSource::Off, "Off");
+            });
+            if let TaskSource::Link { url } = &mut pick {
+                ui.add(egui::TextEdit::singleline(url).hint_text("https://linear.app/acme/issue/{key}").desired_width(f32::INFINITY));
+            }
+        });
+        if pick != cur {
+            actions.push(Action::SetRepoTasks(pick));
+        }
+    }
+
+    /// Which branches the history shows by default (the eye filter).
+    fn repo_history_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use margin_core::history::HistoryFilter;
+        let Some(rv) = &self.rv else { return };
+        let Some(snap) = &rv.snap else { return };
+        let f = &rv.graph_filter;
+        let (shown, total) = f.counts(&snap.refs);
+        let help = "Also from the eye next to each branch in the sidebar. Saved for this repository (and its worktrees).";
+        setting(ui, "Branches in the history", help, |ui| {
+            ui.label(format!("{shown} of {total} branches shown{}", if f.hide_tags { " · tags hidden" } else { "" }));
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Major branches only").on_hover_text("The current branch and its upstream, and main / master / develop / …").clicked() {
+                    actions.push(Action::SetGraphFilter(HistoryFilter::reset(false, f.hide_tags)));
+                }
+                if ui.button("Show all branches").clicked() {
+                    actions.push(Action::SetGraphFilter(HistoryFilter::reset(true, f.hide_tags)));
+                }
+                let mut nf = f.clone();
+                let mut hide = f.hide_tags;
+                if ui.checkbox(&mut hide, "Hide tags").changed() {
+                    nf.hide_tags = hide;
+                    actions.push(Action::SetGraphFilter(nf));
+                }
+            });
+        });
+    }
+
+    /// The active repository's notes sync switch and status (Settings → Notes
+    /// sync, and Repository settings).
+    fn repo_sync_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use margin_core::sync::{FREE_REPOS, RepoSync};
+        let Some(rv) = &self.rv else { return };
         let on = self.settings.synced_repos.contains(&rv.repo_id);
         let mut want = on;
         if ui.checkbox(&mut want, format!("Sync notes for {}", rv.repo.name())).changed() {

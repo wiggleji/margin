@@ -171,6 +171,9 @@ pub struct Settings {
     /// keys come from. Missing = `TaskSource::Default`.
     #[serde(default)]
     pub repo_tasks: std::collections::BTreeMap<String, TaskSource>,
+    /// Repos already asked "use GitHub Issues for tasks?" (never asked again).
+    #[serde(default)]
+    pub tasks_prompted: Vec<String>,
     /// Colour theme id (Settings → Appearance); `None` = Margin.
     #[serde(default)]
     pub theme: Option<String>,
@@ -220,7 +223,7 @@ fn default_fetch_minutes() -> u32 {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None, font_size: None, ui_font_size: None, ui_font: None, code_font: None, repo_tasks: Default::default() }
+        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None, font_size: None, ui_font_size: None, ui_font: None, code_font: None, repo_tasks: Default::default(), tasks_prompted: vec![] }
     }
 }
 

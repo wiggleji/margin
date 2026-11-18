@@ -268,7 +268,7 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                                 }
                             }
                             None => {
-                                ui.label(RichText::new(&k).color(theme::ACCENT())).on_hover_text("Set the ticket site in Settings → Tasks to link it");
+                                ui.label(RichText::new(&k).color(theme::ACCENT())).on_hover_text("Choose where tasks come from: repo menu → Repository settings…");
                             }
                         }
                         ui.add_space(6.0);

@@ -128,6 +128,7 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
     let Some(rv) = &app.rv else { return };
     let path = rv.repo.workdir.clone();
     v.push(c(Group::Repository, "Settings…", "", "preferences options auto fetch", vec![], act(|_| vec![Action::OpenSettings])));
+    v.push(c(Group::Repository, "Repository settings…", "this repository", "tasks github issues jira ticket notes sync branches history per repo", vec![], act(|_| vec![Action::OpenRepoSettings])));
     v.push(c(Group::Remote, "Toggle auto-fetch", "", "background fetch interval", vec![], act(|_| vec![Action::ToggleAutoFetch])));
     v.push(c(Group::Repository, "Refresh", &format!("{CMD}R"), "reload status", vec![], act(|_| vec![Action::Refresh])));
     let p = path.clone();

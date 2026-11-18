@@ -924,9 +924,14 @@ fn task_link(
     task_url: &dyn Fn(&str) -> Option<String>,
     actions: &mut Vec<Action>,
 ) {
+    // no tracker for this repository yet: offer to choose one
+    let set_up = task_url("PROJ-1").is_some() || task_url("#1").is_some();
     let Some(k) = task else {
-        if ui.small_button("Link task…").on_hover_text("Link a Jira / Linear / Asana task to this branch").clicked() {
+        if ui.small_button("Link task…").on_hover_text("Link a Jira / Linear / GitHub issue to this branch").clicked() {
             actions.push(Action::LinkTaskDialog { branch: branch.to_string() });
+        }
+        if !set_up && ui.link(RichText::new("Set up tasks…").small().color(theme::TEXT_DIM())).on_hover_text("Choose where this repository's tasks come from").clicked() {
+            actions.push(Action::OpenRepoSettings);
         }
         return;
     };
@@ -944,7 +949,10 @@ fn task_link(
             }
         }
         None => {
-            ui.add(egui::Label::new(RichText::new(text).color(theme::ACCENT())).truncate()).on_hover_text("Set the ticket site in Settings → Tasks to link it");
+            ui.add(egui::Label::new(RichText::new(text).color(theme::ACCENT())).truncate());
+            if ui.link(RichText::new("Set up tasks…").small().color(theme::TEXT_DIM())).on_hover_text("Choose where this repository's tasks come from, to link it").clicked() {
+                actions.push(Action::OpenRepoSettings);
+            }
         }
     }
 }

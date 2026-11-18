@@ -8,7 +8,16 @@ use margin_core::notes::NoteTarget;
 use margin_core::tasks::Task;
 use std::collections::BTreeMap;
 
-pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Option<&Result<Vec<Task>, String>>, actions: &mut Vec<Action>) {
+/// The repository's task setup, for the sidebar's task area.
+#[derive(Default)]
+pub struct TaskSide {
+    /// "GitHub" / "Jira" ("" when there's none): shown on My tasks.
+    pub source: &'static str,
+    /// Offer "use GitHub Issues for tasks?" (asked once per repository).
+    pub suggest_github: bool,
+}
+
+pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Option<&Result<Vec<Task>, String>>, task_side: &TaskSide, actions: &mut Vec<Action>) {
     if rv.snap.is_none() {
         return;
     }
@@ -271,8 +280,31 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
             });
 
         // ---------------------------------------------------------------- tasks
+        // A GitHub repository without a task source: offer its issues, once.
+        if task_side.suggest_github {
+            ui.add_space(6.0);
+            egui::Frame::new().fill(theme::BG_DARK()).corner_radius(6.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                ui.label(RichText::new("Use this repository's GitHub Issues for tasks?").strong());
+                ui.label(RichText::new("#123 in commits and branches like 123-fix link to issues, with titles and My tasks.").small().color(theme::TEXT_DIM()));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if crate::widgets::primary_button(ui, "Use").clicked() {
+                        actions.push(Action::SetRepoTasks(margin_core::config::TaskSource::Github));
+                    }
+                    if ui.button("Not now").on_hover_text("Won't ask again for this repository (repo menu → Repository settings… to change it)").clicked() {
+                        actions.push(Action::DismissTasksPrompt);
+                    }
+                });
+            });
+        }
         if tasks_enabled {
-            let open = list_section(ui, "MY TASKS", "mytasks", false, |ui| {
+            let title = if task_side.source.is_empty() { "MY TASKS".to_string() } else { format!("MY TASKS · {}", task_side.source.to_uppercase()) };
+            let open = list_section(ui, &title, "mytasks", false, |ui| {
+                // where they come from, and a way to change it
+                if ui.link(RichText::new("Task source…").small().color(theme::TEXT_DIM())).on_hover_text("Repository settings: GitHub Issues, Jira, a ticket link, or none").clicked() {
+                    actions.push(Action::OpenRepoSettings);
+                }
                 match my_tasks {
                     None => {
                         ui.spinner();
@@ -291,7 +323,8 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                             if resp.clicked() {
                                 actions.push(Action::FocusTask(t.key.clone()));
                             }
-                            let key = t.key.clone();
+                            // (branch names without "#": feature/12-fix-login)
+                            let key = t.key.trim_start_matches('#').to_string();
                             let slug = slug(&t.summary);
                             resp.context_menu(|ui| {
                                 if ui.button("Create branch for this task…").clicked() {
@@ -312,8 +345,10 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
             });
             if open && my_tasks.is_none() && !rv.loading {
                 // first open: fetch lazily
-                if ui.memory(|m| m.data.get_temp::<bool>(egui::Id::unique("mytasks_req")).is_none()) {
-                    ui.memory_mut(|m| m.data.insert_temp(egui::Id::unique("mytasks_req"), true));
+                // (once per repository: each has its own list)
+                let req = egui::Id::unique(("mytasks_req", rv.repo_id.as_str()));
+                if ui.memory(|m| m.data.get_temp::<bool>(req).is_none()) {
+                    ui.memory_mut(|m| m.data.insert_temp(req, true));
                     actions.push(Action::FetchMyTasks);
                 }
             }
