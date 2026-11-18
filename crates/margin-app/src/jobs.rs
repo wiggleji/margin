@@ -45,6 +45,8 @@ pub enum Msg {
     OpDone { workdir: PathBuf, label: String, result: Result<String, String>, refresh: bool },
     Task { key: String, result: Result<Task, String> },
     MyTasks(Result<Vec<Task>, String>),
+    /// Settings → Accounts "Test": who the token signs in as ("github" / "jira").
+    AccountTest { which: &'static str, result: Result<String, String> },
     /// Background auto-fetch finished (kept separate from `OpDone` so it never
     /// touches the busy state of a user-started operation).
     AutoFetched { workdir: PathBuf, result: Result<String, String> },
@@ -77,7 +79,7 @@ impl Msg {
             | Msg::PrDetail { workdir, .. }
             | Msg::ThreadOp { workdir, .. }
             | Msg::Detached { workdir, .. } => Some(workdir),
-            Msg::Task { .. } | Msg::MyTasks(_) => None,
+            Msg::Task { .. } | Msg::MyTasks(_) | Msg::AccountTest { .. } => None,
         }
     }
 }

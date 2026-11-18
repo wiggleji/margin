@@ -154,6 +154,7 @@ const MAX_UI_FONT: f32 = 15.0;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     Appearance,
+    Accounts,
     Pro,
     Sync,
     Fetch,
@@ -162,10 +163,11 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 6] = [SettingsTab::Appearance, SettingsTab::Pro, SettingsTab::Sync, SettingsTab::Fetch, SettingsTab::Tasks, SettingsTab::Diffs];
+    const ALL: [SettingsTab; 7] = [SettingsTab::Appearance, SettingsTab::Accounts, SettingsTab::Pro, SettingsTab::Sync, SettingsTab::Fetch, SettingsTab::Tasks, SettingsTab::Diffs];
     fn label(self) -> &'static str {
         match self {
             SettingsTab::Appearance => "Appearance",
+            SettingsTab::Accounts => "Accounts",
             SettingsTab::Pro => "Margin Pro",
             SettingsTab::Sync => "Notes sync",
             SettingsTab::Fetch => "Fetch",
@@ -176,6 +178,7 @@ impl SettingsTab {
     fn intro(self) -> &'static str {
         match self {
             SettingsTab::Appearance => "How Margin looks. Themes apply right away.",
+            SettingsTab::Accounts => "Connect GitHub and Jira: pull request status, issue titles and My tasks.",
             SettingsTab::Pro => "GitHub PR status, Jira ticket details and My tasks, and notes sync for more than one repository.",
             SettingsTab::Sync => "Keep notes in a folder that iCloud Drive, Dropbox or Google Drive already syncs, so they follow you to other computers.",
             SettingsTab::Fetch => "Keep remote branches up to date in the background.",
@@ -534,6 +537,14 @@ pub struct MarginApp {
     pub show_settings: bool,
     /// Repository settings (repo menu → Repository settings…) is open.
     pub show_repo_settings: bool,
+    /// Settings → Accounts: tokens being typed (not saved until Save), the
+    /// GitHub host, and Test results (None while testing).
+    acct_gh_token: String,
+    acct_gh_host: String,
+    acct_jira_token: String,
+    /// Jira fields being edited (from the saved ones; kept until Save).
+    acct_jira: Option<margin_core::config::JiraConfig>,
+    acct_test: HashMap<&'static str, Option<Result<String, String>>>,
     pub settings_tab: SettingsTab,
     pub jobs: Jobs,
     /// The active tab. Other open repositories live in `others`; the visual
@@ -564,7 +575,7 @@ pub struct MarginApp {
 
 impl MarginApp {
     pub fn new(ctx: &egui::Context, repo: Option<PathBuf>) -> Self {
-        let cfg = config::load_config();
+        let cfg = config::load_effective_config();
         let settings = config::load_settings();
         theme::set(settings.theme.as_deref());
         theme::apply(
@@ -587,6 +598,11 @@ impl MarginApp {
             sync_folder_input: String::new(),
             show_settings: false,
             show_repo_settings: false,
+            acct_gh_token: String::new(),
+            acct_gh_host: "github.com".into(),
+            acct_jira_token: String::new(),
+            acct_jira: None,
+            acct_test: HashMap::new(),
             jobs: Jobs::new(ctx),
             rv: None,
             others: vec![],
@@ -2033,6 +2049,9 @@ impl MarginApp {
                 self.task_cache.insert(key, result);
             }
             Msg::MyTasks(r) => self.my_tasks = Some(r),
+            Msg::AccountTest { which, result } => {
+                self.acct_test.insert(which, Some(result));
+            }
         }
     }
 
@@ -2787,6 +2806,7 @@ impl MarginApp {
                         ui.add_space(14.0);
                         match tab {
                             SettingsTab::Appearance => changed |= self.settings_appearance(ui),
+                            SettingsTab::Accounts => self.settings_accounts(ui),
                             SettingsTab::Pro => self.settings_pro(ui, actions),
                             SettingsTab::Sync => self.sync_settings(ui, actions),
                             SettingsTab::Fetch => changed |= self.settings_fetch(ui, actions),
@@ -3091,6 +3111,227 @@ impl MarginApp {
         ui.label(egui::RichText::new("This repository").strong());
         ui.add_space(4.0);
         self.repo_sync_ui(ui, actions);
+    }
+
+    /// After Accounts changed: config.json + Settings again, a new Jira
+    /// client, and every tab's GitHub connection redone.
+    fn reload_accounts(&mut self) {
+        self.cfg = config::with_accounts(config::load_config(), &self.settings);
+        self.tasks = tasks::provider_from_config(&self.cfg).map(Arc::from);
+        self.task_cache.clear();
+        self.my_tasks = None;
+        for t in self.rv.iter_mut().chain(self.others.iter_mut()) {
+            t.github = None;
+            t.github_error = None;
+            t.prs.clear();
+            t.pr_detail.clear();
+            t.pr_requested.clear();
+            t.github_checked = false;
+        }
+        self.connect_github();
+        if let Err(e) = config::save_settings(&self.settings) {
+            self.err(e);
+        }
+    }
+
+    /// Settings → Accounts: GitHub and Jira connections, entered here
+    /// (config.json still works, and loses to what's set here).
+    fn settings_accounts(&mut self, ui: &mut egui::Ui) {
+        use margin_core::config::{JiraConfig, JiraFlavor};
+        let status = |ui: &mut egui::Ui, t: Option<&Option<Result<String, String>>>| match t {
+            Some(None) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.weak("Checking…");
+                });
+            }
+            Some(Some(Ok(who))) => {
+                ui.label(egui::RichText::new(format!("✓ Connected as {who}")).color(theme::ADDED()));
+            }
+            Some(Some(Err(e))) => {
+                ui.label(egui::RichText::new(format!("✗ {e}")).color(theme::ERROR()));
+            }
+            None => {}
+        };
+        let label_w = 90.0 * (ui.style().text_styles[&egui::TextStyle::Body].size / 13.0).max(1.0);
+        let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.horizontal(|ui| {
+                ui.add_sized([label_w, ui.spacing().interact_size.y], egui::Label::new(egui::RichText::new(label).color(theme::TEXT_DIM())));
+                add(ui);
+            });
+        };
+
+        // ---------------------------------------------------------- GitHub
+        let host = self.acct_gh_host.trim().to_lowercase();
+        let host = if host.is_empty() { "github.com".to_string() } else { host };
+        let found = config::github_token_with_source(&host);
+        let gh_help = match &found {
+            Some((_, src)) => format!("Token for {host}: {src}. Used for pull request status, review threads and GitHub Issues."),
+            None => format!("No token for {host} yet. Create one at {host}/settings/tokens (classic: the repo scope; fine-grained: Pull requests, Issues and Contents, read and write), or sign in with the GitHub CLI (gh auth login)."),
+        };
+        let mut gh_action: Option<&str> = None;
+        setting(ui, "GitHub", &gh_help, |ui| {
+            row(ui, "Host", &mut |ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.acct_gh_host).hint_text("github.com").desired_width(260.0))
+                    .on_hover_text("github.com, or your GitHub Enterprise host");
+            });
+            row(ui, "Token", &mut |ui| {
+                let hint = if found.is_some() { "•••••••• (saved; type to replace)" } else { "ghp_… or github_pat_…" };
+                ui.add(egui::TextEdit::singleline(&mut self.acct_gh_token).password(true).hint_text(hint).desired_width(260.0));
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(label_w + ui.spacing().item_spacing.x);
+                if ui.add_enabled(!self.acct_gh_token.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                    gh_action = Some("save");
+                }
+                if ui.add_enabled(found.is_some() || !self.acct_gh_token.trim().is_empty(), egui::Button::new("Test")).clicked() {
+                    gh_action = Some("test");
+                }
+                if found.as_ref().is_some_and(|(_, s)| *s == "saved in Margin") && ui.button("Remove").clicked() {
+                    gh_action = Some("remove");
+                }
+            });
+            row(ui, "", &mut |ui| status(ui, self.acct_test.get("github")));
+        });
+        match gh_action {
+            Some("save") => {
+                let token = std::mem::take(&mut self.acct_gh_token);
+                match config::store_secret("margin-github", &host, &token) {
+                    Ok(()) => {
+                        if host != "github.com" && !self.settings.github_hosts.contains(&host) {
+                            self.settings.github_hosts.push(host.clone());
+                        }
+                        self.reload_accounts();
+                        self.test_account("github");
+                    }
+                    Err(e) => self.err(format!("Couldn't save the GitHub token: {e}")),
+                }
+            }
+            Some("test") => self.test_account("github"),
+            Some("remove") => {
+                let _ = config::delete_secret("margin-github", &host);
+                self.acct_test.remove("github");
+                self.reload_accounts();
+            }
+            _ => {}
+        }
+
+        // ------------------------------------------------------------ Jira
+        let from_file = self.settings.jira.is_none() && config::load_config().jira.is_some();
+        let saved = self.settings.jira.clone().or_else(|| self.cfg.jira.clone());
+        let mut j = self.acct_jira.clone().or_else(|| saved.clone()).unwrap_or_default();
+        let has_token = !j.base_url.is_empty() && config::jira_token(&j).is_some();
+        let jira_help = if from_file {
+            "Set in config.json; changing anything here takes over from it.".to_string()
+        } else if has_token {
+            "Ticket titles, status and My tasks for keys such as PROJ-123.".to_string()
+        } else {
+            "Your Jira site, and an API token: Jira Cloud tokens are made at id.atlassian.com → Security → API tokens; Data Center uses a personal access token (profile → Personal Access Tokens).".to_string()
+        };
+        let mut jira_action: Option<&str> = None;
+        setting(ui, "Jira", &jira_help, |ui| {
+            row(ui, "Site", &mut |ui| {
+                ui.add(egui::TextEdit::singleline(&mut j.base_url).hint_text("https://yourcompany.atlassian.net").desired_width(260.0));
+            });
+            row(ui, "Type", &mut |ui| {
+                ui.radio_value(&mut j.flavor, JiraFlavor::Cloud, "Cloud");
+                ui.radio_value(&mut j.flavor, JiraFlavor::DataCenter, "Data Center / Server");
+            });
+            if j.flavor == JiraFlavor::Cloud {
+                row(ui, "Email", &mut |ui| {
+                    let mut e = j.email.clone().unwrap_or_default();
+                    if ui.add(egui::TextEdit::singleline(&mut e).hint_text("you@company.com").desired_width(260.0)).changed() {
+                        j.email = Some(e.trim().to_string()).filter(|e| !e.is_empty());
+                    }
+                });
+            }
+            row(ui, "API token", &mut |ui| {
+                let hint = if has_token { "•••••••• (saved; type to replace)" } else { "API token" };
+                ui.add(egui::TextEdit::singleline(&mut self.acct_jira_token).password(true).hint_text(hint).desired_width(260.0));
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(label_w + ui.spacing().item_spacing.x);
+                let ready = j.base_url.starts_with("http") && (j.flavor == JiraFlavor::DataCenter || j.email.is_some());
+                if ui.add_enabled(ready && (!self.acct_jira_token.trim().is_empty() || has_token), egui::Button::new("Save")).clicked() {
+                    jira_action = Some("save");
+                }
+                if ui.add_enabled(ready && has_token, egui::Button::new("Test")).clicked() {
+                    jira_action = Some("test");
+                }
+                if (self.settings.jira.is_some() || has_token) && ui.button("Remove").clicked() {
+                    jira_action = Some("remove");
+                }
+            });
+            row(ui, "", &mut |ui| status(ui, self.acct_test.get("jira")));
+        });
+        // keep what's typed until Save (the form is drawn again every frame)
+        self.acct_jira = (Some(&j) != saved.as_ref()).then_some(j.clone());
+        match jira_action {
+            Some("save") => {
+                self.acct_jira = None;
+                let j = JiraConfig { base_url: j.base_url.trim().trim_end_matches('/').to_string(), ..j };
+                let token = std::mem::take(&mut self.acct_jira_token);
+                if !token.trim().is_empty()
+                    && let Err(e) = config::store_secret("margin-jira", &config::jira_account(&j), &token)
+                {
+                    self.err(format!("Couldn't save the Jira token: {e}"));
+                    return;
+                }
+                self.settings.jira = Some(j);
+                self.reload_accounts();
+                self.test_account("jira");
+            }
+            Some("test") => self.test_account("jira"),
+            Some("remove") => {
+                self.acct_jira = None;
+                if let Some(old) = self.settings.jira.take().or_else(|| self.cfg.jira.clone()) {
+                    let _ = config::delete_secret("margin-jira", &config::jira_account(&old));
+                }
+                self.acct_test.remove("jira");
+                self.reload_accounts();
+            }
+            _ => {}
+        }
+        ui.label(
+            egui::RichText::new(if cfg!(target_os = "macos") {
+                "Tokens are kept in your macOS Keychain, not in Margin's settings files."
+            } else {
+                "Tokens are kept in secrets.json in Margin's config folder, readable only by your user."
+            })
+            .small()
+            .color(theme::TEXT_DIM()),
+        );
+    }
+
+    /// Check a connection in the background (shown under its form).
+    fn test_account(&mut self, which: &'static str) {
+        self.acct_test.insert(which, None);
+        match which {
+            "github" => {
+                let host = self.acct_gh_host.trim().to_lowercase();
+                let host = if host.is_empty() { "github.com".to_string() } else { host };
+                let typed = self.acct_gh_token.trim().to_string();
+                let api = self.cfg.github.api_url.clone();
+                self.jobs.spawn(move || {
+                    let token = if typed.is_empty() { config::github_token(&host) } else { Some(typed) };
+                    let result = match token {
+                        Some(t) => GitHub::whoami(&host, &t, api.as_deref()).map_err(|e| e.0),
+                        None => Err(format!("no token for {host}")),
+                    };
+                    Msg::AccountTest { which: "github", result }
+                });
+            }
+            _ => {
+                let Some(j) = self.cfg.jira.clone() else {
+                    self.acct_test.insert(which, Some(Err("Jira isn't set up".into())));
+                    return;
+                };
+                self.jobs.spawn(move || {
+                    let result = margin_core::tasks::Jira::new(&j).and_then(|p| p.whoami()).map_err(|e| e.0);
+                    Msg::AccountTest { which: "jira", result }
+                });
+            }
+        }
     }
 
     /// Repository settings: what belongs to this repository rather than the

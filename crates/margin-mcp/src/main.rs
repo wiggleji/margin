@@ -55,7 +55,8 @@ fn main() {
         }
     };
     let notes = NoteStore::for_repo(&repo).expect("create notes dir");
-    let cfg = config::load_config();
+    // config.json + accounts added in the app (Settings → Accounts)
+    let cfg = config::load_effective_config();
     let mut srv = Server {
         tasks: tasks::provider_from_config(&cfg).map(|p| p as Box<dyn TaskProvider>),
         author: std::env::var("MARGIN_AGENT_NAME").unwrap_or_else(|_| "agent".into()),

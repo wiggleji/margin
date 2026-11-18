@@ -144,30 +144,16 @@ Add Margin as a stdio MCP server in your agent's MCP configuration:
 ```
 Agent notes are signed with the client's name, or with `MARGIN_AGENT_NAME` if set.
 
-## Configure Jira
+## Connect GitHub and Jira
 
-Copy `docs/config.example.json` to `~/Library/Application Support/Margin/config.json`.
+**Settings → Accounts** (⌘, or Ctrl+,):
 
-- **Jira Cloud:** set `"flavor": "cloud"` and your `email`. The token is an Atlassian API token.
-- **Jira Data Center/Server:** set `"flavor": "data_center"`. The token is a Personal Access Token.
+- **GitHub:** host (`github.com` or your Enterprise host) and a token. **Test** shows who it signs in as. Nothing is needed if you use the GitHub CLI: Margin reuses `gh auth token` (a token saved here wins over it and over `GH_TOKEN` / `GITHUB_TOKEN`; `MARGIN_GITHUB_TOKEN` wins over all).
+- **Jira:** your site, Cloud or Data Center / Server, your email (Cloud), and an API token (Cloud: id.atlassian.com → Security → API tokens; Data Center: a personal access token). **Test** shows who it signs in as.
 
-The token is never stored in the config file. It's read from `$MARGIN_JIRA_TOKEN`, or from the macOS Keychain:
+Saving applies right away (no restart). Tokens never go in Margin's settings files: they're kept in the **macOS Keychain** (services `margin-github` / `margin-jira`), or on other systems in `secrets.json` in the config folder, readable only by your user. Accounts set here are also used by Margin's MCP server, so agents don't need a second setup.
 
-```bash
-security add-generic-password -s margin-jira -a you@your-company.com -w
-```
-
-TLS uses the OS trust store, so corporate CAs installed in the Keychain work. `HTTPS_PROXY` and `NO_PROXY` are honoured.
-
-## Configure GitHub
-
-Nothing is needed if you use the GitHub CLI: Margin reuses `gh auth token`. Otherwise set `GITHUB_TOKEN`, or add the token to the Keychain:
-
-```bash
-security add-generic-password -s margin-github -a github.com -w
-```
-
-For GitHub Enterprise Server, list your host in `github.enterprise_hosts`. If you use SSH host aliases from `~/.ssh/config` (`git@github-work:org/repo`), map them in `github.host_aliases`.
+config.json still works and is overridden by what's set in the app: `jira` (`base_url`, `flavor`, `email`; token from `$MARGIN_JIRA_TOKEN` or the Keychain), `github.enterprise_hosts`, and `github.host_aliases` for SSH host aliases from `~/.ssh/config` (`git@github-work:org/repo`). TLS uses the OS trust store, so corporate CAs installed in the Keychain work. `HTTPS_PROXY` and `NO_PROXY` are honoured.
 
 ## Link other task trackers
 

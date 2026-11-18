@@ -219,15 +219,21 @@ const FIELDS: &str = "summary,status,assignee,issuetype,priority,description,upd
 impl Jira {
     pub fn new(cfg: &JiraConfig) -> Result<Jira> {
         let token = crate::config::jira_token(cfg)
-            .ok_or_else(|| Error("no Jira token (set MARGIN_JIRA_TOKEN or add it to the macOS Keychain)".into()))?;
+            .ok_or_else(|| Error("no Jira token: add one in Settings → Accounts".into()))?;
         let auth = match (&cfg.flavor, &cfg.email) {
             (JiraFlavor::Cloud, Some(email)) => {
                 format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{email}:{token}")))
             }
-            (JiraFlavor::Cloud, None) => bail!("Jira Cloud needs `email` in config"),
+            (JiraFlavor::Cloud, None) => bail!("Jira Cloud needs your account email"),
             (JiraFlavor::DataCenter, _) => format!("Bearer {token}"),
         };
         Ok(Jira { base: cfg.base_url.trim_end_matches('/').to_string(), flavor: cfg.flavor.clone(), auth, agent: crate::http::agent() })
+    }
+
+    /// Who the token signs in as ("Kim Dev"), to check a connection.
+    pub fn whoami(&self) -> Result<String> {
+        let v = self.get_json("/myself", &[])?;
+        Ok(v["displayName"].as_str().or(v["name"].as_str()).unwrap_or("signed in").to_string())
     }
 
     fn api(&self) -> &'static str {

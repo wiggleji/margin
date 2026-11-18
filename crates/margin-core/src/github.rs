@@ -258,9 +258,26 @@ impl GitHub {
             }
         });
         let token = crate::config::github_token(&rr.host).ok_or_else(|| {
-            Error(format!("no GitHub token for {}: run `gh auth login` or set GITHUB_TOKEN", rr.host))
+            Error(format!("no GitHub token for {}: add one in Settings → Accounts", rr.host))
         })?;
         Ok(Some(GitHub { repo: rr, api, auth: format!("Bearer {token}"), agent: crate::http::agent() }))
+    }
+
+    /// Who `token` signs in as on `host` (github.com or an Enterprise host).
+    pub fn whoami(host: &str, token: &str, api_url: Option<&str>) -> Result<String> {
+        let api = api_url.map(str::to_string).unwrap_or_else(|| match host {
+            "github.com" => "https://api.github.com/graphql".into(),
+            h if h.ends_with(".ghe.com") => format!("https://api.{h}/graphql"),
+            h => format!("https://{h}/api/graphql"),
+        });
+        let gh = GitHub {
+            repo: RemoteRepo { host: host.into(), owner: String::new(), name: String::new() },
+            api,
+            auth: format!("Bearer {}", token.trim()),
+            agent: crate::http::agent(),
+        };
+        let v = gh.graphql("query { viewer { login } }", json!({}))?;
+        Ok(v["viewer"]["login"].as_str().unwrap_or("signed in").to_string())
     }
 
     fn graphql(&self, query: &str, vars: Value) -> Result<Value> {
