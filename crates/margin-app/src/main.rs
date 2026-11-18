@@ -2,6 +2,7 @@
 
 mod app;
 mod branch_tree;
+mod cli;
 mod commands;
 mod commit_list;
 mod icons;
@@ -57,6 +58,13 @@ fn main() -> eframe::Result {
                 return Ok(());
             }
             p => repo = Some(PathBuf::from(p)),
+        }
+    }
+    // `margin <dir>` while Margin runs: open it there as a tab, and exit.
+    if let Some(dir) = &repo {
+        let dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        if cli::hand_over(&dir) {
+            return Ok(());
         }
     }
     // `margin` with no args inside a repo opens it, like `smerge .`

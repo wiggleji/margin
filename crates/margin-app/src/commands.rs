@@ -121,6 +121,7 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
         v.push(c(Group::Repository, "Open folder…", &format!("{CMD}O"), "repository directory new tab browse", vec![], act(|_| vec![Action::OpenFolderDialog])));
     }
     v.push(c(Group::Repository, "Open repository by path…", "new tab", "path folder directory", vec![input("Path to a git repository", "")], act(|x| vec![Action::OpenRepo(PathBuf::from(&x[0]))])));
+    v.push(c(Group::Repository, "Install 'margin' command…", "margin . in a terminal", "cli shell terminal command line path open", vec![], act(|_| vec![Action::InstallCli])));
     let Some(rv) = &app.rv else { return };
     let path = rv.repo.workdir.clone();
     v.push(c(Group::Repository, "Settings…", "", "preferences options auto fetch", vec![], act(|_| vec![Action::OpenSettings])));

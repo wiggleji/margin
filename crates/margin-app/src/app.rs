@@ -110,6 +110,8 @@ pub enum Action {
     NavBack,
     NavForward,
     OpenSettings,
+    /// Install the `margin` terminal command.
+    InstallCli,
     /// Enable/disable notes sync for the active repo.
     SetNotesSync(bool),
     SetSyncFolder(Option<String>),
@@ -559,6 +561,8 @@ pub struct MarginApp {
     /// Diff focus mode: the details/diff column takes the whole window.
     pub focus_diff: bool,
     menu: crate::menu_bar::MenuBar,
+    /// Folders sent by `margin <dir>` from a terminal (see cli.rs).
+    cli_rx: Option<std::sync::mpsc::Receiver<PathBuf>>,
     ctx: egui::Context,
 }
 
@@ -606,6 +610,7 @@ impl MarginApp {
             focus_search: false,
             focus_diff: false,
             menu: crate::menu_bar::MenuBar::new(ctx),
+            cli_rx: crate::cli::listen(ctx),
             ctx: ctx.clone(),
         };
         // Restore open tabs without loading them; only the active one loads.
@@ -842,6 +847,7 @@ impl MarginApp {
         let workdir = self.rv.as_ref().map(|rv| rv.repo.workdir.clone());
         let a = match cmd {
             Cmd::Settings => Action::OpenSettings,
+            Cmd::InstallCli => Action::InstallCli,
             Cmd::OpenFolder => Action::OpenFolderDialog,
             Cmd::OpenRecent(p) => Action::OpenRepo(PathBuf::from(p)),
             Cmd::SaveNote => return self.save_note(),
@@ -1326,6 +1332,7 @@ impl MarginApp {
                 self.op("Fetch", |r| r.fetch())
             }
             OpenSettings => self.show_settings = true,
+            InstallCli => self.jobs.spawn(|| Msg::CliInstalled(crate::cli::install())),
             OpenRepoSettings => {
                 if self.rv.is_some() {
                     self.show_settings = false;
@@ -1964,6 +1971,10 @@ impl MarginApp {
             Msg::AccountTest { which, result } => {
                 self.acct_test.insert(which, Some(result));
             }
+            Msg::CliInstalled(r) => match r {
+                Ok(m) => self.info(m),
+                Err(e) => self.err(e),
+            },
         }
     }
 
@@ -2405,6 +2416,12 @@ impl eframe::App for MarginApp {
         self.menu.update(&recent, self.rv.is_some());
         for cmd in self.menu.poll() {
             self.menu_cmd(cmd, &ctx);
+        }
+        // `margin <dir>` from a terminal: open it here and come to the front.
+        let handed: Vec<PathBuf> = self.cli_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
+        for dir in handed {
+            self.handle(Action::OpenRepo(dir));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
         // Refresh when the window regains focus (like Sublime Merge) and
