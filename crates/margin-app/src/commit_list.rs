@@ -66,7 +66,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             .map(|(i, _)| i)
             .collect();
         // While searching, a task label sits on the newest *matching* commit.
-        rv.filtered_tasks = task_rows(idx.iter().map(|&i| &snap.commits[i]), &rv.tips, &rv.notes);
+        rv.filtered_tasks = task_rows(idx.iter().map(|&i| &snap.commits[i]), &rv.tips, &rv.notes, rv.task_style);
         rv.filtered = Some((filter.clone(), idx));
     }
     let visible: Option<&Vec<usize>> = if filter.is_empty() { None } else { rv.filtered.as_ref().map(|(_, v)| v) };
@@ -364,13 +364,14 @@ pub fn task_rows<'a>(
     commits: impl Iterator<Item = &'a Commit>,
     tips: &std::collections::HashMap<String, Vec<String>>,
     notes: &margin_core::notes::NoteStore,
+    style: margin_core::tasks::KeyStyle,
 ) -> std::collections::HashMap<String, Vec<String>> {
     let mut out = std::collections::HashMap::new();
     let mut seen = std::collections::HashSet::new();
     for c in commits {
-        let mut keys = margin_core::tasks::extract_keys(&c.subject);
+        let mut keys = margin_core::tasks::keys_in(&c.subject, style);
         for b in tips.get(&c.id).into_iter().flatten() {
-            keys.extend(notes.task_for_branch(b));
+            keys.extend(notes.task_for_branch_in(b, style));
         }
         let fresh: Vec<String> = keys.into_iter().filter(|k| seen.insert(k.clone())).collect();
         if !fresh.is_empty() {

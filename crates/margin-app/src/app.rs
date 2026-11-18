@@ -173,7 +173,7 @@ impl SettingsTab {
             SettingsTab::Pro => "GitHub PR status, Jira ticket details and My tasks, and notes sync for more than one repository.",
             SettingsTab::Sync => "Keep notes in a folder that iCloud Drive, Dropbox or Google Drive already syncs, so they follow you to other computers.",
             SettingsTab::Fetch => "Keep remote branches up to date in the background.",
-            SettingsTab::Tasks => "Where task keys such as PROJ-123 link to.",
+            SettingsTab::Tasks => "Where task keys such as PROJ-123 or #123 come from, for each repository.",
             SettingsTab::Diffs => "How diffs open.",
         }
     }
@@ -373,6 +373,10 @@ pub struct RepoView {
     pub github_checked: bool,
     /// `origin` looks like a GitHub remote (computed once; for the Pro hint).
     pub looks_github: bool,
+    /// Where this repository's tasks come from (Settings → Tasks), and what
+    /// its task keys look like.
+    pub task_source: margin_core::config::TaskSource,
+    pub task_style: margin_core::tasks::KeyStyle,
     /// Identity of this repo across computers (notes sync).
     pub repo_id: String,
     /// Notes sync state for this repo (set by MarginApp::apply_sync).
@@ -451,6 +455,8 @@ impl RepoView {
             activated: false,
             github_checked: false,
             looks_github: false,
+            task_source: Default::default(),
+            task_style: Default::default(),
             repo_id: String::new(),
             sync_state: margin_core::sync::RepoSync::Off,
             sync: Default::default(),
@@ -484,7 +490,7 @@ impl RepoView {
     /// The task linked to the note's branch.
     pub fn note_task(&self) -> Option<String> {
         let b = self.note_branch()?;
-        self.notes.task_for_branch(&b)
+        self.notes.task_for_branch_in(&b, self.task_style)
     }
     pub fn has_note(&self, t: &NoteTarget) -> bool {
         self.note_index.contains_key(t)
@@ -948,6 +954,59 @@ impl MarginApp {
         v
     }
 
+    /// Set each open repository's task source from Settings (and redo its
+    /// task labels when the kind of key changed).
+    pub fn apply_task_sources(&mut self) {
+        let settings = &self.settings;
+        for rv in self.rv.iter_mut().chain(self.others.iter_mut()) {
+            use margin_core::config::TaskSource;
+            use margin_core::tasks::KeyStyle;
+            let src = settings.repo_tasks.get(&rv.repo_id).cloned().unwrap_or_default();
+            let style = match src {
+                TaskSource::Off => KeyStyle::Off,
+                TaskSource::Github => KeyStyle::Github,
+                _ => KeyStyle::Tracker,
+            };
+            let changed = style != rv.task_style;
+            rv.task_source = src;
+            rv.task_style = style;
+            if changed && let Some(snap) = &rv.snap {
+                rv.row_tasks = crate::commit_list::task_rows(snap.commits.iter(), &rv.tips, &rv.notes, style);
+            }
+        }
+    }
+
+    /// Whether `rv`'s tasks can be looked up (titles, status, my tasks).
+    pub fn tasks_available(&self, rv: &RepoView) -> bool {
+        use margin_core::config::TaskSource;
+        match rv.task_source {
+            TaskSource::Github => rv.github.is_some(),
+            TaskSource::Off | TaskSource::Link { .. } => false,
+            TaskSource::Jira | TaskSource::Default => self.tasks.is_some(),
+        }
+    }
+
+    /// How the active repository's task keys link to their tickets.
+    pub fn task_links(&self) -> TaskLinks {
+        use margin_core::config::TaskSource;
+        let Some(rv) = &self.rv else { return TaskLinks::default() };
+        let github = || {
+            rv.github.as_ref().map(|g| g.issue_url("")).or_else(|| {
+                let r = margin_core::github::parse_remote(&rv.repo.remote_url("origin")?)?;
+                Some(format!("https://{}/{}/{}/issues/", r.host, r.owner, r.name))
+            })
+        };
+        let jira = || self.tasks.as_ref().map(|p| p.browse_url("{key}"));
+        let global = || self.cfg.task_url_template.clone().or_else(|| self.settings.ticket_url.clone());
+        match &rv.task_source {
+            TaskSource::Off => TaskLinks::default(),
+            TaskSource::Github => TaskLinks { github: github(), template: None },
+            TaskSource::Link { url } => TaskLinks { github: None, template: Some(url.clone()) },
+            TaskSource::Jira => TaskLinks { github: None, template: jira() },
+            TaskSource::Default => TaskLinks { github: None, template: jira().or_else(global) },
+        }
+    }
+
     /// Recent directories that aren't open as a tab (newest first, ≤ 10).
     pub fn recent_closed(&self, tabs: &[(PathBuf, String, bool)]) -> Vec<String> {
         let open: Vec<String> = tabs.iter().map(|(p, _, _)| p.display().to_string()).collect();
@@ -967,6 +1026,9 @@ impl MarginApp {
     /// Make the active tab live: first-time setup (notes watcher, GitHub),
     /// then refresh if it was never loaded or changed while hidden.
     fn activate(&mut self) {
+        self.apply_task_sources();
+        // "My tasks" may come from this repository's GitHub issues
+        self.my_tasks = None;
         let Some(rv) = &mut self.rv else { return };
         let first = !rv.activated;
         rv.activated = true;
@@ -1311,7 +1373,7 @@ impl MarginApp {
             Confirm { msg, action } => self.dialog = Some(Dialog::Confirm { msg, action: *action }),
             NewBranchDialog { start, name } => self.dialog = Some(Dialog::NewBranch { name, start, switch: true }),
             LinkTaskDialog { branch } => {
-                let key = self.rv.as_ref().and_then(|rv| rv.notes.task_for_branch(&branch)).unwrap_or_default();
+                let key = self.rv.as_ref().and_then(|rv| rv.notes.task_for_branch_in(&branch, rv.task_style)).unwrap_or_default();
                 self.dialog = Some(Dialog::LinkTask { branch, key });
             }
             LinkTask { branch, key } => {
@@ -1333,7 +1395,7 @@ impl MarginApp {
                 if let Some(rv) = &mut self.rv {
                     rv.focus_task = Some(k.clone());
                 }
-                match tasks::task_url(&self.cfg, self.tasks.as_deref(), self.settings.ticket_url.as_deref(), &k) {
+                match self.task_links().link(&k) {
                     Some(u) => open_url(&u, self),
                     None => self.err(format!("Set your ticket site in Settings → Tasks to open {k}")),
                 }
@@ -1347,8 +1409,16 @@ impl MarginApp {
                 if !self.pro() {
                     return;
                 }
+                let Some(rv) = &self.rv else { return };
+                let cache = task_cache_key(rv, &key);
+                if rv.task_source == margin_core::config::TaskSource::Github {
+                    // GitHub Issues: through this repository's GitHub connection
+                    let Some(gh) = rv.github.clone() else { return };
+                    self.jobs.spawn(move || Msg::Task { result: gh.issue(&key).map_err(|e| e.0), key: cache });
+                    return;
+                }
                 let Some(p) = self.tasks.clone() else { return };
-                self.jobs.spawn(move || Msg::Task { result: p.get(&key).map_err(|e| e.0), key });
+                self.jobs.spawn(move || Msg::Task { result: p.get(&key).map_err(|e| e.0), key: cache });
             }
             FetchPrs { force } => {
                 if !self.pro() {
@@ -1644,6 +1714,13 @@ impl MarginApp {
                 if !self.pro() {
                     return;
                 }
+                if let Some(rv) = &self.rv
+                    && rv.task_source == margin_core::config::TaskSource::Github
+                {
+                    let Some(gh) = rv.github.clone() else { return };
+                    self.jobs.spawn(move || Msg::MyTasks(gh.my_issues(30).map_err(|e| e.0)));
+                    return;
+                }
                 let Some(p) = self.tasks.clone() else { return };
                 self.jobs.spawn(move || Msg::MyTasks(p.my_open(30).map_err(|e| e.0)));
             }
@@ -1838,7 +1915,7 @@ impl MarginApp {
                         }
                         // Each task key on its newest commit only (subject keys, plus the
                         // task linked to a branch whose tip this is).
-                        rv.row_tasks = crate::commit_list::task_rows(snap.commits.iter(), &rv.tips, &rv.notes);
+                        rv.row_tasks = crate::commit_list::task_rows(snap.commits.iter(), &rv.tips, &rv.notes, rv.task_style);
                         rv.filtered = None;
                         rv.snap = Some(snap);
                         if rv.amend && rv.commit_msg.is_empty() {
@@ -2446,15 +2523,16 @@ impl eframe::App for MarginApp {
             let recent = self.recent_closed(&tabs);
             crate::tab_strip::show(ui, &tabs, &recent, &mut actions);
             self.toolbar(ui, &mut actions);
-            let tasks_configured = self.tasks.is_some();
+            let tasks_configured = self.rv.as_ref().is_some_and(|rv| self.tasks_available(rv));
             let pro = self.pro();
+            let links = self.task_links();
             let tasks_enabled = tasks_configured && pro;
             let license = self.license.clone();
             let rv = self.rv.as_mut().unwrap();
             // Notes sit at the bottom of the details column, or under the sidebar
             // and history together (Notes → "Move notes…"); same panel either way.
             let under_history = self.state.notes_under_history;
-            let task_url = |k: &str| tasks::task_url(&self.cfg, self.tasks.as_deref(), self.settings.ticket_url.as_deref(), k);
+            let task_url = |k: &str| links.link(k);
             let notes = |ui: &mut egui::Ui, rv: &mut RepoView, state: &mut State, actions: &mut Vec<Action>| {
                 // The dragged height, or fitted to the content when collapsed /
                 // empty (see notes_panel). The panel draws its own grip.
@@ -2467,7 +2545,8 @@ impl eframe::App for MarginApp {
                 let dragging = ui.input(|i| i.pointer.primary_down());
                 let notes_h = ui.ctx().animate_value_with_time(egui::Id::unique("notes_panel_h"), target, if dragging { 0.0 } else { 0.12 });
                 egui::Panel::bottom("notes").exact_size(notes_h).show(ui, |ui| {
-                    crate::notes_panel::show(ui, rv, &self.task_cache, &license, &task_url, &self.author, state, notes_h, actions);
+                    let info = rv.note_task().and_then(|k| self.task_cache.get(&task_cache_key(rv, &k))).cloned();
+                    crate::notes_panel::show(ui, rv, info.as_ref(), &license, &task_url, &self.author, state, notes_h, actions);
                 });
             };
             let before = crate::diff_view::DiffPrefs {
@@ -2831,13 +2910,63 @@ impl MarginApp {
     }
 
     fn settings_tasks(&mut self, ui: &mut egui::Ui) -> bool {
+        use margin_core::config::TaskSource;
         let mut changed = false;
+        // ---- this repository
+        if let Some(rv) = &self.rv {
+            let id = rv.repo_id.clone();
+            let name = rv.repo.name();
+            let has_gh = rv.looks_github;
+            let jira = self.tasks.is_some();
+            let cur = self.settings.repo_tasks.get(&id).cloned().unwrap_or_default();
+            let mut pick = cur.clone();
+            let help = match &cur {
+                TaskSource::Default => "Uses the default below (Jira from config.json, else the ticket link).".to_string(),
+                TaskSource::Off => "No task keys or ticket links in this repository.".to_string(),
+                TaskSource::Link { .. } => "Keys such as PROJ-123 link to this site, or a link with {key}.".to_string(),
+                TaskSource::Jira => if jira { "Titles and status from Jira (config.json).".into() } else { "Jira isn't set up in config.json yet: keys won't link.".into() },
+                TaskSource::Github => {
+                    if has_gh {
+                        "Issues of this repository's GitHub remote: #123 in commits, and branches like 123-fix or feature/123-x (pull request numbers are skipped). Titles, state and My tasks come from GitHub.".into()
+                    } else {
+                        "This repository has no GitHub remote (origin).".into()
+                    }
+                }
+            };
+            setting(ui, &format!("This repository ({name})"), &help, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.radio_value(&mut pick, TaskSource::Default, "Default");
+                    ui.add_enabled_ui(has_gh, |ui| ui.radio_value(&mut pick, TaskSource::Github, "GitHub Issues"));
+                    ui.radio_value(&mut pick, TaskSource::Jira, "Jira");
+                    let is_link = matches!(pick, TaskSource::Link { .. });
+                    if ui.radio(is_link, "Ticket link").clicked() && !is_link {
+                        pick = TaskSource::Link { url: self.settings.ticket_url.clone().unwrap_or_default() };
+                    }
+                    ui.radio_value(&mut pick, TaskSource::Off, "Off");
+                });
+                if let TaskSource::Link { url } = &mut pick {
+                    ui.add(egui::TextEdit::singleline(url).hint_text("https://linear.app/acme/issue/{key}").desired_width(f32::INFINITY));
+                }
+            });
+            if pick != cur {
+                if pick == TaskSource::Default {
+                    self.settings.repo_tasks.remove(&id);
+                } else {
+                    self.settings.repo_tasks.insert(id, pick);
+                }
+                self.task_cache.clear();
+                self.my_tasks = None;
+                self.apply_task_sources();
+                changed = true;
+            }
+        }
+        // ---- default for repositories set to Default
         let example = self.settings.ticket_url.as_deref().and_then(|t| tasks::ticket_link(t, "PROJ-123"));
         let help = match &example {
             Some(u) => format!("PROJ-123 opens {u}"),
             None => "A Jira site such as https://yourcompany.atlassian.net (keys open /browse/KEY), or for other trackers a link with {key}, e.g. https://linear.app/acme/issue/{key}.".into(),
         };
-        setting(ui, "Ticket link", &help, |ui| {
+        setting(ui, "Default ticket link (all repositories set to Default)", &help, |ui| {
             let mut t = self.settings.ticket_url.clone().unwrap_or_default();
             if ui.add(egui::TextEdit::singleline(&mut t).hint_text("https://yourcompany.atlassian.net").desired_width(f32::INFINITY)).changed() {
                 self.settings.ticket_url = Some(t.trim().to_string()).filter(|t| !t.is_empty());
@@ -2996,6 +3125,30 @@ fn open_path(path: &std::path::Path, terminal: bool, app: &mut MarginApp) {
     if let Err(e) = r {
         app.err(format!("open {}: {e}", path.display()));
     }
+}
+
+/// Links from task keys to tickets for one repository (see `MarginApp::task_links`).
+#[derive(Clone, Default)]
+pub struct TaskLinks {
+    /// GitHub Issues: `https://github.com/o/r/issues/` (the number is appended).
+    github: Option<String>,
+    /// A site (`https://acme.atlassian.net` → /browse/KEY) or a `{key}` template.
+    template: Option<String>,
+}
+
+impl TaskLinks {
+    pub fn link(&self, key: &str) -> Option<String> {
+        if let Some(g) = &self.github {
+            return key.strip_prefix('#').map(|n| format!("{g}{n}"));
+        }
+        self.template.as_deref().and_then(|t| tasks::ticket_link(t, key))
+    }
+}
+
+/// Task cache key: GitHub issue numbers are per repository ("#12" differs
+/// between repos), tracker keys aren't.
+pub fn task_cache_key(rv: &RepoView, key: &str) -> String {
+    if rv.task_style == margin_core::tasks::KeyStyle::Github { format!("{}{key}", rv.repo_id) } else { key.to_string() }
 }
 
 fn open_url(url: &str, app: &mut MarginApp) {

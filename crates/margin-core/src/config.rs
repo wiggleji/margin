@@ -167,6 +167,10 @@ pub struct Settings {
     /// `https://acme.atlassian.net` (→ /browse/KEY) or a template with `{key}`.
     #[serde(default)]
     pub ticket_url: Option<String>,
+    /// Per repository (keyed by repo id, see sync::repo_id): where its task
+    /// keys come from. Missing = `TaskSource::Default`.
+    #[serde(default)]
+    pub repo_tasks: std::collections::BTreeMap<String, TaskSource>,
     /// Colour theme id (Settings → Appearance); `None` = Margin.
     #[serde(default)]
     pub theme: Option<String>,
@@ -184,6 +188,23 @@ pub struct Settings {
     pub code_font: Option<FontChoice>,
 }
 
+/// Where a repository's tasks come from (Settings → Tasks).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaskSource {
+    /// The app-wide setting: Jira from config.json, else the ticket link.
+    #[default]
+    Default,
+    /// No task keys in this repository.
+    Off,
+    /// Keys like PROJ-123 linking to this site or `{key}` template.
+    Link { url: String },
+    /// Jira, through the API in config.json.
+    Jira,
+    /// GitHub Issues of the repository's GitHub remote (#123).
+    Github,
+}
+
 /// An installed font: family name, and the file (and face in it) to load.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FontChoice {
@@ -199,7 +220,7 @@ fn default_fetch_minutes() -> u32 {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None, font_size: None, ui_font_size: None, ui_font: None, code_font: None }
+        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None, font_size: None, ui_font_size: None, ui_font: None, code_font: None, repo_tasks: Default::default() }
     }
 }
 

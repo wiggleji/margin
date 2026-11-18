@@ -604,7 +604,7 @@ fn eye(ui: &mut Ui, shown: bool) -> egui::Response {
 /// One local branch row: [● gutter] name  task note PR …… [behind↓│ahead↑] [eye]
 /// The whole row is the click target (click: show its tip; double-click: check out).
 fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize, isz: f32, actions: &mut Vec<Action>) {
-    let task = rv.notes.task_for_branch(&r.name);
+    let task = rv.notes.task_for_branch_in(&r.name, rv.task_style);
     let note = rv.has_note(&NoteTarget::Branch(r.name.clone()));
     let refs = rv.snap.as_ref().map(|s| s.refs.as_slice()).unwrap_or_default();
     let shown = rv.graph_filter.shows(r, margin_core::history::head_upstream(refs).as_deref());

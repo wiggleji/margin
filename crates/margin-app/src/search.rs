@@ -101,7 +101,8 @@ impl Query {
                 Field::Author => lc(&c.author).contains(v) || lc(&c.email).contains(v),
                 Field::Title => lc(&c.subject).contains(v),
                 Field::Ref => refs(),
-                Field::Task => margin_core::tasks::extract_keys(&c.subject).iter().any(|k| lc(k).contains(v)),
+                // either kind of key: PROJ-12 or #12
+                Field::Task => margin_core::tasks::extract_keys(&c.subject).iter().chain(&margin_core::tasks::github_refs(&c.subject)).any(|k| lc(k).contains(v)),
                 Field::Note => notes.iter().any(|t| lc(t).contains(v)),
                 Field::Any => lc(&c.subject).contains(v) || lc(&c.author).contains(v) || c.id.starts_with(v) || refs(),
             }

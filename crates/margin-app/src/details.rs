@@ -19,7 +19,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
     let staged_n = snap.status.files.iter().filter(|f| f.is_staged()).count();
     ui.vertical(|ui| {
         // ---- commit box
-        let task = rv.current_branch().and_then(|b| rv.notes.task_for_branch(b));
+        let task = rv.current_branch().and_then(|b| rv.notes.task_for_branch_in(b, rv.task_style));
         let enter = if cfg!(target_os = "macos") { "⌘↵" } else { "Ctrl+↵" };
         let hint = match &task {
             Some(t) => format!("{t}: summary   ({enter} to commit)"),
@@ -256,7 +256,7 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 ui.end_row();
             }
             // Tasks: each key links to its ticket.
-            let keys = margin_core::tasks::extract_keys(&d.message);
+            let keys = margin_core::tasks::keys_in(&d.message, rv.task_style);
             if !keys.is_empty() {
                 ui.weak("Tasks");
                 ui.horizontal_wrapped(|ui| {

@@ -38,6 +38,75 @@ pub trait TaskProvider: Send + Sync {
     fn browse_url(&self, key: &str) -> String;
 }
 
+/// What task keys look like in a repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyStyle {
+    /// Tracker keys: PROJ-123 (Jira, Linear, YouTrack, …).
+    #[default]
+    Tracker,
+    /// GitHub issue numbers: #123.
+    Github,
+    /// No task keys.
+    Off,
+}
+
+/// Task keys in a branch name or commit message, in this style.
+pub fn keys_in(s: &str, style: KeyStyle) -> Vec<String> {
+    match style {
+        KeyStyle::Tracker => extract_keys(s),
+        KeyStyle::Github => github_refs(s),
+        KeyStyle::Off => vec![],
+    }
+}
+
+/// GitHub issue references, as `#123`.
+///
+/// * In text: `#123` (also in "fixes #123"), but not pull requests: "Merge
+///   pull request #12", "(PR #12)", and a squash merge's trailing "(#12)".
+/// * In a branch name (no `#`): a number starting a path part and followed
+///   by `-` or the end: `123-fix-login`, `feature/123-x`, `issue-45`, `gh-45`
+///   (not dates like `2026-10-30-x`).
+pub fn github_refs(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let push = |out: &mut Vec<String>, n: &str| {
+        let k = format!("#{n}");
+        if !n.is_empty() && n.len() <= 7 && !out.contains(&k) {
+            out.push(k);
+        }
+    };
+    if s.contains('#') {
+        let lower = s.to_lowercase();
+        let b = s.as_bytes();
+        // a squash merge's "(#12)" at the very end is the pull request
+        let squash = s.trim_end().strip_suffix(')').and_then(|t| t.rfind("(#")).map(|i| i + 1);
+        for (i, _) in s.match_indices('#') {
+            let digits: String = s[i + 1..].chars().take_while(char::is_ascii_digit).collect();
+            let after_ok = s[i + 1 + digits.len()..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+            let before_ok = i == 0 || !b[i - 1].is_ascii_alphanumeric();
+            let before = lower[..i].trim_end();
+            let is_pr = before.ends_with("pull request") || before.ends_with("pr") || Some(i) == squash;
+            if !digits.is_empty() && after_ok && before_ok && !is_pr {
+                push(&mut out, &digits);
+            }
+        }
+        return out;
+    }
+    // branch name
+    for part in s.split('/') {
+        let p = part.to_ascii_lowercase();
+        let p = p.strip_prefix("issue-").or_else(|| p.strip_prefix("issues-")).or_else(|| p.strip_prefix("gh-")).unwrap_or(&p);
+        let digits: String = p.chars().take_while(char::is_ascii_digit).collect();
+        let rest = &p[digits.len()..];
+        // "2026-10-30-…": a date, not an issue
+        let date = rest.starts_with('-') && rest[1..].starts_with(|c: char| c.is_ascii_digit());
+        if !digits.is_empty() && (rest.is_empty() || rest.starts_with('-')) && !date && digits.len() <= 7 {
+            push(&mut out, &digits);
+            break;
+        }
+    }
+    out
+}
+
 /// Extract Jira-style keys (`ABC-123`) from branch names / commit messages.
 pub fn extract_keys(s: &str) -> Vec<String> {
     let b = s.as_bytes();
@@ -313,5 +382,24 @@ mod tests {
         let mut s = String::new();
         adf_to_text(&v, &mut s);
         assert!(s.starts_with("Hello\n\n- one"));
+    }
+
+    #[test]
+    fn github_issue_refs() {
+        use super::github_refs as g;
+        assert_eq!(g("fix: login retries (fixes #12, refs #7)"), ["#12", "#7"]);
+        assert!(g("Merge pull request #178 from acme/dev").is_empty());
+        assert!(g("fix: CodeRabbit review (PR #178)").is_empty());
+        assert_eq!(g("Login retries #45 (#3802)"), ["#45"]); // trailing (#N) = the PR
+        assert!(g("color #fff and a#12").is_empty());
+        // branch names
+        assert_eq!(g("123-fix-login"), ["#123"]);
+        assert_eq!(g("feature/45-retry"), ["#45"]);
+        assert_eq!(g("issue-9"), ["#9"]);
+        assert_eq!(g("gh-77-x"), ["#77"]);
+        assert!(g("feature/2026-10-30-cleanup").is_empty());
+        assert!(g("release/26.47.1").is_empty());
+        assert!(g("main").is_empty());
+        assert_eq!(super::keys_in("PROJ-1 #5", super::KeyStyle::Off), Vec::<String>::new());
     }
 }

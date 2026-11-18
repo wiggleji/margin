@@ -16,7 +16,7 @@ use eframe::egui::{self, RichText, Ui};
 use margin_core::markdown;
 use margin_core::notes::{NoteStore, NoteTarget};
 use margin_core::tasks::Task;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum NoteTab {
@@ -169,7 +169,7 @@ impl NoteEditor {
 pub fn show(
     ui: &mut Ui,
     rv: &mut RepoView,
-    task_cache: &HashMap<String, Result<Task, String>>,
+    task_info: Option<&Result<Task, String>>,
     license: &margin_core::license::Status,
     task_url: &dyn Fn(&str) -> Option<String>,
     author: &str,
@@ -311,7 +311,7 @@ pub fn show(
     ui.horizontal_wrapped(|ui| {
         if let Some(k) = &task
             && pro
-            && !task_cache.contains_key(k)
+            && task_info.is_none()
             && rv.editor.requested_tasks.insert(k.clone())
         {
             actions.push(Action::FetchTask(k.clone()));
@@ -328,7 +328,7 @@ pub fn show(
             // Inline after the text (and Write note), wrapping to the next
             // line when there's no room: it never sits on top of anything.
             ui.add_space(10.0);
-            task_link(ui, b, task.as_deref(), task_cache, task_url, actions);
+            task_link(ui, b, task.as_deref(), task_info, task_url, actions);
         }
     });
     // An empty note shrinks the panel to this one line (it grows back,
@@ -920,7 +920,7 @@ fn task_link(
     ui: &mut Ui,
     branch: &str,
     task: Option<&str>,
-    task_cache: &HashMap<String, Result<Task, String>>,
+    task_info: Option<&Result<Task, String>>,
     task_url: &dyn Fn(&str) -> Option<String>,
     actions: &mut Vec<Action>,
 ) {
@@ -930,7 +930,7 @@ fn task_link(
         }
         return;
     };
-    let text = match task_cache.get(k) {
+    let text = match task_info {
         Some(Ok(t)) => format!("{k} · {}", t.summary),
         _ => k.to_string(),
     };

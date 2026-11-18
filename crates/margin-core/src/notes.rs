@@ -358,7 +358,15 @@ impl NoteStore {
 
     /// Explicit link wins; otherwise infer from branch name (`feature/PROJ-12-x`).
     pub fn task_for_branch(&self, branch: &str) -> Option<String> {
-        self.linked_task(branch).or_else(|| crate::tasks::extract_keys(branch).into_iter().next())
+        self.task_for_branch_in(branch, crate::tasks::KeyStyle::Tracker)
+    }
+
+    /// Same, for a repository whose keys look like `style` (`feature/123-x` → #123).
+    pub fn task_for_branch_in(&self, branch: &str, style: crate::tasks::KeyStyle) -> Option<String> {
+        if style == crate::tasks::KeyStyle::Off {
+            return None;
+        }
+        self.linked_task(branch).or_else(|| crate::tasks::keys_in(branch, style).into_iter().next())
     }
 
     pub fn link_task(&self, branch: &str, task: Option<&str>) -> Result<()> {

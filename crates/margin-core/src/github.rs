@@ -334,6 +334,42 @@ impl GitHub {
         self.graphql(q, json!({ "pr": pr_id, "commit": commit, "path": path, "line": line, "side": side, "body": body })).map(drop)
     }
 
+    /// Browser link to issue `#n` (or a bare number).
+    pub fn issue_url(&self, key: &str) -> String {
+        format!("https://{}/{}/{}/issues/{}", self.repo.host, self.repo.owner, self.repo.name, key.trim_start_matches('#'))
+    }
+
+    /// Issue (or pull request) `#n` of this repository, as a task.
+    pub fn issue(&self, key: &str) -> Result<crate::tasks::Task> {
+        let n: i64 = key.trim_start_matches('#').parse().map_err(|_| Error("not an issue number".into()))?;
+        let q = "query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) {
+  issueOrPullRequest(number: $n) {
+    ... on Issue { title state url updatedAt body assignees(first: 1) { nodes { login } } labels(first: 1) { nodes { name } } }
+    ... on PullRequest { title state url updatedAt body assignees(first: 1) { nodes { login } } }
+  } } }";
+        let data = self.graphql(q, json!({ "owner": self.repo.owner, "name": self.repo.name, "n": n }))?;
+        let i = &data["repository"]["issueOrPullRequest"];
+        if i.is_null() {
+            bail!("#{n} not found in {}/{}", self.repo.owner, self.repo.name);
+        }
+        Ok(issue_task(&format!("#{n}"), i))
+    }
+
+    /// Open issues of this repository assigned to the signed-in user.
+    pub fn my_issues(&self, limit: usize) -> Result<Vec<crate::tasks::Task>> {
+        let q = "query($q: String!, $n: Int!) { search(query: $q, type: ISSUE, first: $n) { nodes {
+  ... on Issue { number title state url updatedAt body assignees(first: 1) { nodes { login } } labels(first: 1) { nodes { name } } } } } }";
+        let search = format!("repo:{}/{} is:issue is:open assignee:@me sort:updated-desc", self.repo.owner, self.repo.name);
+        let data = self.graphql(q, json!({ "q": search, "n": limit.min(50) }))?;
+        Ok(data["search"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|i| i["number"].is_number())
+            .map(|i| issue_task(&format!("#{}", i["number"]), i))
+            .collect())
+    }
+
     pub fn pr_detail(&self, head: &str) -> Result<Option<PrDetail>> {
         let q = format!(
             "query($owner: String!, $name: String!, $head: String!) {{ repository(owner: $owner, name: $name) {{
@@ -477,6 +513,29 @@ fn parse_detail(pr: &Value) -> PrDetail {
         unresolved_threads: unresolved,
         threads,
         resolved_threads: resolved,
+    }
+}
+
+/// A GitHub issue / pull request node as a task (state OPEN → "new", else "done").
+fn issue_task(key: &str, i: &Value) -> crate::tasks::Task {
+    let s = |v: &Value| v.as_str().unwrap_or("").to_string();
+    let state = s(&i["state"]);
+    crate::tasks::Task {
+        key: key.to_string(),
+        summary: s(&i["title"]),
+        status_category: if state == "OPEN" { "new".into() } else { "done".into() },
+        status: match state.as_str() {
+            "OPEN" => "Open".into(),
+            "CLOSED" => "Closed".into(),
+            "MERGED" => "Merged".into(),
+            other => other.to_string(),
+        },
+        assignee: i["assignees"]["nodes"][0]["login"].as_str().map(str::to_string),
+        issue_type: i["labels"]["nodes"][0]["name"].as_str().unwrap_or("Issue").to_string(),
+        priority: None,
+        url: s(&i["url"]),
+        description: s(&i["body"]),
+        updated: s(&i["updatedAt"]),
     }
 }
 
