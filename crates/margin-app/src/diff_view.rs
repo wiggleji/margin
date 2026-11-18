@@ -1534,11 +1534,12 @@ struct ThreadState {
     busy: bool,
 }
 
-/// File rows are this much taller than code rows (room around the name).
+/// File rows are this much taller than code rows (room around the name;
+/// 1.3× was chosen from samples of 1.0, 1.3 and 1.6).
 /// MARGIN_FILE_ROW_SCALE overrides it (for trying sizes).
 fn file_row_scale() -> f32 {
     static S: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *S.get_or_init(|| std::env::var("MARGIN_FILE_ROW_SCALE").ok().and_then(|v| v.parse().ok()).filter(|v: &f32| (0.8..=3.0).contains(v)).unwrap_or(1.0))
+    *S.get_or_init(|| std::env::var("MARGIN_FILE_ROW_SCALE").ok().and_then(|v| v.parse().ok()).filter(|v: &f32| (0.8..=3.0).contains(v)).unwrap_or(1.3))
 }
 
 /// A small button in a diff row, drawn to fit inside the row exactly (an
