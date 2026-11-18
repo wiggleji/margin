@@ -139,6 +139,8 @@ pub struct DiffView {
     split: bool,
     /// Changed byte ranges per (file, hunk, line), for word highlighting.
     words: HashMap<(usize, usize, usize), Vec<(usize, usize)>>,
+    /// Syntax tokens per (file, hunk, line), for files in a known language.
+    syntax: HashMap<(usize, usize, usize), Vec<crate::syntax::Span>>,
     /// Scroll position (for next / previous change) and a pending jump.
     offset: f32,
     jump: Option<f32>,
@@ -348,6 +350,7 @@ impl DiffView {
         self.loading = false;
         self.error = None;
         self.words = word_highlights(&self.files);
+        self.syntax = syntax_spans(&self.files);
         self.threads.clear();
         self.thread_at.clear();
         self.reply = None;
@@ -788,6 +791,7 @@ impl DiffView {
         let counts = |s: Section| self.sections.iter().filter(|&&x| x == s).count();
         let (n_unstaged, n_staged) = (counts(Section::Unstaged), counts(Section::Staged));
         let words = &self.words;
+        let syntax = &self.syntax;
         let now = ui.input(|i| i.time);
         let flash = self.flash.filter(|&(_, t)| now - t < 0.8).map(|(r, t)| {
             ui.ctx().request_repaint();
@@ -1082,7 +1086,7 @@ impl DiffView {
                                 );
                             }
                             let seg_text = Seg { text: &l.text, seg, cols: self.cols };
-                            seg_text.paint(&p, rect, rect.left() + gutter, words.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
+                            seg_text.paint(&p, rect, rect.left() + gutter, words.get(&(fi, hi, li)), syntax.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
                         }
                         Row::Pair(fi, hi, old, new, seg) => {
                             let lines = &self.files[fi].hunks[hi].lines;
@@ -1121,7 +1125,7 @@ impl DiffView {
                                     let num = n.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
                                     sp.text(pos2(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, num, font.clone(), theme::TEXT_DIM());
                                 }
-                                st.paint(&sp, r, r.left() + char_w * 6.0 + 8.0, words.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
+                                st.paint(&sp, r, r.left() + char_w * 6.0 + 8.0, words.get(&(fi, hi, li)), syntax.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
                             }
                             p.line_segment([pos2(rect.left() + half, rect.top()), pos2(rect.left() + half, rect.bottom())], Stroke::new(1.0, theme::BG_DARK()));
                         }
@@ -1739,6 +1743,35 @@ fn word_highlights(files: &[FileDiff]) -> HashMap<(usize, usize, usize), Vec<(us
     out
 }
 
+/// Syntax tokens for each line of files in a language we know. Block
+/// comments and multi-line strings carry on separately through the old
+/// side (context + removed lines) and the new side (context + added).
+fn syntax_spans(files: &[FileDiff]) -> HashMap<(usize, usize, usize), Vec<crate::syntax::Span>> {
+    use crate::syntax::{self, State};
+    let mut out = HashMap::new();
+    for (fi, f) in files.iter().enumerate() {
+        let Some(lang) = f.new_path.as_deref().or(f.old_path.as_deref()).and_then(syntax::for_path) else { continue };
+        for (hi, h) in f.hunks.iter().enumerate() {
+            let (mut old, mut new) = (State::Normal, State::Normal);
+            for (li, l) in h.lines.iter().enumerate() {
+                let spans = match l.kind {
+                    LineKind::Context => {
+                        syntax::line(lang, &l.text, &mut old);
+                        syntax::line(lang, &l.text, &mut new)
+                    }
+                    LineKind::Removed => syntax::line(lang, &l.text, &mut old),
+                    LineKind::Added => syntax::line(lang, &l.text, &mut new),
+                    LineKind::NoNewline => continue,
+                };
+                if !spans.is_empty() {
+                    out.insert((fi, hi, li), spans);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// One wrapped row (`seg`) of a diff line; see `wrap_ranges`.
 struct Seg<'a> {
     text: &'a str,
@@ -1790,9 +1823,10 @@ impl Seg<'_> {
         wrap_ranges(self.text, self.cols).len()
     }
 
-    /// Sign (first segment only) at `x`, text after it, changed words highlighted.
+    /// Sign (first segment only) at `x`, text after it, changed words
+    /// highlighted, coloured by `syntax` tokens when there are any.
     #[allow(clippy::too_many_arguments)]
-    fn paint(&self, p: &egui::Painter, rect: Rect, x: f32, words: Option<&Vec<(usize, usize)>>, kind: LineKind, font: &FontId, fg: Color32, char_w: f32) {
+    fn paint(&self, p: &egui::Painter, rect: Rect, x: f32, words: Option<&Vec<(usize, usize)>>, syntax: Option<&Vec<crate::syntax::Span>>, kind: LineKind, font: &FontId, fg: Color32, char_w: f32) {
         // (no +/− signs: the red / green background says it)
         let text_x = x;
         let (from, to) = wrap_ranges(self.text, self.cols).get(self.seg).copied().unwrap_or((0, 0));
@@ -1811,8 +1845,40 @@ impl Seg<'_> {
                 }
             }
         }
-        let chunk: String = self.text.replace('\t', "    ").chars().skip(from).take(to - from).collect();
-        p.text(pos2(text_x, rect.center().y), Align2::LEFT_CENTER, chunk, font.clone(), fg);
+        let Some(spans) = syntax else {
+            let chunk: String = self.text.replace('\t', "    ").chars().skip(from).take(to - from).collect();
+            p.text(pos2(text_x, rect.center().y), Align2::LEFT_CENTER, chunk, font.clone(), fg);
+            return;
+        };
+        // this row's columns, in runs of one colour
+        let colors = crate::syntax::colors(spans, self.text.len(), fg);
+        let mut job = egui::text::LayoutJob::default();
+        let (mut run, mut run_c, mut col) = (String::new(), fg, 0usize);
+        for (b, ch) in self.text.char_indices() {
+            let w = if ch == '\t' { 4 } else { 1 };
+            if col >= from && col < to {
+                let c = colors[b];
+                if c != run_c && !run.is_empty() {
+                    job.append(&run, 0.0, egui::TextFormat { font_id: font.clone(), color: run_c, ..Default::default() });
+                    run.clear();
+                }
+                run_c = c;
+                if ch == '\t' {
+                    run.push_str("    ");
+                } else {
+                    run.push(ch);
+                }
+            }
+            col += w;
+            if col >= to {
+                break;
+            }
+        }
+        if !run.is_empty() {
+            job.append(&run, 0.0, egui::TextFormat { font_id: font.clone(), color: run_c, ..Default::default() });
+        }
+        let g = p.layout_job(job);
+        p.galley(pos2(text_x, rect.center().y - g.size().y / 2.0), g, fg);
     }
 }
 

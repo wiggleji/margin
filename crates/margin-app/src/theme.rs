@@ -37,6 +37,20 @@ pub struct Palette {
     /// Text fields.
     pub field: Color32,
     pub lanes: [Color32; 8],
+    /// Code colours (diffs and note code blocks).
+    pub syntax: Syntax,
+}
+
+/// Colours for kinds of code token (see `crate::syntax`).
+#[derive(Clone, Copy)]
+pub struct Syntax {
+    pub keyword: Color32,
+    pub string: Color32,
+    pub number: Color32,
+    pub comment: Color32,
+    pub ty: Color32,
+    pub function: Color32,
+    pub attr: Color32,
 }
 
 const fn hex(c: u32) -> [u8; 3] {
@@ -113,6 +127,17 @@ const fn make(b: Base) -> Palette {
             c(red),
             mix(blue, hex(b.purple), 500),
         ],
+        // Light themes: accents pulled a little toward the text colour, so
+        // they stay readable on the pale added / removed line backgrounds.
+        syntax: Syntax {
+            keyword: if d { c(hex(b.purple)) } else { mix(hex(b.purple), text, 150) },
+            string: if d { c(green) } else { mix(green, text, 250) },
+            number: if d { c(hex(b.orange)) } else { mix(hex(b.orange), text, 150) },
+            comment: c(hex(b.text_dim)),
+            ty: if d { c(hex(b.yellow)) } else { mix(hex(b.yellow), text, 350) },
+            function: if d { c(blue) } else { mix(blue, text, 150) },
+            attr: if d { c(hex(b.cyan)) } else { mix(hex(b.cyan), text, 250) },
+        },
     }
 }
 
@@ -150,6 +175,15 @@ const MARGIN: Palette = Palette {
         Color32::from_rgb(0xe0, 0x70, 0x9a),
         Color32::from_rgb(0xb0, 0xb0, 0xf0),
     ],
+    syntax: Syntax {
+        keyword: Color32::from_rgb(0xd0, 0x7c, 0xe0),
+        string: Color32::from_rgb(0x9a, 0xd0, 0x6c),
+        number: Color32::from_rgb(0xf0, 0x90, 0x6a),
+        comment: Color32::from_rgb(0x7d, 0x84, 0x91),
+        ty: Color32::from_rgb(0xe5, 0xb5, 0x67),
+        function: Color32::from_rgb(0x6a, 0xb6, 0xf0),
+        attr: Color32::from_rgb(0x50, 0xd0, 0xc0),
+    },
 };
 
 // Material Theme syntax colours (dark variants share them).
