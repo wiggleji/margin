@@ -88,6 +88,13 @@ pub struct State {
     /// Command palette: recently run commands (`Group/Title`), newest first.
     #[serde(default)]
     pub recent_commands: Vec<String>,
+    /// Last update check (unix time).
+    #[serde(default)]
+    pub update_checked_at: Option<i64>,
+    /// The newest release that check found ("0.2.0"), so a waiting update
+    /// shows again right after a restart.
+    #[serde(default)]
+    pub update_latest: Option<String>,
     /// Notes panel: height chosen by dragging, collapsed to its tab row, and
     /// editing side by side with the preview ("Split").
     #[serde(default)]
@@ -160,6 +167,12 @@ pub struct Settings {
     pub auto_fetch: bool,
     #[serde(default = "default_fetch_minutes")]
     pub auto_fetch_minutes: u32,
+    /// Look for a new Margin release once a day (see core::update).
+    #[serde(default = "yes")]
+    pub update_check: bool,
+    /// Download new releases in the background and install them when Margin quits.
+    #[serde(default = "yes")]
+    pub update_auto: bool,
     /// Cloud-synced folder for notes (iCloud Drive, Dropbox, Google Drive…).
     #[serde(default)]
     pub sync_folder: Option<String>,
@@ -230,9 +243,13 @@ fn default_fetch_minutes() -> u32 {
     10
 }
 
+fn yes() -> bool {
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None, font_size: None, ui_font_size: None, ui_font: None, code_font: None, repo_tasks: Default::default(), tasks_prompted: vec![], jira: None, github_hosts: vec![] }
+        Settings { auto_fetch: false, auto_fetch_minutes: default_fetch_minutes(), update_check: true, update_auto: true, sync_folder: None, synced_repos: vec![], ticket_url: None, theme: None, font_size: None, ui_font_size: None, ui_font: None, code_font: None, repo_tasks: Default::default(), tasks_prompted: vec![], jira: None, github_hosts: vec![] }
     }
 }
 

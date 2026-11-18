@@ -28,6 +28,7 @@ pub mod markdown;
 pub mod notes;
 pub mod sync;
 pub mod tasks;
+pub mod update;
 mod time;
 
 pub use time::{format_local, format_utc, local_offset, local_zone};

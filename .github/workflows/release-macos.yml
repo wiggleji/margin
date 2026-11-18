@@ -98,6 +98,7 @@ jobs:
           name: Margin-macOS
           path: |
             dist/*.dmg
+            dist/*.zip
             dist/*.sha256
           if-no-files-found: error
 
@@ -120,9 +121,11 @@ jobs:
             echo
             echo "Agents (MCP): point your client at \`/Applications/Margin.app/Contents/MacOS/margin-mcp\`."
             echo
-            echo "SHA-256: \`$(cut -d' ' -f1 dist/*.sha256)\`"
+            echo "Already using Margin 0.2 or later? It updates itself (Margin → Check for Updates…)."
+            echo
+            echo "SHA-256 ($dmg): \`$(cut -d' ' -f1 "dist/$dmg.sha256")\`"
           } > "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.sha256 \
+          gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip dist/*.sha256 \
             --latest --title "Margin ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
 
       - name: Remove build keychain

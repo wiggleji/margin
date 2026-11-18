@@ -102,6 +102,15 @@ Everything Margin does, in detail. For a quick start see the [README](../README.
 
 **MCP (for agents)**: 18 tools. `get_context`, `git_status`, `git_log`, `git_show`, and `list_branches` read git. `read_note`, `write_note`, `append_note`, `list_notes`, `search_notes`, and `link_task` work on notes. `get_task`, `search_tasks`, and `my_tasks` read Jira. `get_pr` gives agents the PR's readiness, failing checks, and review comments, so they can address feedback. `list_detached_notes`, `move_note`, and `undo_reattach` let agents tidy notes after a rebase. Git access is **read-only** for agents.
 
+## Updates
+
+Margin updates itself from GitHub Releases (from 0.2 on; 0.1 needs one manual download). **Settings → Updates**, or **Margin → Check for Updates…**:
+
+- **Check for updates once a day** (on by default): one request to GitHub's releases API a day (and once right after a restart while an update is waiting). Nothing else is sent.
+- **Download and install updates automatically** (on by default): a new version downloads in the background, then is checked: its SHA-256 must match the release's, its version must be the release's, its code signature must verify, and when your copy is Developer ID signed the new one must come from the same developer. It replaces Margin when you quit; the toolbar shows **Restart to update** to do it right away. The old app is kept until the swap succeeds.
+- With automatic install off, the toolbar shows **Update to x.y.z**; one click downloads and installs it the same way.
+- Updating in place needs Margin.app in a folder you can write to (normally /Applications). Run from the DMG or a read-only folder, Margin opens the release page instead.
+
 ## Open from the terminal
 
 **Margin → Install 'margin' Command…** (or ⌘P → *Install 'margin' command*) puts a `margin` command in `/usr/local/bin` (macOS asks for your password if that folder isn't writable; on Linux it goes in `~/.local/bin`). `margin .` opens the current folder and `margin ~/src/app` opens another; when Margin is already running, the folder opens as a tab in that window. Reinstall it if you move Margin.app.

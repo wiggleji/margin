@@ -158,7 +158,17 @@ fi
 
 run sh -c "cd '$DIST' && shasum -a 256 '$(basename "$DMG")' > '$(basename "$DMG").sha256'"
 
+# ------------------------------------------------------- in-app update package
+# Margin.app zipped with ditto (keeps the signature and stapled ticket):
+# what Margin downloads to update itself (crates/margin-core/src/update.rs).
+UPD="$DIST/Margin-$VERSION-macos.zip"
+step "Building $(basename "$UPD")"
+run rm -f "$UPD"
+run ditto -c -k --sequesterRsrc --keepParent "$APP" "$UPD"
+run sh -c "cd '$DIST' && shasum -a 256 '$(basename "$UPD")' > '$(basename "$UPD").sha256'"
+
 step "Done"
 echo "  app: $APP"
 echo "  dmg: $DMG"
+echo "  update: $UPD"
 [ "$NOTARIZE" = 1 ] || echo "  (not notarized: other Macs will warn on first open; fine for local testing)"

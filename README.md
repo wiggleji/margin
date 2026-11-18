@@ -34,6 +34,8 @@ Write Markdown notes on commits, branches, and tasks, and let AI agents read and
 
 Download **Margin-&lt;version&gt;.dmg** from [Releases](https://github.com/wiggleji/margin/releases/latest), open it, and drag Margin into Applications. It runs on Apple Silicon and Intel Macs.
 
+After that, Margin updates itself (**Margin → Check for Updates…**; automatic by default).
+
 If macOS says the app can't be opened, run this once:
 
 ```bash
