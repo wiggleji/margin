@@ -73,7 +73,7 @@ Add Margin's MCP server to your agent's configuration:
 
 ## Build from source
 
-Requires Rust 1.88+ and `git`.
+Requires `git` and [rustup](https://rustup.rs) (the Rust version is pinned in `rust-toolchain.toml`).
 
 ```bash
 cargo build --release
@@ -84,6 +84,10 @@ cargo build --release
 ```
 
 To package a DMG or cut a release, see [docs/RELEASING.md](docs/RELEASING.md).
+
+## Contributing
+
+Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Support
 

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Guide
+    url: https://github.com/wiggleji/margin/blob/main/docs/GUIDE.md
+    about: What every feature does and how to set it up.
