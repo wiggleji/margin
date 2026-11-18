@@ -1,0 +1,16 @@
+# Sections of the release notes GitHub generates (gh release create --generate-notes),
+# by pull request label.
+changelog:
+  exclude:
+    labels: [ignore-for-release]
+  categories:
+    - title: New
+      labels: [enhancement, feature]
+    - title: Fixes
+      labels: [bug]
+    - title: Documentation
+      labels: [documentation]
+    - title: Dependencies
+      labels: [dependencies]
+    - title: Other changes
+      labels: ["*"]

@@ -1,0 +1,37 @@
+name: Bug report
+description: Something doesn't work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a repository with …
+        2. Click …
+        3. See …
+  - type: input
+    id: margin
+    attributes:
+      label: Margin version
+      description: Margin → About Margin, or `margin --version`.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: macOS version and Mac
+      placeholder: macOS 15.3, Apple Silicon
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Git version (`git --version`), whether GitHub or Jira is connected, error messages from the toolbar.
