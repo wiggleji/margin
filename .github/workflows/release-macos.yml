@@ -1,6 +1,6 @@
 # Build the macOS DMG (universal: Apple Silicon + Intel) on a macOS runner.
 #
-#   push a tag v0.1.0  → builds and creates a DRAFT GitHub release with the DMG
+#   push a tag v0.1.0  → builds and publishes a GitHub release with the DMG
 #   Actions → "Release macOS" → Run workflow → builds and uploads the DMG as an artifact
 #
 # With the Apple secrets set (docs/RELEASING.md) the app and the DMG are
@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # create the draft release
+  contents: write # create the release
 
 concurrency:
   group: release-macos-${{ github.ref }}
@@ -28,14 +28,14 @@ env:
 
 jobs:
   package:
-    runs-on: macos-14 # Apple Silicon; also cross-builds the Intel half
+    runs-on: macos-latest # Apple Silicon; also cross-builds the Intel half
     timeout-minutes: 60
     env:
       SIGNED: ${{ secrets.MACOS_CERTIFICATE_P12 != '' && secrets.NOTARY_API_KEY_P8 != '' }}
       MARGIN_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
       MARGIN_NOTARY_PROFILE: margin-notary
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # build number = commit count; build date = last commit
 
@@ -93,7 +93,7 @@ jobs:
         run: scripts/package-macos.sh --dev
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Margin-macOS
           path: |
@@ -101,7 +101,7 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-      - name: Create draft release
+      - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -113,8 +113,9 @@ jobs:
             echo "1. Download **$dmg** below (one download for Apple Silicon and Intel Macs)."
             echo "2. Open it and drag **Margin** into **Applications**."
             if [ "$SIGNED" != "true" ]; then
-              echo "3. This build isn't notarized by Apple yet, so the first time: **right-click Margin → Open → Open**"
-              echo "   (or run \`xattr -dr com.apple.quarantine /Applications/Margin.app\`). After that it opens normally."
+              echo "3. This build isn't notarized by Apple yet, so macOS blocks the first open. Either run"
+              echo "   \`xattr -dr com.apple.quarantine /Applications/Margin.app\` in Terminal, or open Margin once, then"
+              echo "   **System Settings → Privacy & Security → Open Anyway**. After that it opens normally."
             fi
             echo
             echo "Agents (MCP): point your client at \`/Applications/Margin.app/Contents/MacOS/margin-mcp\`."
@@ -122,7 +123,7 @@ jobs:
             echo "SHA-256: \`$(cut -d' ' -f1 dist/*.sha256)\`"
           } > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.sha256 \
-            --draft --title "Margin ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
+            --latest --title "Margin ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
 
       - name: Remove build keychain
         if: always()

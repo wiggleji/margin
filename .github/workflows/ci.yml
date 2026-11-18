@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System libraries (egui / winit)
         run: |
           sudo apt-get update
@@ -32,10 +32,10 @@ jobs:
 
   macos:
     name: macOS · test and package (unsigned)
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # build number = commit count
       - name: Rust (from rust-toolchain.toml)
@@ -44,7 +44,7 @@ jobs:
       - run: cargo test --workspace --locked
       - name: Package Margin.app and the DMG (ad-hoc signed, this Mac's architecture)
         run: scripts/package-macos.sh --dev --native
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: margin-dev-dmg
           path: dist/*.dmg

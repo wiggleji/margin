@@ -112,9 +112,11 @@ A super-light git client (Rust + egui) for macOS. It adds **Markdown notes** on 
 
 **MCP (for agents)**: 18 tools. `get_context`, `git_status`, `git_log`, `git_show`, and `list_branches` read git. `read_note`, `write_note`, `append_note`, `list_notes`, `search_notes`, and `link_task` work on notes. `get_task`, `search_tasks`, and `my_tasks` read Jira. `get_pr` gives agents the PR's readiness, failing checks, and review comments, so they can address feedback. `list_detached_notes`, `move_note`, and `undo_reattach` let agents tidy notes after a rebase. Git access is **read-only** for agents.
 
-## Install / release
+## Install
 
-Margin ships as a signed, notarized universal `.dmg`. See [docs/RELEASING.md](docs/RELEASING.md) to build one (`scripts/package-macos.sh`) or release through GitHub Actions on a version tag.
+Download the latest **Margin-<version>.dmg** from [Releases](https://github.com/wiggleji/margin/releases/latest) (one download for Apple Silicon and Intel Macs), open it, and drag **Margin** into **Applications**. If the release notes say the build isn't notarized, run `xattr -dr com.apple.quarantine /Applications/Margin.app` once (or open it, then **System Settings → Privacy & Security → Open Anyway**).
+
+To build a DMG yourself or cut a release, see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Build
 
