@@ -8,10 +8,10 @@
 #   scripts/package-macos.sh --dry-run       # print every step without running it (any OS)
 #
 # Release builds need (see docs/RELEASING.md):
-#   MARGIN_LICENSE_PUBKEY   licence public key (from `margin-license keygen`)
 #   MARGIN_SIGN_IDENTITY    "Developer ID Application: Your Name (TEAMID)"
 #   MARGIN_NOTARY_PROFILE   notarytool keychain profile (xcrun notarytool store-credentials)
 # Optional:
+#   MARGIN_LICENSE_PUBKEY   licence public key (from `margin-license keygen`)
 #   MARGIN_BUNDLE_ID        default io.github.wiggleji.margin
 #   MARGIN_BUILD_NUMBER     default: number of commits
 #   MARGIN_NOTARY_KEYCHAIN  keychain holding the notary profile (CI)
@@ -64,8 +64,12 @@ if [ "$DEV" = 1 ]; then
   SIGN_ID="-" # ad-hoc: runs on this Mac, not distributable
   [ -n "${MARGIN_LICENSE_PUBKEY:-}" ] || echo "note: MARGIN_LICENSE_PUBKEY not set — this build accepts development licence keys only"
 else
-  [[ "${MARGIN_LICENSE_PUBKEY:-}" =~ ^[0-9a-fA-F]{64}$ ]] \
-    || die "MARGIN_LICENSE_PUBKEY must be the 64-hex public key from 'margin-license keygen' (or use --dev)"
+  if [ -n "${MARGIN_LICENSE_PUBKEY:-}" ]; then
+    [[ "$MARGIN_LICENSE_PUBKEY" =~ ^[0-9a-fA-F]{64}$ ]] \
+      || die "MARGIN_LICENSE_PUBKEY must be the 64-hex public key from 'margin-license keygen'"
+  else
+    echo "note: MARGIN_LICENSE_PUBKEY not set — this build accepts development licence keys only"
+  fi
   SIGN_ID="${MARGIN_SIGN_IDENTITY:-}"
   [[ "$SIGN_ID" == "Developer ID Application:"* ]] \
     || die "MARGIN_SIGN_IDENTITY must be your 'Developer ID Application: Name (TEAMID)' certificate (security find-identity -v -p codesigning)"

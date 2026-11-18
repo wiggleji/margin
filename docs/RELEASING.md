@@ -71,6 +71,10 @@ git push origin v0.1.0
 
 Or run *Actions → Release macOS → Run workflow* to only build the DMG as a downloadable artifact.
 
+**Without the Apple secrets** the same workflow still builds and releases a DMG, ad-hoc signed instead of notarized: macOS then asks to confirm on first open (right-click → Open), and the release notes say so. Add the secrets later and the next release is signed and notarized.
+
+Every push to `main` and every pull request also runs **CI** (`.github/workflows/ci.yml`): build and tests on Linux and macOS, plus an unsigned test package of the app.
+
 Configure these in *Settings → Secrets and variables → Actions*:
 
 | Name | Kind | Value |
