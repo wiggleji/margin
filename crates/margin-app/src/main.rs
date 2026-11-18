@@ -62,8 +62,14 @@ fn main() -> eframe::Result {
     // `margin` with no args inside a repo opens it, like `smerge .`
     let repo = repo.or_else(|| std::env::current_dir().ok());
 
+    // Without an icon here eframe puts its own logo on the window and, on
+    // macOS, over the app bundle's Dock icon.
+    let mut viewport = eframe::egui::ViewportBuilder::default();
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
+        viewport: viewport
             .with_title("Margin")
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([720.0, 420.0]),
