@@ -770,9 +770,7 @@ cat > "$N/branch/feature%2FTIDE-38-notifications.md" <<'EOF'
 - [x] notification 30 min before
 - [ ] let people pick the lead time (15 / 30 / 60 min)
 - [ ] Safari needs the page installed to the Dock for notifications
-
-> **claude-code** · reviewed `notify.ts`: `setTimeout` is dropped when the tab
-> sleeps; consider re-scheduling on `visibilitychange`.
+- [ ] re-schedule on `visibilitychange` (a sleeping tab drops timers)
 EOF
 cat > "$N/branch/feature%2FTIDE-33-station-search.md" <<'EOF'
 Waiting on the API team: `/stations?q=` doesn't match accents yet ("Saint-Malo" vs "Saint Malo").

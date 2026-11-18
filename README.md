@@ -9,11 +9,16 @@ Write Markdown notes on commits, branches, and tasks, and let AI agents read and
 
 <p align="center">
 <a href="https://github.com/wiggleji/margin/releases/latest"><b>Download for macOS</b></a> ·
-<a href="docs/GUIDE.md">Guide</a> ·
-<a href="https://buymeacoffee.com/wiggleji">Buy me a coffee</a>
+<a href="docs/GUIDE.md">Guide</a>
 </p>
 
-![Margin](docs/screenshot.png)
+<p align="center">
+<a href="https://buymeacoffee.com/wiggleji"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black" alt="Buy me a coffee"></a>
+</p>
+
+![Margin, light theme](docs/screenshot-light.png)
+
+![Margin, dark theme](docs/screenshot-dark.png)
 
 ## Features
 
@@ -34,6 +39,20 @@ If macOS says the app can't be opened, run this once:
 ```bash
 xattr -dr com.apple.quarantine /Applications/Margin.app
 ```
+
+### Open from the terminal
+
+In Margin, choose **Margin → Install 'margin' Command…** (or ⌘P → *Install 'margin' command*). Then:
+
+```bash
+margin .
+```
+
+```bash
+margin ~/src/my-project
+```
+
+If Margin is already open, the folder opens as a new tab in the same window.
 
 ## Connect an agent
 
