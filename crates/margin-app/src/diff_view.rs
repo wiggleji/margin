@@ -159,6 +159,9 @@ pub struct DiffView {
     thread_open: Vec<bool>,
     thread_w: f32,
     thread_at: Vec<(usize, usize, usize)>,
+    /// Top of each row in the page (one more entry: the end). File rows are
+    /// taller than code rows, so rows aren't all the same height.
+    row_top: Vec<f32>,
     /// Thread being replied to (id) and the draft; threads with a request in flight.
     reply: Option<String>,
     reply_text: String,
@@ -379,8 +382,23 @@ impl DiffView {
         })
     }
 
+    /// Top of row `i` within the rows (the end for `i == rows.len()`).
+    fn ry(&self, i: usize) -> f32 {
+        self.row_top.get(i).or(self.row_top.last()).copied().unwrap_or(0.0)
+    }
+
+    /// Height of row `i`.
+    fn rh(&self, i: usize) -> f32 {
+        self.ry(i + 1) - self.ry(i)
+    }
+
+    /// The row at height `y` within the rows (clamped to the first / last).
+    fn row_at(&self, y: f32) -> usize {
+        self.row_top.partition_point(|&t| t <= y).saturating_sub(1).min(self.rows.len().saturating_sub(1))
+    }
+
     fn row_text(&self, row: usize, side: Side, geo: &Geo) -> Option<RowText<'_>> {
-        let top = geo.top0 + row as f32 * geo.row_h;
+        let top = geo.top0 + self.ry(row);
         let (fi, hi, li, seg, left, right) = match (*self.rows.get(row)?, side) {
             (Row::Line(fi, hi, li, seg), Side::Inline) => (fi, hi, li, seg, geo.x0 + geo.gutter, geo.x0 + geo.width),
             (Row::Pair(fi, hi, Some(li), _, seg), Side::Old) => (fi, hi, li, seg, geo.x0 + geo.char_w * 6.0 + 8.0, geo.x0 + geo.width / 2.0),
@@ -389,7 +407,7 @@ impl DiffView {
         };
         let text = self.files[fi].hunks[hi].lines[li].text.as_str();
         let (from, to) = *wrap_ranges(text, self.cols.max(10)).get(seg)?;
-        let rect = Rect::from_min_max(pos2(left - geo.char_w * 0.5, top), pos2(right, top + geo.row_h));
+        let rect = Rect::from_min_max(pos2(left - geo.char_w * 0.5, top), pos2(right, top + self.rh(row)));
         Some(RowText { line: (fi, hi, li), text, from, to, text_x: left, rect })
     }
 
@@ -727,14 +745,25 @@ impl DiffView {
         let mut reply_text = std::mem::take(&mut self.reply_text);
         let reply_focus = std::mem::take(&mut self.reply_focus);
 
+        // Row positions: file rows a bit taller (room around the name), the
+        // rest at the code line height.
+        let file_h = (row_h * file_row_scale()).round();
+        self.row_top.clear();
+        let mut y = 0.0;
+        for r in &self.rows {
+            self.row_top.push(y);
+            y += if matches!(r, Row::File(_)) { file_h } else { row_h };
+        }
+        self.row_top.push(y);
+
         // Next / previous change = the next hunk header below / above the top of the view.
         // (a hunk lands just under the sticky toolbar)
         if nav != 0 {
-            let ys = self.rows.iter().enumerate().filter(|(_, r)| matches!(r, Row::Hunk(..))).map(|(i, _)| (i, rows_y + i as f32 * row_h - bar_h));
+            let ys = self.rows.iter().enumerate().filter(|(_, r)| matches!(r, Row::Hunk(..))).map(|(i, _)| (i, rows_y + self.ry(i) - bar_h));
             // The change we're on: the last one jumped to, while it's still in
             // view (the page may not scroll far enough to bring it to the top).
             let on = self.nav_row.filter(|&r| {
-                let y = rows_y + r as f32 * row_h;
+                let y = rows_y + self.ry(r);
                 y >= self.offset - 1.0 && y <= self.offset + self.view_h
             });
             let target = match (nav > 0, on) {
@@ -786,7 +815,7 @@ impl DiffView {
                 let top = page.max_rect().top();
                 let x0 = page.max_rect().left();
                 let page_w = page.available_width();
-                page.set_min_height(rows_y + n_rows as f32 * row_h + 4.0);
+                page.set_min_height(rows_y + self.ry(n_rows) + 4.0);
                 if let Some(y) = glide.take() {
                     page.scroll_with_delta_animation(vec2(0.0, vp.min.y - y), egui::style::ScrollAnimation::duration(0.18));
                 }
@@ -798,11 +827,11 @@ impl DiffView {
                     }
                 }
                 // ---- rows in view
-                let first_row = (((vp.min.y - rows_y) / row_h).floor().max(0.0) as usize).min(n_rows);
-                let last_row = ((((vp.max.y - rows_y) / row_h).ceil().max(0.0) as usize) + 1).min(n_rows);
+                let first_row = if vp.min.y - rows_y <= 0.0 { 0 } else { self.row_at(vp.min.y - rows_y) }.min(n_rows);
+                let last_row = (self.row_at((vp.max.y - rows_y).max(0.0)) + 2).min(n_rows);
                 let range = first_row..last_row;
                 let visible = range.clone();
-                let rows_rect = Rect::from_min_size(pos2(x0, top + rows_y + first_row as f32 * row_h), vec2(page_w, (last_row - first_row) as f32 * row_h + 1.0));
+                let rows_rect = Rect::from_min_size(pos2(x0, top + rows_y + self.ry(first_row)), vec2(page_w, self.ry(last_row) - self.ry(first_row) + 1.0));
                 let mut rows_ui = page.new_child(egui::UiBuilder::new().max_rect(rows_rect).layout(egui::Layout::top_down(egui::Align::Min)));
                 let ui = &mut rows_ui;
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -815,13 +844,13 @@ impl DiffView {
                     let button = |ui: &mut Ui, x: f32, rect: Rect, text: &str| {
                         let pad = ui.spacing().button_padding.x * 2.0 + 6.0;
                         let bw = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), small.clone(), Color32::WHITE).size().x) + pad;
-                        let r = Rect::from_min_size(pos2(x, rect.top() + 2.0), vec2(bw, row_h - 4.0));
+                        let r = Rect::from_min_size(pos2(x, rect.center().y - (row_h - 4.0) / 2.0), vec2(bw, row_h - 4.0));
                         let clicked = row_button(ui, r, base_id.with(("row-btn", i, text)), text, &small).clicked();
                         (clicked, bw)
                     };
-                    let (rect, resp) = ui.allocate_exact_size(vec2(width, row_h), sense);
+                    let (rect, resp) = ui.allocate_exact_size(vec2(width, self.rh(i)), sense);
                     if first.is_none() {
-                        first = Some(Geo { x0: rect.left(), top0: rect.top() - i as f32 * row_h, width: rect.width(), row_h, char_w, gutter });
+                        first = Some(Geo { x0: rect.left(), top0: rect.top() - self.ry(i), width: rect.width(), row_h, char_w, gutter });
                     }
                     let p = ui.painter_at(rect);
                     match row {
@@ -1104,7 +1133,7 @@ impl DiffView {
                 let sides: &[Side] = if self.split { &[Side::Old, Side::New] } else { &[Side::Inline] };
                 let pointer = ui.input(|i| i.pointer.interact_pos());
                 let pos_of = |p: egui::Pos2, side: Side| -> (usize, usize) {
-                    let row = (((p.y - geo.top0) / geo.row_h).floor().max(0.0) as usize).min(self.rows.len().saturating_sub(1));
+                    let row = self.row_at(p.y - geo.top0);
                     let col = self.row_text(row, side, &geo).map_or(0, |t| (((p.x - t.text_x) / geo.char_w).round().max(0.0) as usize).min(t.to - t.from));
                     (row, col)
                 };
@@ -1177,9 +1206,9 @@ impl DiffView {
                 }
                 // ---- "+" on the hovered line's number: start a new review comment
                 if let (Some(geo), true, Some(hp)) = (first.as_ref(), self.comment_target.is_some() && !self.dragging, page.input(|i| i.pointer.hover_pos())) {
-                    let ri = ((hp.y - geo.top0) / geo.row_h).floor();
-                    let inside = ri >= 0.0 && (ri as usize) < self.rows.len() && hp.x >= geo.x0 && hp.x <= geo.x0 + geo.width && page.clip_rect().contains(hp);
-                    let ri = ri.max(0.0) as usize;
+                    let rel = hp.y - geo.top0;
+                    let inside = rel >= 0.0 && rel < self.ry(self.rows.len()) && hp.x >= geo.x0 && hp.x <= geo.x0 + geo.width && page.clip_rect().contains(hp);
+                    let ri = self.row_at(rel.max(0.0));
                     let ln = |fi: usize, hi: usize, li: usize| &self.files[fi].hunks[hi].lines[li];
                     // (file, line number, old side, x where the code starts)
                     let target = if !inside {
@@ -1206,7 +1235,7 @@ impl DiffView {
                     };
                     if let Some((fi, n, old, code_x)) = target {
                         let sz = (geo.row_h - 2.0).min(18.0);
-                        let y = geo.top0 + ri as f32 * geo.row_h + (geo.row_h - sz) / 2.0;
+                        let y = geo.top0 + self.ry(ri) + (self.rh(ri) - sz) / 2.0;
                         let r = Rect::from_min_size(pos2(code_x - sz - 3.0, y), vec2(sz, sz));
                         let resp = page.interact(r, base_id.with("new-comment"), Sense::click());
                         let fill = if resp.hovered() { theme::ACCENT() } else { theme::ACCENT().gamma_multiply(0.85) };
@@ -1232,7 +1261,7 @@ impl DiffView {
                     let open_t = self.thread_open[ti];
                     let state = self.thread_state(t);
                     let card = layout_thread(page, t, card_w, open_t, state);
-                    let y0 = top + rows_y + first_r as f32 * row_h + 3.0;
+                    let y0 = top + rows_y + self.ry(first_r) + 3.0;
                     let rect = Rect::from_min_size(pos2(x0 + card_left, y0), vec2(card_w, n as f32 * row_h - 6.0));
                     let p = page.painter();
                     let muted = t.resolved || t.outdated;
@@ -1323,15 +1352,14 @@ impl DiffView {
                 // pinned under the toolbar once its own header has scrolled away
                 {
                     let under_bar = head_h.max(vp.min.y) + bar_h;
-                    let r = ((under_bar - rows_y) / row_h).floor();
-                    if r >= 0.0 && (r as usize) < self.rows.len() {
-                        let r = r as usize;
+                    if under_bar >= rows_y && !self.rows.is_empty() && under_bar - rows_y < self.ry(self.rows.len()) {
+                        let r = self.row_at(under_bar - rows_y);
                         if let Some((fi, hr)) = self.file_at(r).and_then(|fi| self.rows.iter().position(|x| matches!(x, Row::File(f) if *f == fi)).map(|hr| (fi, hr)))
                             && hr < r
                             && open[fi]
                         {
                             let f = &self.files[fi];
-                            let rect = Rect::from_min_size(pos2(x0, top + under_bar), vec2(page_w, row_h));
+                            let rect = Rect::from_min_size(pos2(x0, top + under_bar), vec2(page_w, file_h));
                             let p = page.painter();
                             p.rect_filled(rect, 0.0, theme::BG_DARK());
                             p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, theme::HOVER()));
@@ -1358,7 +1386,7 @@ impl DiffView {
                                 page.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                             }
                             if resp.on_hover_text(format!("{path}\nClick to go to the top of this file")).clicked() {
-                                sticky_jump = Some(rows_y + hr as f32 * row_h - bar_h);
+                                sticky_jump = Some(rows_y + self.ry(hr) - bar_h);
                             }
                         }
                     }
@@ -1504,6 +1532,13 @@ enum CardAct {
 struct ThreadState {
     replying: bool,
     busy: bool,
+}
+
+/// File rows are this much taller than code rows (room around the name).
+/// MARGIN_FILE_ROW_SCALE overrides it (for trying sizes).
+fn file_row_scale() -> f32 {
+    static S: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *S.get_or_init(|| std::env::var("MARGIN_FILE_ROW_SCALE").ok().and_then(|v| v.parse().ok()).filter(|v: &f32| (0.8..=3.0).contains(v)).unwrap_or(1.0))
 }
 
 /// A small button in a diff row, drawn to fit inside the row exactly (an
