@@ -226,7 +226,9 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                 // chips, like the labels in the history; "+N more" expands in place
                 let all_id = egui::Id::unique(("commit-branches-all", &d.id));
                 let show_all: bool = ui.data(|x| x.get_temp(all_id)).unwrap_or(false);
-                ui.horizontal_wrapped(|ui| {
+                // (wrapped inside a vertical block, so the grid row grows with
+                // the second line instead of the chips overlapping the next row)
+                ui.vertical(|ui| ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                     const SHOW: usize = 6;
                     let n = if show_all { branches.len() } else { SHOW };
@@ -243,7 +245,7 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                             ui.data_mut(|x| x.insert_temp(all_id, !show_all));
                         }
                     }
-                });
+                }));
                 ui.end_row();
             }
             // Changes: files and lines in this commit.

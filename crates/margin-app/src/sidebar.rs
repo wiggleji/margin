@@ -86,7 +86,11 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
             let tree = branch_tree::build(local.iter().map(|r| (r.name.clone(), *r)).collect());
             let focus = rv.focus_branch.clone();
             let open_if = |r: &&RefInfo| r.is_head || focus.as_deref() == Some(r.name.as_str());
-            render_tree(ui, &tree, "local", 0, &open_if, &mut |ui, label, depth, r| local_row(ui, rv, r, label, depth, isz, actions));
+            let up = margin_core::history::head_upstream(&snap.refs);
+            let shows = |r: &RefInfo| rv.graph_filter.shows(r, up.as_deref());
+            if let Some((refs, show)) = render_tree(ui, &tree, "local", 0, &open_if, &shows, &mut |ui, label, depth, r| local_row(ui, rv, r, label, depth, isz, actions)) {
+                set_shown(rv, &refs, show, actions);
+            }
         });
 
         // ------------------------------------------------------------ worktrees
@@ -179,9 +183,15 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
         // (while filtering, only shown when something matches)
         if !filtering || n_remote_refs > 0 {
             section_f(ui, &remotes_title, "remotes", false, filtering, |ui| {
+                let shows = |r: &RefInfo| rv.graph_filter.shows(r, up.as_deref());
                 for (remote, refs) in remotes {
                     // Each remote is a group row like "feature/", one level deep.
-                    if !group_row(ui, ("remote", remote), remote, refs.len(), 0, false) && !filtering {
+                    let shown = refs.iter().filter(|r| shows(r)).count();
+                    let (open, eye_clicked) = group_row(ui, ("remote", remote), remote, refs.len(), 0, false, shown);
+                    if eye_clicked {
+                        set_shown(rv, &refs, shown == 0, actions);
+                    }
+                    if !open && !filtering {
                         continue;
                     }
                     {
@@ -192,7 +202,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                         } else {
                             branch_tree::build(refs.into_iter().map(|r| (r.name.split_once('/').map_or(r.name.clone(), |(_, b)| b.to_string()), r)).collect())
                         };
-                        render_tree(ui, &tree, remote, 1, &|_| false, &mut |ui, label, depth, r| {
+                        let toggled = render_tree(ui, &tree, remote, 1, &|_| false, &shows, &mut |ui, label, depth, r| {
                             let shown = rv.graph_filter.shows(r, up.as_deref());
                             let h = ui.spacing().interact_size.y;
                             let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
@@ -229,6 +239,9 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
 
                             });
                         });
+                        if let Some((refs, show)) = toggled {
+                            set_shown(rv, &refs, show, actions);
+                        }
                     }
                 }
             });
@@ -398,18 +411,7 @@ fn toggle_row(ui: &mut Ui, id: egui::Id, depth: usize, default_open: bool, conte
             if depth > 0 {
                 ui.add_space(depth as f32 * STEP);
             }
-            let h = ui.text_style_height(&egui::TextStyle::Body);
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(SLOT, h), egui::Sense::hover());
-            let c = rect.center();
-            let pts = if open {
-                vec![egui::pos2(c.x - 4.0, c.y - 2.0), egui::pos2(c.x + 4.0, c.y - 2.0), egui::pos2(c.x, c.y + 3.0)]
-            } else {
-                vec![egui::pos2(c.x - 2.0, c.y - 4.0), egui::pos2(c.x + 3.0, c.y), egui::pos2(c.x - 2.0, c.y + 4.0)]
-            };
-            ui.painter().add(egui::Shape::convex_polygon(pts, theme::TEXT_DIM(), egui::Stroke::NONE));
-            // Match the inner padding of the selectable branch labels so group
-            // names, headings and branch names share one left edge.
-            ui.add_space((ui.spacing().button_padding.x - ui.spacing().item_spacing.x).max(0.0) + 3.0);
+            triangle(ui, open);
             contents(ui);
         })
         .response
@@ -424,12 +426,60 @@ fn toggle_row(ui: &mut Ui, id: egui::Id, depth: usize, default_open: bool, conte
     open
 }
 
-/// A prefix group ("feature/  12").
-fn group_row(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, label: &str, count: usize, depth: usize, default_open: bool) -> bool {
-    toggle_row(ui, egui::Id::unique(("tree-group", id)), depth, default_open, |ui| {
-        ui.label(label);
+/// The open/closed triangle in the gutter, then the padding that lines the
+/// name up with branch names.
+fn triangle(ui: &mut Ui, open: bool) {
+    let h = ui.text_style_height(&egui::TextStyle::Body);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(SLOT, h), egui::Sense::hover());
+    let c = rect.center();
+    let pts = if open {
+        vec![egui::pos2(c.x - 4.0, c.y - 2.0), egui::pos2(c.x + 4.0, c.y - 2.0), egui::pos2(c.x, c.y + 3.0)]
+    } else {
+        vec![egui::pos2(c.x - 2.0, c.y - 4.0), egui::pos2(c.x + 3.0, c.y), egui::pos2(c.x - 2.0, c.y + 4.0)]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(pts, theme::TEXT_DIM(), egui::Stroke::NONE));
+    // Match the inner padding of the selectable branch labels so group
+    // names, headings and branch names share one left edge.
+    ui.add_space((ui.spacing().button_padding.x - ui.spacing().item_spacing.x).max(0.0) + 3.0);
+}
+
+/// A prefix group ("feature/  12") with an eye for all its branches:
+/// `shown` = how many of the `count` are in the history. Returns (open, eye clicked).
+fn group_row(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, label: &str, count: usize, depth: usize, default_open: bool, shown: usize) -> (bool, bool) {
+    let id = egui::Id::unique(("tree-group", id));
+    let mut open = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(id, || default_open));
+    let h = ui.spacing().interact_size.y;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+    let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    row.spacing_mut().item_spacing.x = 4.0;
+    row.style_mut().interaction.selectable_labels = false;
+    if depth > 0 {
+        row.add_space(depth as f32 * STEP);
+    }
+    triangle(&mut row, open);
+    let w = (row.available_width() - h - 6.0 - EYE_MARGIN).max(30.0);
+    row.allocate_ui_with_layout(egui::vec2(w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.add(egui::Label::new(label).truncate());
         ui.label(RichText::new(count.to_string()).small().color(theme::TEXT_DIM()));
-    })
+    });
+    let mut eye_clicked = false;
+    row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.add_space(EYE_MARGIN);
+        let tip = match shown {
+            0 => format!("All {count} hidden from the history — click to show them"),
+            n if n == count => format!("All {count} shown in the history — click to hide them"),
+            n => format!("{n} of {count} shown in the history — click to hide them"),
+        };
+        eye_clicked = eye_icon(ui, shown > 0, shown > 0 && shown < count).on_hover_text(tip).clicked();
+    });
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if resp.clicked() {
+        open = !open;
+        ui.data_mut(|d| d.insert_temp(id, open));
+    }
+    (open, eye_clicked)
 }
 
 /// Section heading ("BRANCHES (34)"). Its rows use depth 0, so top-level
@@ -464,26 +514,46 @@ fn list_section_f(ui: &mut Ui, title: &str, id: &str, default_open: bool, force:
     })
 }
 
-/// Render a prefix tree; groups are compact collapsible rows.
-/// A group starts open if it contains an item matching `open_if`.
+/// Render a prefix tree; groups are compact collapsible rows with an eye.
+/// A group starts open if it contains an item matching `open_if`; `shows`
+/// says whether a branch is in the history. Returns a group whose eye was
+/// clicked: its branches and whether to show them.
 pub fn render_tree<'a>(
     ui: &mut Ui,
     nodes: &[Node<&'a RefInfo>],
     ns: &str,
     depth: usize,
     open_if: &dyn Fn(&&'a RefInfo) -> bool,
+    shows: &dyn Fn(&RefInfo) -> bool,
     leaf: &mut dyn FnMut(&mut Ui, &str, usize, &'a RefInfo),
-) {
+) -> Option<(Vec<&'a RefInfo>, bool)> {
+    let mut toggled = None;
     for n in nodes {
         match n {
             Node::Leaf { label, item } => leaf(ui, label, depth, item),
             Node::Group { label, path, children, count } => {
-                if group_row(ui, (ns, path.as_str()), label, *count, depth, branch_tree::any(children, open_if)) {
-                    render_tree(ui, children, ns, depth + 1, open_if, leaf);
+                let refs: Vec<&'a RefInfo> = branch_tree::items(children).into_iter().copied().collect();
+                let shown = refs.iter().filter(|r| shows(r)).count();
+                let (open, eye) = group_row(ui, (ns, path.as_str()), label, *count, depth, branch_tree::any(children, open_if), shown);
+                if eye {
+                    toggled = Some((refs, shown == 0));
+                }
+                if open && let Some(t) = render_tree(ui, children, ns, depth + 1, open_if, shows, leaf) {
+                    toggled = Some(t);
                 }
             }
         }
     }
+    toggled
+}
+
+/// Show or hide all of `refs` in the history.
+fn set_shown(rv: &RepoView, refs: &[&RefInfo], visible: bool, actions: &mut Vec<Action>) {
+    let mut f = rv.graph_filter.clone();
+    for r in refs {
+        f.set(r, visible);
+    }
+    actions.push(Action::SetGraphFilter(f));
 }
 
 /// Task key, note icon and PR badge shown after a branch name.
@@ -613,10 +683,21 @@ const EYE_MARGIN: f32 = 14.0;
 
 /// Eye toggle at the right edge of a branch row: is it in the history graph?
 fn eye(ui: &mut Ui, shown: bool) -> egui::Response {
+    eye_icon(ui, shown, false).on_hover_text(if shown { "Shown in the history — click to hide" } else { "Hidden from the history — click to show" })
+}
+
+/// The eye itself; `partial` (a group with some branches shown) draws it fainter.
+fn eye_icon(ui: &mut Ui, shown: bool, partial: bool) -> egui::Response {
     let size = ui.spacing().interact_size.y;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     let hot = resp.hovered();
-    let c = if hot { theme::TEXT() } else if shown { theme::TEXT_DIM() } else { theme::TEXT_DIM().gamma_multiply(0.5) };
+    let c = if hot {
+        theme::TEXT()
+    } else if shown && !partial {
+        theme::TEXT_DIM()
+    } else {
+        theme::TEXT_DIM().gamma_multiply(0.5)
+    };
     let p = ui.painter();
     let ctr = rect.center();
     let (w, h) = (6.0, 3.6);
@@ -633,7 +714,7 @@ fn eye(ui: &mut Ui, shown: bool) -> egui::Response {
     } else {
         p.line_segment([ctr + egui::vec2(-5.5, 4.5), ctr + egui::vec2(5.5, -4.5)], egui::Stroke::new(1.3, c));
     }
-    resp.on_hover_text(if shown { "Shown in the history — click to hide" } else { "Hidden from the history — click to show" })
+    resp
 }
 
 /// One local branch row: [● gutter] name  task note PR …… [behind↓│ahead↑] [eye]

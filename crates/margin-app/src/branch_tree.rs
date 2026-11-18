@@ -98,6 +98,18 @@ pub fn any<T>(nodes: &[Node<T>], pred: &dyn Fn(&T) -> bool) -> bool {
     })
 }
 
+/// Every item below `nodes`, in tree order.
+pub fn items<T>(nodes: &[Node<T>]) -> Vec<&T> {
+    let mut out = vec![];
+    for n in nodes {
+        match n {
+            Node::Leaf { item, .. } => out.push(item),
+            Node::Group { children, .. } => out.extend(items(children)),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
