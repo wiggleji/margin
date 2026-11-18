@@ -57,6 +57,8 @@ pub fn render(ui: &mut Ui, src: &str) -> Option<MdAction> {
     let mut prefix: Option<Prefix> = None;
     let mut quote = 0usize;
     let mut code: Option<String> = None;
+    // the fence's language (```rust), for highlighting
+    let mut code_lang: Option<&'static crate::syntax::Lang> = None;
     let mut table: Option<Table> = None;
 
     for (ev, range) in Parser::new_ext(src, markdown::options()).into_offset_iter() {
@@ -73,9 +75,13 @@ pub fn render(ui: &mut Ui, src: &str) -> Option<MdAction> {
             }
             Event::Start(Tag::BlockQuote(_)) => quote += 1,
             Event::End(TagEnd::BlockQuote(_)) => quote = quote.saturating_sub(1),
-            Event::Start(Tag::CodeBlock(_)) => {
+            Event::Start(Tag::CodeBlock(kind)) => {
                 flush(ui, &mut cx, &mut runs, prefix.take(), indent, heading, quote);
                 code = Some(String::new());
+                code_lang = match kind {
+                    pulldown_cmark::CodeBlockKind::Fenced(info) => crate::syntax::for_fence(&info),
+                    pulldown_cmark::CodeBlockKind::Indented => None,
+                };
             }
             Event::End(TagEnd::CodeBlock) => {
                 if let Some(c) = code.take() {
@@ -85,7 +91,14 @@ pub fn render(ui: &mut Ui, src: &str) -> Option<MdAction> {
                         .corner_radius(3.0)
                         .show(ui, |ui| {
                             // wrapped, so a long line never widens the panel
-                            ui.add(Label::new(RichText::new(c.trim_end()).monospace()).wrap_mode(egui::TextWrapMode::Wrap));
+                            match code_lang.take() {
+                                Some(lang) => {
+                                    ui.add(Label::new(highlighted(ui, lang, c.trim_end())).wrap_mode(egui::TextWrapMode::Wrap));
+                                }
+                                None => {
+                                    ui.add(Label::new(RichText::new(c.trim_end()).monospace()).wrap_mode(egui::TextWrapMode::Wrap));
+                                }
+                            }
                         });
                     ui.add_space(4.0);
                 }
@@ -271,4 +284,33 @@ pub fn toggle_task(src: &mut String, offset: usize, checked: bool) {
     if offset < src.len() && src.is_char_boundary(offset) && src.is_char_boundary(offset + 1) {
         src.replace_range(offset..offset + 1, if checked { " " } else { "x" });
     }
+}
+
+/// A code block's text coloured by its language.
+fn highlighted(ui: &Ui, lang: &crate::syntax::Lang, code: &str) -> egui::text::LayoutJob {
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let fg = ui.visuals().text_color();
+    let mut job = egui::text::LayoutJob::default();
+    let mut state = crate::syntax::State::Normal;
+    for (n, line) in code.split('\n').enumerate() {
+        if n > 0 {
+            job.append("\n", 0.0, egui::TextFormat { font_id: font.clone(), color: fg, ..Default::default() });
+        }
+        let spans = crate::syntax::line(lang, line, &mut state);
+        let mut at = 0;
+        for (s, e, k) in spans {
+            if s < at {
+                continue;
+            }
+            if s > at {
+                job.append(&line[at..s], 0.0, egui::TextFormat { font_id: font.clone(), color: fg, ..Default::default() });
+            }
+            job.append(&line[s..e], 0.0, egui::TextFormat { font_id: font.clone(), color: k.color(), ..Default::default() });
+            at = e;
+        }
+        if at < line.len() {
+            job.append(&line[at..], 0.0, egui::TextFormat { font_id: font.clone(), color: fg, ..Default::default() });
+        }
+    }
+    job
 }

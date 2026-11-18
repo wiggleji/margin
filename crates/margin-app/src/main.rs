@@ -20,6 +20,7 @@ mod search;
 mod path_elide;
 mod pr_view;
 mod sidebar;
+mod syntax;
 mod tab_strip;
 mod theme;
 mod widgets;
