@@ -41,7 +41,9 @@ pub fn hand_over(dir: &Path) -> bool {
     // the running Margin serves one client at a time: retry briefly when busy
     for _ in 0..20 {
         match std::fs::OpenOptions::new().write(true).open(pipe_name()) {
-            Ok(mut f) => return writeln!(f, "{}", dir.display()).is_ok(),
+            // sync_all (FlushFileBuffers) waits until Margin has read the line,
+            // so the pipe isn't closed before it's been delivered
+            Ok(mut f) => return writeln!(f, "{}", dir.display()).is_ok() && f.sync_all().is_ok(),
             Err(e) if e.raw_os_error() == Some(231) => std::thread::sleep(std::time::Duration::from_millis(50)), // ERROR_PIPE_BUSY
             Err(_) => return false,
         }
@@ -93,7 +95,7 @@ pub fn listen(ctx: &egui::Context) -> Option<Receiver<PathBuf>> {
 /// security lets only this user, administrators and the system write to it).
 #[cfg(windows)]
 pub fn listen(ctx: &egui::Context) -> Option<Receiver<PathBuf>> {
-    use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, GetLastError, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{ERROR_NO_DATA, ERROR_PIPE_CONNECTED, GetLastError, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND, ReadFile};
     use windows_sys::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
@@ -123,7 +125,9 @@ pub fn listen(ctx: &egui::Context) -> Option<Receiver<PathBuf>> {
         let h = h as windows_sys::Win32::Foundation::HANDLE;
         loop {
             // SAFETY: `h` is our pipe; buffers outlive each call
-            let connected = unsafe { ConnectNamedPipe(h, std::ptr::null_mut()) != 0 || GetLastError() == ERROR_PIPE_CONNECTED };
+            // A client that connected (PIPE_CONNECTED), or already wrote and
+            // closed (NO_DATA), before we got here still left its line to read.
+            let connected = unsafe { ConnectNamedPipe(h, std::ptr::null_mut()) != 0 || matches!(GetLastError(), ERROR_PIPE_CONNECTED | ERROR_NO_DATA) };
             if connected {
                 let mut data = Vec::new();
                 let mut buf = [0u8; 1024];
@@ -293,6 +297,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn script_quotes_the_binary_path() {
         let s = script(Path::new("/Apps/My \"Tools\"/Margin.app/Contents/MacOS/margin"));
