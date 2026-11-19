@@ -10,6 +10,7 @@ use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
+#[cfg(unix)]
 fn socket_path() -> PathBuf {
     margin_core::config::config_dir().join("margin.sock")
 }
@@ -76,7 +77,7 @@ pub fn command_path() -> PathBuf {
     if cfg!(target_os = "macos") {
         PathBuf::from("/usr/local/bin/margin")
     } else {
-        let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."));
+        let home = margin_core::platform::home_dir().unwrap_or_else(|| PathBuf::from("."));
         home.join(".local/bin/margin")
     }
 }

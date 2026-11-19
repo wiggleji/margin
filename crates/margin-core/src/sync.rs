@@ -309,27 +309,12 @@ pub fn dir_stamp(dir: &Path) -> u64 {
 
 /// Cloud folders found on this computer: (label, path to use as sync folder).
 pub fn detect_providers() -> Vec<(String, PathBuf)> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return vec![] };
-    let mut out = Vec::new();
-    let mut add = |label: &str, p: PathBuf| {
-        if p.is_dir() && !out.iter().any(|(_, q): &(String, PathBuf)| *q == p) {
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    for (label, p) in crate::platform::cloud_folders() {
+        if p.is_dir() && !out.iter().any(|(_, q)| *q == p) {
             out.push((label.to_string(), p));
         }
-    };
-    add("iCloud Drive", home.join("Library/Mobile Documents/com~apple~CloudDocs"));
-    add("Dropbox", home.join("Library/CloudStorage/Dropbox"));
-    add("Dropbox", home.join("Dropbox"));
-    if let Ok(rd) = fs::read_dir(home.join("Library/CloudStorage")) {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            if n.starts_with("GoogleDrive-") {
-                add("Google Drive", e.path().join("My Drive"));
-            } else if n.starts_with("OneDrive") {
-                add("OneDrive", e.path());
-            }
-        }
     }
-    add("Google Drive", home.join("Google Drive"));
     out
 }
 

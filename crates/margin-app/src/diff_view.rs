@@ -1845,8 +1845,9 @@ impl Seg<'_> {
                 }
             }
         }
+        // (a Windows line ending's \r isn't drawn; the line keeps it for staging)
         let Some(spans) = syntax else {
-            let chunk: String = self.text.replace('\t', "    ").chars().skip(from).take(to - from).collect();
+            let chunk: String = self.text.replace('\t', "    ").chars().skip(from).take(to - from).filter(|&c| c != '\r').collect();
             p.text(pos2(text_x, rect.center().y), Align2::LEFT_CENTER, chunk, font.clone(), fg);
             return;
         };
@@ -1856,7 +1857,7 @@ impl Seg<'_> {
         let (mut run, mut run_c, mut col) = (String::new(), fg, 0usize);
         for (b, ch) in self.text.char_indices() {
             let w = if ch == '\t' { 4 } else { 1 };
-            if col >= from && col < to {
+            if col >= from && col < to && ch != '\r' {
                 let c = colors[b];
                 if c != run_c && !run.is_empty() {
                     job.append(&run, 0.0, egui::TextFormat { font_id: font.clone(), color: run_c, ..Default::default() });

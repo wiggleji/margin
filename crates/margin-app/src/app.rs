@@ -535,8 +535,8 @@ pub const RECENT_REPOS: usize = 10;
 /// `/Users/me/src` → `~/src` for display.
 pub fn tilde(p: &std::path::Path) -> String {
     let s = p.display().to_string();
-    match std::env::var("HOME") {
-        Ok(h) if !h.is_empty() && s.starts_with(&h) => format!("~{}", &s[h.len()..]),
+    match margin_core::platform::home_dir().map(|h| h.display().to_string()) {
+        Some(h) if !h.is_empty() && s.starts_with(&h) => format!("~{}", &s[h.len()..]),
         _ => s,
     }
 }
@@ -1699,12 +1699,11 @@ impl MarginApp {
                 let _ = config::save_state(&self.state);
             }
             OpenFolderDialog => {
-                #[cfg(target_os = "macos")]
-                if let Some(p) = rfd::FileDialog::new().set_title("Open a git repository").pick_folder() {
+                if !crate::platform::can_pick_folder() {
+                    self.handle(Action::OpenPaletteWith("open repository".into()));
+                } else if let Some(p) = crate::platform::pick_folder("Open a git repository") {
                     self.handle(Action::OpenRepo(p));
                 }
-                #[cfg(not(target_os = "macos"))]
-                self.handle(Action::OpenPaletteWith("open repository".into()));
             }
             OpenPalette => self.palette = Some(crate::palette::Palette::new(crate::commands::build(self)).with_recent(&self.state.recent_commands)),
             RunPaletteCommand(key) => {
@@ -2208,8 +2207,7 @@ impl MarginApp {
                     if ui.button("Open").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         actions.push(Action::OpenRepo(PathBuf::from(self.open_path.trim())));
                     }
-                    #[cfg(target_os = "macos")]
-                    if ui.button("Browse…").clicked() {
+                    if crate::platform::can_pick_folder() && ui.button("Browse…").clicked() {
                         actions.push(Action::OpenFolderDialog);
                     }
                 });
@@ -3194,14 +3192,13 @@ impl MarginApp {
                     actions.push(Action::SetSyncFolder(Some(path.display().to_string())));
                 }
             }
-            #[cfg(target_os = "macos")]
-            if ui.small_button("Choose folder…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().pick_folder() {
+            if crate::platform::can_pick_folder() {
+                if ui.small_button("Choose folder…").clicked()
+                    && let Some(p) = crate::platform::pick_folder("Choose the sync folder")
+                {
                     actions.push(Action::SetSyncFolder(Some(p.display().to_string())));
                 }
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
+            } else {
                 ui.add(egui::TextEdit::singleline(&mut self.sync_folder_input).hint_text("/path/to/synced/folder").desired_width(200.0));
                 if ui.small_button("Use").clicked() && !self.sync_folder_input.trim().is_empty() {
                     actions.push(Action::SetSyncFolder(Some(self.sync_folder_input.trim().to_string())));
@@ -3628,18 +3625,7 @@ fn ago(t: std::time::Instant) -> String {
 }
 
 fn open_path(path: &std::path::Path, terminal: bool, app: &mut MarginApp) {
-    #[cfg(target_os = "macos")]
-    let r = if terminal {
-        std::process::Command::new("/usr/bin/open").args(["-a", "Terminal"]).arg(path).spawn()
-    } else {
-        std::process::Command::new("/usr/bin/open").arg(path).spawn()
-    };
-    #[cfg(not(target_os = "macos"))]
-    let r = if terminal {
-        std::process::Command::new("x-terminal-emulator").current_dir(path).spawn()
-    } else {
-        std::process::Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(path).spawn()
-    };
+    let r = if terminal { crate::platform::open_terminal(path) } else { crate::platform::reveal(path) };
     if let Err(e) = r {
         app.err(format!("open {}: {e}", path.display()));
     }
@@ -3691,13 +3677,7 @@ fn open_url(url: &str, app: &mut MarginApp) {
     if !margin_core::markdown::link_allowed(url) || !(url.starts_with("http") || url.starts_with("mailto:")) {
         return app.err(format!("Refusing to open {url}"));
     }
-    #[cfg(target_os = "macos")]
-    let r = std::process::Command::new("/usr/bin/open").arg(url).spawn();
-    #[cfg(target_os = "linux")]
-    let r = std::process::Command::new("xdg-open").arg(url).spawn();
-    #[cfg(target_os = "windows")]
-    let r = std::process::Command::new("explorer").arg(url).spawn();
-    if let Err(e) = r {
+    if let Err(e) = crate::platform::open_url(url) {
         app.err(format!("open {url}: {e}"));
     }
 }

@@ -11,6 +11,10 @@ pulldown-cmark.workspace = true
 ureq.workspace = true
 base64.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# local time zone on Windows (the same version eframe already uses)
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Time"] }
+
 [target.'cfg(unix)'.dependencies]
 # local time zone (localtime_r) for showing commit times in machine time
 libc = "0.2"
