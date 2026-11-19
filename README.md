@@ -3,12 +3,12 @@
 <h1 align="center">Margin</h1>
 
 <p align="center">
-A light, fast git client for macOS, with notes in the margin.<br>
+A light, fast git client for macOS, Windows, and Linux, with notes in the margin.<br>
 Write Markdown notes on commits, branches, and tasks, and let AI agents read and write them too.
 </p>
 
 <p align="center">
-<a href="https://github.com/wiggleji/margin/releases/latest"><b>Download for macOS</b></a> ·
+<a href="https://github.com/wiggleji/margin/releases/latest"><b>Download</b></a> (macOS · Windows · Linux) ·
 <a href="docs/GUIDE.md">Guide</a>
 </p>
 
@@ -32,15 +32,16 @@ Write Markdown notes on commits, branches, and tasks, and let AI agents read and
 
 ## Install
 
-Download **Margin-&lt;version&gt;.dmg** from [Releases](https://github.com/wiggleji/margin/releases/latest), open it, and drag Margin into Applications. It runs on Apple Silicon and Intel Macs.
+Get the latest from [Releases](https://github.com/wiggleji/margin/releases/latest):
 
-After that, Margin updates itself (**Margin → Check for Updates…**; automatic by default).
+- **macOS** (Apple Silicon and Intel): **Margin-&lt;version&gt;.dmg**. Open it and drag Margin into Applications. After that, Margin updates itself (**Margin → Check for Updates…**; automatic by default). If macOS says the app can't be opened, run this once:
 
-If macOS says the app can't be opened, run this once:
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Margin.app
+  ```
 
-```bash
-xattr -dr com.apple.quarantine /Applications/Margin.app
-```
+- **Windows** (64-bit): **Margin-&lt;version&gt;-windows-x64-setup.exe** (no administrator rights needed; it can add `margin` to PATH), or the portable zip. Install [Git for Windows](https://git-scm.com/download/win) first. If SmartScreen says *Windows protected your PC*, click **More info → Run anyway** (the installer isn't code-signed yet).
+- **Linux** (x64): **margin_&lt;version&gt;_amd64.deb** for Debian and Ubuntu (`sudo apt install ./margin_<version>_amd64.deb`), or **margin-&lt;version&gt;-linux-x64.tar.gz** for any distribution (unpack, then `./install.sh` installs to `~/.local`). Needs `git`, and `zenity` or `kdialog` for folder pickers.
 
 ### Open from the terminal
 
@@ -83,7 +84,7 @@ cargo build --release
 ./target/release/margin /path/to/repo
 ```
 
-Margin builds and runs on **macOS, Windows, and Linux** from the same source (CI tests all three; ready-made downloads are macOS-only for now).
+Margin builds and runs on **macOS, Windows, and Linux** from the same source; CI tests all three.
 
 - **Windows:** install [Git for Windows](https://git-scm.com/download/win) first; run `target\release\margin.exe`.
 - **Linux:** install the X11/Wayland libraries first (`sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev` on Debian/Ubuntu). For folder pickers, have `zenity` or `kdialog` installed.

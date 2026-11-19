@@ -55,7 +55,7 @@ CI builds and tests on Linux and macOS. Pull requests are squash-merged, so the 
 
 ## Releases
 
-Maintainers release from `main` with *Actions → Release macOS → Run workflow*; see [docs/RELEASING.md](docs/RELEASING.md). Versions follow `MAJOR.MINOR.PATCH`.
+Maintainers release from `main` with *Actions → Release → Run workflow*; see [docs/RELEASING.md](docs/RELEASING.md). Versions follow `MAJOR.MINOR.PATCH`.
 
 ## License
 
