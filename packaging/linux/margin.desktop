@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Margin
+GenericName=Git Client
+Comment=Git client with Markdown notes on commits, branches and tasks
+Exec=margin %F
+Icon=margin
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=git;notes;diff;commit;branch;
+StartupWMClass=margin

@@ -1,17 +1,24 @@
-# Build the macOS DMG (universal: Apple Silicon + Intel) on a macOS runner.
+# Build Margin for macOS, Windows and Linux, and publish one release with
+# every download. (The file keeps its old name so the Run workflow button
+# and its history stay where they were.)
 #
-#   Actions → "Release macOS" → Run workflow (on main), "Publish a release"
-#       ticked → builds, creates the tag v<Cargo version> and publishes the release
-#   the same with it unticked → only builds; the DMG is an artifact of the run
+#   Actions → "Release" → Run workflow (on main), "Publish a release" ticked
+#       → builds on all three, creates the tag v<Cargo version>, publishes the release
+#   the same with it unticked → only builds; the files are artifacts of the run
 #   push a tag v0.2.0  → builds and publishes that release (the tag must match Cargo.toml)
 #
-# With the Apple secrets set (docs/RELEASING.md) the app and the DMG are
-# Developer ID signed and notarized, so they open with no warnings:
+# Downloads:
+#   macOS    Margin-<v>.dmg (universal), Margin-<v>-macos.zip (in-app updates)
+#   Windows  Margin-<v>-windows-x64-setup.exe (installer), Margin-<v>-windows-x64.zip
+#   Linux    margin_<v>_amd64.deb, margin-<v>-linux-x64.tar.gz
+# each with a .sha256.
+#
+# With the Apple secrets set (docs/RELEASING.md) the Mac app and DMG are
+# Developer ID signed and notarized:
 #   secrets:   MACOS_CERTIFICATE_P12, MACOS_CERTIFICATE_PASSWORD, MACOS_SIGN_IDENTITY,
 #              NOTARY_API_KEY_P8, NOTARY_API_KEY_ID, NOTARY_API_ISSUER_ID
-# Without them the DMG is ad-hoc signed: macOS asks to confirm on first open,
-# and the release notes say how.
-name: Release macOS
+# Without them the DMG is ad-hoc signed and the release notes say how to open it.
+name: Release
 
 on:
   push:
@@ -27,26 +34,22 @@ permissions:
   contents: write # create the release
 
 concurrency:
-  group: release-macos-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  package:
-    runs-on: macos-latest # Apple Silicon; also cross-builds the Intel half
-    timeout-minutes: 60
-    env:
-      SIGNED: ${{ secrets.MACOS_CERTIFICATE_P12 != '' && secrets.NOTARY_API_KEY_P8 != '' }}
-      MARGIN_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-      MARGIN_NOTARY_PROFILE: margin-notary
+  prepare:
+    name: Which release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.which.outputs.tag }}
+      publish: ${{ steps.which.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0 # build number = commit count; build date = last commit
-
-      - name: Which release
+      - id: which
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLISH_INPUT: ${{ inputs.publish }}
@@ -65,9 +68,25 @@ jobs:
               fi
             fi
           fi
-          echo "TAG=v$version" >> "$GITHUB_ENV"
-          echo "PUBLISH=$publish" >> "$GITHUB_ENV"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "Margin $version · publish: $publish"
+
+  macos:
+    name: macOS
+    needs: prepare
+    runs-on: macos-latest # Apple Silicon; also cross-builds the Intel half
+    timeout-minutes: 60
+    outputs:
+      signed: ${{ env.SIGNED }}
+    env:
+      SIGNED: ${{ secrets.MACOS_CERTIFICATE_P12 != '' && secrets.NOTARY_API_KEY_P8 != '' }}
+      MARGIN_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      MARGIN_NOTARY_PROFILE: margin-notary
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # build number = commit count; build date = last commit
 
       - name: Rust (from rust-toolchain.toml) and both Mac targets
         run: |
@@ -116,8 +135,7 @@ jobs:
         if: env.SIGNED != 'true'
         run: scripts/package-macos.sh --dev
 
-      - name: Upload DMG artifact
-        uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7
         with:
           name: Margin-macOS
           path: |
@@ -126,33 +144,116 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-      - name: Publish release
-        if: env.PUBLISH == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          dmg="$(cd dist && ls *.dmg)"
-          {
-            echo "## Install"
-            echo
-            echo "1. Download **$dmg** below (one download for Apple Silicon and Intel Macs)."
-            echo "2. Open it and drag **Margin** into **Applications**."
-            if [ "$SIGNED" != "true" ]; then
-              echo "3. This build isn't notarized by Apple yet, so macOS blocks the first open. Either run"
-              echo "   \`xattr -dr com.apple.quarantine /Applications/Margin.app\` in Terminal, or open Margin once, then"
-              echo "   **System Settings → Privacy & Security → Open Anyway**. After that it opens normally."
-            fi
-            echo
-            echo "Agents (MCP): point your client at \`/Applications/Margin.app/Contents/MacOS/margin-mcp\`."
-            echo
-            echo "Already using Margin 0.2 or later? It updates itself (Margin → Check for Updates…)."
-            echo
-            echo "SHA-256 ($dmg): \`$(cut -d' ' -f1 "dist/$dmg.sha256")\`"
-          } > "$RUNNER_TEMP/notes.md"
-          # creates the tag on this commit when it doesn't exist yet (manual runs)
-          gh release create "$TAG" dist/*.dmg dist/*.zip dist/*.sha256 --target "$GITHUB_SHA" \
-            --latest --title "Margin ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
-
       - name: Remove build keychain
         if: always()
         run: '[ -n "${MARGIN_NOTARY_KEYCHAIN:-}" ] && security delete-keychain "$MARGIN_NOTARY_KEYCHAIN" || true'
+
+  windows:
+    name: Windows
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust (from rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup --no-progress -y }
+      - name: Build and package
+        run: scripts\package-windows.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Margin-Windows
+          path: |
+            dist/*-windows-x64-setup.exe
+            dist/*-windows-x64.zip
+            dist/*-windows-x64*.sha256
+          if-no-files-found: error
+
+  linux:
+    name: Linux
+    needs: prepare
+    # the oldest supported Ubuntu: the binary then runs on glibc 2.35 and newer
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: System libraries (egui / winit)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - name: Rust (from rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and package
+        run: scripts/package-linux.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Margin-Linux
+          path: |
+            dist/*.deb
+            dist/*-linux-x64.tar.gz
+            dist/*.deb.sha256
+            dist/*-linux-x64.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [prepare, macos, windows, linux]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SIGNED: ${{ needs.macos.outputs.signed }}
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          sha() { cut -d' ' -f1 "dist/$1.sha256"; }
+          {
+            echo "## Download"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **macOS** (Apple Silicon and Intel) | **Margin-$v.dmg** |"
+            echo "| **Windows** (64-bit) | **Margin-$v-windows-x64-setup.exe** (installer), or the portable **Margin-$v-windows-x64.zip** |"
+            echo "| **Linux** (x64) | **margin_${v}_amd64.deb** (Debian, Ubuntu), or **margin-$v-linux-x64.tar.gz** (any distribution) |"
+            echo
+            echo "### macOS"
+            echo "Open the DMG and drag **Margin** into **Applications**."
+            if [ "$SIGNED" != "true" ]; then
+              echo "This build isn't notarized by Apple yet, so macOS blocks the first open: run"
+              echo "\`xattr -dr com.apple.quarantine /Applications/Margin.app\` in Terminal, or open Margin once, then"
+              echo "**System Settings → Privacy & Security → Open Anyway**."
+            fi
+            echo "Already using Margin 0.2 or later? It updates itself (**Margin → Check for Updates…**)."
+            echo
+            echo "### Windows"
+            echo "Run the installer (no administrator rights needed; it can add \`margin\` to PATH). Margin needs [Git for Windows](https://git-scm.com/download/win)."
+            echo "The installer isn't code-signed yet, so SmartScreen may say *Windows protected your PC*: click **More info → Run anyway**."
+            echo
+            echo "### Linux"
+            echo "\`sudo apt install ./margin_${v}_amd64.deb\`, or unpack the tar.gz and run \`./install.sh\` (installs to ~/.local). Needs \`git\`; \`zenity\` or \`kdialog\` for folder pickers."
+            echo
+            echo "Agents (MCP): \`margin-mcp\` is next to the app (macOS: \`/Applications/Margin.app/Contents/MacOS/margin-mcp\`)."
+            echo
+            echo "<details><summary>SHA-256</summary>"
+            echo
+            for f in "Margin-$v.dmg" "Margin-$v-windows-x64-setup.exe" "Margin-$v-windows-x64.zip" "margin_${v}_amd64.deb" "margin-$v-linux-x64.tar.gz"; do
+              echo "- \`$(sha "$f")\`  $f"
+            done
+            echo
+            echo "</details>"
+          } > "$RUNNER_TEMP/notes.md"
+          ls -la dist
+          # creates the tag on this commit when it doesn't exist yet (manual runs)
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --latest --title "Margin $v" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
