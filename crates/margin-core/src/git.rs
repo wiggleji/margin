@@ -165,7 +165,7 @@ impl Repo {
             let p = PathBuf::from(common);
             if p.is_absolute() { p } else { path.join(p) }
         };
-        let common_dir = common_dir.canonicalize().unwrap_or(common_dir);
+        let common_dir = crate::platform::canonical(&common_dir);
         Ok(Repo { workdir, common_dir })
     }
 

@@ -323,70 +323,15 @@ pub fn github_token_with_source(host: &str) -> Option<(String, &'static str)> {
     None
 }
 
-/// Save a token (Settings → Accounts): the macOS Keychain, elsewhere
-/// `secrets.json` in the config folder (permissions 0600).
+/// Save a token (Settings → Accounts) in the OS's secure store (see
+/// `platform::secrets`).
 pub fn store_secret(service: &str, account: &str, value: &str) -> Result<()> {
-    store_secret_impl(service, account, value.trim())
+    crate::platform::secrets::store(service, account, value.trim())
 }
 
 /// Forget a saved token.
 pub fn delete_secret(service: &str, account: &str) -> Result<()> {
-    delete_secret_impl(service, account)
-}
-
-#[cfg(target_os = "macos")]
-fn store_secret_impl(service: &str, account: &str, value: &str) -> Result<()> {
-    // -U: update an existing item
-    let st = std::process::Command::new("/usr/bin/security").args(["add-generic-password", "-U", "-s", service, "-a", account, "-w", value]).status()?;
-    if !st.success() {
-        crate::bail!("couldn't save to the Keychain");
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn delete_secret_impl(service: &str, account: &str) -> Result<()> {
-    let _ = std::process::Command::new("/usr/bin/security").args(["delete-generic-password", "-s", service, "-a", account]).output();
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn secrets_file() -> PathBuf {
-    config_dir().join("secrets.json")
-}
-
-#[cfg(not(target_os = "macos"))]
-fn read_secrets() -> std::collections::BTreeMap<String, String> {
-    std::fs::read_to_string(secrets_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn write_secrets(m: &std::collections::BTreeMap<String, String>) -> Result<()> {
-    let p = secrets_file();
-    std::fs::create_dir_all(config_dir())?;
-    std::fs::write(&p, serde_json::to_string_pretty(m)?)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn store_secret_impl(service: &str, account: &str, value: &str) -> Result<()> {
-    let mut m = read_secrets();
-    m.insert(format!("{service}/{account}"), value.to_string());
-    write_secrets(&m)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn delete_secret_impl(service: &str, account: &str) -> Result<()> {
-    let mut m = read_secrets();
-    if m.remove(&format!("{service}/{account}")).is_some() {
-        write_secrets(&m)?;
-    }
-    Ok(())
+    crate::platform::secrets::delete(service, account)
 }
 
 /// The Keychain / secrets.json account a Jira token is saved under.
@@ -405,22 +350,6 @@ pub fn jira_token(cfg: &JiraConfig) -> Option<String> {
         .or_else(|| keychain_lookup(cfg.keychain_service.as_deref().unwrap_or("margin-jira"), cfg.email.as_deref()))
 }
 
-#[cfg(target_os = "macos")]
 fn keychain_lookup(service: &str, account: Option<&str>) -> Option<String> {
-    let mut c = std::process::Command::new("/usr/bin/security");
-    c.args(["find-generic-password", "-s", service, "-w"]);
-    if let Some(a) = account {
-        c.args(["-a", a]);
-    }
-    let out = c.output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn keychain_lookup(service: &str, account: Option<&str>) -> Option<String> {
-    let m = read_secrets();
-    match account {
-        Some(a) => m.get(&format!("{service}/{a}")).cloned(),
-        None => m.iter().find(|(k, _)| k.starts_with(&format!("{service}/"))).map(|(_, v)| v.clone()),
-    }
+    crate::platform::secrets::lookup(service, account)
 }

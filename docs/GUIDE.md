@@ -104,14 +104,22 @@ Everything Margin does, in detail. For a quick start see the [README](../README.
 
 ## Updates
 
-Margin updates itself from GitHub Releases (from 0.2 on; 0.1 needs one manual download). **Settings → Updates**, or **Margin → Check for Updates…**:
+Margin updates itself from GitHub Releases on macOS (from 0.2 on), Windows and Linux (from 0.4 on). **Settings → Updates**, **Margin → Check for Updates…** (macOS), or ⌘P / Ctrl+P → *Check for updates…*:
 
 - **Check for updates once a day** (on by default): one request to GitHub's releases API a day (and once right after a restart while an update is waiting). Nothing else is sent.
-- **Download and install updates automatically** (on by default): a new version downloads in the background, then is checked: its SHA-256 must match the release's, its version must be the release's, its code signature must verify, and when your copy is Developer ID signed the new one must come from the same developer. It replaces Margin when you quit; the toolbar shows **Restart to update** to do it right away. The old app is kept until the swap succeeds.
+- **Download and install updates automatically** (on by default): a new version downloads in the background and its SHA-256 must match the release's. Then, per system:
+  - **macOS:** its version must be the release's, its code signature must verify, and when your copy is Developer ID signed the new one must come from the same developer. It replaces Margin.app when you quit (the old app is kept until the swap succeeds).
+  - **Windows:** the new installer runs silently over your install when you quit (same folder, same options).
+  - **Linux:** the new `margin --version` must print the release's version; then the files in your install are replaced (a running Margin keeps its old copy).
+
+  The toolbar shows **Restart to update** to do it right away.
 - With automatic install off, the toolbar shows **Update to x.y.z**; one click downloads and installs it the same way.
-- Updating in place needs Margin.app in a folder you can write to (normally /Applications). Run from the DMG or a read-only folder, Margin opens the release page instead.
+- **Where it updates in place:** macOS — Margin.app in a folder you can write to (normally /Applications); Windows — installed with the installer, for your user; Linux — installed from the tar.gz in a folder you own (`install.sh` puts it in `~/.local`). Otherwise (the DMG, the portable Windows zip, an all-users install, a `.deb` that apt manages) Margin opens the release page instead.
 
 ## Open from the terminal
+
+On Windows, the installer's *Add the margin command to PATH* option does this; **Install 'margin' command…** (⌘P / Ctrl+P) also works there, for the portable zip (it adds `margin.cmd` to your WindowsApps folder). On every system, a running Margin opens the folder as a new tab.
+
 
 **Margin → Install 'margin' Command…** (or ⌘P → *Install 'margin' command*) puts a `margin` command in `/usr/local/bin` (macOS asks for your password if that folder isn't writable; on Linux it goes in `~/.local/bin`). `margin .` opens the current folder and `margin ~/src/app` opens another; when Margin is already running, the folder opens as a tab in that window. Reinstall it if you move Margin.app.
 
@@ -139,7 +147,7 @@ Agent notes are signed with the client's name, or with `MARGIN_AGENT_NAME` if se
 - Where it shows: a commit's **Tasks** row lists each key with its status (To Do / In Progress / Done) and title, the notes panel's **Branch** tab shows the branch's ticket, and the sidebar has **My tasks**. **Repository settings** says what a repository's keys link to (✓) or why they don't (!), with a way to fix it.
 - **Jira:** your site, Cloud or Data Center / Server, your email (Cloud), and an API token (Cloud: id.atlassian.com → Security → API tokens; Data Center: a personal access token). **Test** shows who it signs in as.
 
-Saving applies right away (no restart). Tokens never go in Margin's settings files: they're kept in the **macOS Keychain** (services `margin-github` / `margin-jira`), or on other systems in `secrets.json` in the config folder, readable only by your user. Accounts set here are also used by Margin's MCP server, so agents don't need a second setup.
+Saving applies right away (no restart). Tokens never go in Margin's settings files: they're kept in the system's secure store: the **macOS Keychain** (services `margin-github` / `margin-jira`), **Windows Credential Manager** (`margin:<service>/<account>`), or on Linux the **desktop keyring** (Secret Service, via `secret-tool`; GNOME Keyring, KWallet). A Linux machine without a keyring keeps them in `secrets.json` in the config folder, readable only by your user; tokens saved there earlier move to the keyring when saved again. Accounts set here are also used by Margin's MCP server, so agents don't need a second setup.
 
 config.json still works and is overridden by what's set in the app: `jira` (`base_url`, `flavor`, `email`; token from `$MARGIN_JIRA_TOKEN` or the Keychain), `github.enterprise_hosts`, and `github.host_aliases` for SSH host aliases from `~/.ssh/config` (`git@github-work:org/repo`). TLS uses the OS trust store, so corporate CAs installed in the Keychain work. `HTTPS_PROXY` and `NO_PROXY` are honoured.
 
