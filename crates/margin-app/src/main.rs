@@ -18,6 +18,7 @@ mod notes_panel;
 mod palette;
 mod search;
 mod path_elide;
+mod platform;
 mod pr_view;
 mod sidebar;
 mod syntax;

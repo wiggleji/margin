@@ -127,17 +127,7 @@ pub struct State {
 }
 
 pub fn config_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("MARGIN_CONFIG_DIR") {
-        return PathBuf::from(d);
-    }
-    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."));
-    if cfg!(target_os = "macos") {
-        return home.join("Library/Application Support/Margin");
-    }
-    std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| home.join(".config"))
-        .join("margin")
+    crate::platform::config_dir()
 }
 
 pub fn load_config() -> Config {
@@ -317,7 +307,7 @@ pub fn github_token_with_source(host: &str) -> Option<(String, &'static str)> {
     }
     // Apps launched from Finder don't get the shell PATH, so try Homebrew paths too.
     for gh in ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"] {
-        let out = std::process::Command::new(gh)
+        let out = crate::platform::command(gh)
             .args(["auth", "token", "--hostname", host])
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

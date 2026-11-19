@@ -1,4 +1,4 @@
-# Build and test on every push to main and every pull request.
+# Build and test on Linux, Windows and macOS for every push to main and every pull request.
 name: CI
 
 on:
@@ -24,6 +24,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - name: Rust (from rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --locked
+      - run: cargo test --workspace --locked
+
+  windows:
+    name: Windows · build and test
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
       - name: Rust (from rust-toolchain.toml)
         run: rustup show
       - uses: Swatinem/rust-cache@v2

@@ -83,6 +83,11 @@ cargo build --release
 ./target/release/margin /path/to/repo
 ```
 
+Margin builds and runs on **macOS, Windows, and Linux** from the same source (CI tests all three; ready-made downloads are macOS-only for now).
+
+- **Windows:** install [Git for Windows](https://git-scm.com/download/win) first; run `target\release\margin.exe`.
+- **Linux:** install the X11/Wayland libraries first (`sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev` on Debian/Ubuntu). For folder pickers, have `zenity` or `kdialog` installed.
+
 To package a DMG or cut a release, see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Contributing

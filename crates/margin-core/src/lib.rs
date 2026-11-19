@@ -26,6 +26,7 @@ mod http;
 pub mod graph;
 pub mod markdown;
 pub mod notes;
+pub mod platform;
 pub mod sync;
 pub mod tasks;
 pub mod update;

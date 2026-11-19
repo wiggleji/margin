@@ -892,7 +892,7 @@ impl Repo {
 // ---------------------------------------------------------------- plumbing
 
 fn base_cmd(dir: &Path) -> Command {
-    let mut c = Command::new(git_binary());
+    let mut c = crate::platform::command(git_binary());
     c.arg("-C")
         .arg(dir)
         // Paths as they are (한글.md, not "\355\225\234…"), in every language.
@@ -925,7 +925,13 @@ fn run_cmd(cmd: &mut Command, input: Option<&[u8]>, ok: &[i32]) -> Result<String
     if input.is_some() {
         cmd.stdin(Stdio::piped());
     }
-    let mut child = cmd.spawn().map_err(|e| Error(format!("failed to run git: {e}")))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error(format!("Margin needs git, and it isn't installed or isn't on PATH. Install it from https://git-scm.com/downloads{} (or set MARGIN_GIT to its full path).", if cfg!(windows) { " (Git for Windows)" } else { "" }))
+        } else {
+            Error(format!("failed to run git: {e}"))
+        }
+    })?;
     if let Some(data) = input {
         // Write then drop stdin so git sees EOF.
         let mut stdin = child.stdin.take().expect("piped stdin");

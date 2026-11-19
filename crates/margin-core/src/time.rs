@@ -29,26 +29,8 @@ pub fn format_local(secs: i64) -> String {
     format_utc(secs + local_offset(secs))
 }
 
-#[cfg(unix)]
 fn local_tm(secs: i64) -> Option<(i64, Option<String>)> {
-    let t = secs as libc::time_t;
-    // SAFETY: localtime_r only writes into the zeroed `tm` we pass; tm_zone
-    // points to static zone data owned by libc.
-    unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&t, &mut tm).is_null() {
-            return None;
-        }
-        let name = (!tm.tm_zone.is_null())
-            .then(|| std::ffi::CStr::from_ptr(tm.tm_zone).to_string_lossy().into_owned())
-            .filter(|n| n.chars().all(|c| c.is_ascii_alphabetic()) && !n.is_empty());
-        Some((tm.tm_gmtoff as i64, name))
-    }
-}
-
-#[cfg(not(unix))]
-fn local_tm(_secs: i64) -> Option<(i64, Option<String>)> {
-    None
+    crate::platform::local_offset(secs)
 }
 
 pub fn now_unix() -> i64 {

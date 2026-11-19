@@ -1,0 +1,6 @@
+# Same bytes on every OS: LF line endings in the working tree (shell scripts
+# break with CRLF, and tests compare text), binary files left alone.
+* text=auto eol=lf
+*.png binary
+*.icns binary
+*.ico binary
