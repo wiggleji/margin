@@ -435,7 +435,8 @@ mod tests {
         assert_eq!(r.deleted_local, 1);
         assert!(!local.join("branch/b0.md").exists());
         let trashed: Vec<_> = walk(&local.join(".trash"));
-        assert!(trashed.iter().any(|p| p.ends_with("branch/b0.md")), "{trashed:?}");
+        // (Windows paths use backslashes)
+        assert!(trashed.iter().any(|p| p.replace('\\', "/").ends_with("branch/b0.md")), "{trashed:?}");
 
         // 5) local notes dir wiped (e.g. re-clone): pull everything, delete nothing remotely
         fs::remove_dir_all(&local).unwrap();
