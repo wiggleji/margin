@@ -701,7 +701,7 @@ impl MarginApp {
                     pending_op: repo.pending_operation(),
                     limit,
                     worktrees: {
-                        let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+                        let canon = |p: &std::path::Path| margin_core::platform::canonical(p);
                         let here = canon(&repo.workdir);
                         repo.worktrees()
                             .unwrap_or_default()

@@ -343,10 +343,10 @@ fn stash(stashes: &[Item], v: &mut Vec<Command>) {
 
 fn worktree(rv: &RepoView, locals: &[&margin_core::git::RefInfo], v: &mut Vec<Command>) {
     let wts = rv.repo.worktrees().unwrap_or_default();
-    let here = rv.repo.workdir.canonicalize().unwrap_or_else(|_| rv.repo.workdir.clone());
+    let here = margin_core::platform::canonical(&rv.repo.workdir);
     let others: Vec<Item> = wts
         .iter()
-        .filter(|w| w.path.canonicalize().unwrap_or_else(|_| w.path.clone()) != here && !w.bare)
+        .filter(|w| margin_core::platform::canonical(&w.path) != here && !w.bare)
         .map(|w| Item::new(w.path.display().to_string(), w.branch.clone().unwrap_or_else(|| "detached".into()), w.path.display().to_string()))
         .collect();
     let removable: Vec<Item> = wts

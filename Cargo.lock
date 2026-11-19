@@ -1807,6 +1807,7 @@ dependencies = [
  "pulldown-cmark",
  "rfd",
  "skrifa",
+ "windows-sys 0.61.2",
  "winresource",
 ]
 

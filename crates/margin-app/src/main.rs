@@ -64,7 +64,7 @@ fn main() -> eframe::Result {
     }
     // `margin <dir>` while Margin runs: open it there as a tab, and exit.
     if let Some(dir) = &repo {
-        let dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        let dir = margin_core::platform::canonical(dir);
         if cli::hand_over(&dir) {
             return Ok(());
         }

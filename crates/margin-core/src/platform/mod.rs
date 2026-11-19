@@ -36,6 +36,28 @@ pub fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home.join(".config")).join("margin")
 }
 
+/// `p` as an absolute path with links resolved (`p` itself if that fails).
+/// On Windows without the `\\?\` prefix std adds for local drives, which
+/// git and people don't expect (`C:\src\app`, not `\\?\C:\src\app`).
+pub fn canonical(p: &std::path::Path) -> PathBuf {
+    let c = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    simplify(c)
+}
+
+fn simplify(p: PathBuf) -> PathBuf {
+    if cfg!(windows) {
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            // only `\\?\C:\…` (not `\\?\UNC\server\…`)
+            let b = rest.as_bytes();
+            if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    p
+}
+
 /// A command for a console program (git, gh) that opens no window. On
 /// Windows a GUI app otherwise flashes a console window for every call.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
@@ -148,6 +170,17 @@ mod tests {
         // a console program runs (and, on Windows, without a window)
         let out = command("git").arg("--version").output().expect("git runs");
         assert!(String::from_utf8_lossy(&out.stdout).starts_with("git version"));
+    }
+
+    #[test]
+    fn canonical_paths() {
+        let here = canonical(std::path::Path::new("."));
+        assert!(here.is_absolute());
+        assert!(!here.to_string_lossy().starts_with(r"\\?\"));
+        if cfg!(windows) {
+            assert_eq!(simplify(PathBuf::from(r"\\?\C:\src\app")), PathBuf::from(r"C:\src\app"));
+            assert_eq!(simplify(PathBuf::from(r"\\?\UNC\server\share")), PathBuf::from(r"\\?\UNC\server\share"));
+        }
     }
 
     #[cfg(any(unix, windows))]
