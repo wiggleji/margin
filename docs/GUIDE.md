@@ -110,11 +110,11 @@ Margin updates itself from GitHub Releases on macOS (from 0.2 on), Windows and L
 - **Download and install updates automatically** (on by default): a new version downloads in the background and its SHA-256 must match the release's. Then, per system:
   - **macOS:** its version must be the release's, its code signature must verify, and when your copy is Developer ID signed the new one must come from the same developer. It replaces Margin.app when you quit (the old app is kept until the swap succeeds).
   - **Windows:** the new installer runs silently over your install when you quit (same folder, same options).
-  - **Linux:** the new `margin --version` must print the release's version; then the files in your install are replaced (a running Margin keeps its old copy).
+  - **Linux:** the new `margin --version` must print the release's version; then the AppImage file, or the files of your tar.gz install, are replaced (a running Margin keeps its old copy).
 
   The toolbar shows **Restart to update** to do it right away.
 - With automatic install off, the toolbar shows **Update to x.y.z**; one click downloads and installs it the same way.
-- **Where it updates in place:** macOS — Margin.app in a folder you can write to (normally /Applications); Windows — installed with the installer, for your user; Linux — installed from the tar.gz in a folder you own (`install.sh` puts it in `~/.local`). Otherwise (the DMG, the portable Windows zip, an all-users install, a `.deb` that apt manages) Margin opens the release page instead.
+- **Where it updates in place:** macOS — Margin.app in a folder you can write to (normally /Applications); Windows — installed with the installer, for your user; Linux — the AppImage (the file is replaced; keep it in a folder you own), or installed from the tar.gz in a folder you own (`install.sh` puts it in `~/.local`). Otherwise (the DMG, the portable Windows zip, an all-users install, a `.deb` that apt manages) Margin opens the release page instead.
 
 ## Open from the terminal
 
