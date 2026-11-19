@@ -2,7 +2,14 @@
 # Build Margin for Linux (x86_64) and package it:
 #   dist/margin-<version>-linux-x64.tar.gz   portable: unpack and run (needs glibc ≥ the build machine's)
 #   dist/margin_<version>_amd64.deb          Debian / Ubuntu: apt install ./margin_<version>_amd64.deb
+#   dist/Margin-<version>-x86_64.AppImage    any distribution: one file, chmod +x and run
 # each with a .sha256.
+#
+# The AppImage is made with appimagetool and the AppImage runtime, both
+# checked against pinned SHA-256s (the runtime is only published as
+# "continuous": when upstream updates it the build stops, and the new
+# checksum goes in RUNTIME_SHA256 below after a look at what changed).
+# NO_APPIMAGE=1 skips it.
 #
 #   scripts/package-linux.sh            build, then package
 #   scripts/package-linux.sh --no-build package an existing target/release build
@@ -92,6 +99,49 @@ dpkg-deb --root-owner-group --build "$PKG" "$DEB" >/dev/null
 rm -rf "$PKG"
 
 (cd "$DIST" && sha256sum "$(basename "$TGZ")" > "$(basename "$TGZ").sha256" && sha256sum "$(basename "$DEB")" > "$(basename "$DEB").sha256")
+
+# ---------------------------------------------------------------- AppImage
+APPIMAGE="$DIST/Margin-$VERSION-x86_64.AppImage"
+if [ "${NO_APPIMAGE:-0}" != 1 ]; then
+  step "Building $(basename "$APPIMAGE")"
+  TOOL_VERSION=1.9.1
+  TOOL_SHA256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+  RUNTIME_SHA256=617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46
+  # fetch(url, file, sha256): download once, always check
+  fetch() {
+    if [ ! -f "$2" ]; then curl -fsSL -o "$2.part" "$1" && mv "$2.part" "$2"; fi
+    echo "$3  $2" | sha256sum -c --quiet - || { echo "error: $(basename "$2") doesn't match its pinned checksum (see the comment at the top)" >&2; rm -f "$2"; exit 1; }
+  }
+  TOOL="$DIST/appimagetool-$TOOL_VERSION-x86_64.AppImage"
+  RUNTIME="$DIST/appimage-runtime-x86_64"
+  fetch "https://github.com/AppImage/appimagetool/releases/download/$TOOL_VERSION/appimagetool-x86_64.AppImage" "$TOOL" "$TOOL_SHA256"
+  fetch "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64" "$RUNTIME" "$RUNTIME_SHA256"
+  chmod +x "$TOOL"
+  APPDIR="$DIST/Margin.AppDir"
+  rm -rf "$APPDIR"
+  stage_usr "$APPDIR/usr"
+  cp "$ROOT/packaging/linux/margin.desktop" "$APPDIR/margin.desktop"
+  cp "$ROOT/packaging/linux/margin-256.png" "$APPDIR/margin.png"
+  cat > "$APPDIR/AppRun" <<'SH'
+#!/bin/sh
+# Margin.AppImage [folder]            open a repository
+# Margin.AppImage mcp --repo <path>   the MCP server for agents
+here="$(dirname "$(readlink -f "$0")")"
+if [ "${1:-}" = mcp ]; then
+  shift
+  exec "$here/usr/bin/margin-mcp" "$@"
+fi
+exec "$here/usr/bin/margin" "$@"
+SH
+  chmod 755 "$APPDIR/AppRun"
+  rm -f "$APPIMAGE"
+  # (no FUSE needed to run the tool itself, e.g. in CI containers)
+  APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "$TOOL" --no-appstream --runtime-file "$RUNTIME" "$APPDIR" "$APPIMAGE" >/dev/null
+  rm -rf "$APPDIR"
+  (cd "$DIST" && sha256sum "$(basename "$APPIMAGE")" > "$(basename "$APPIMAGE").sha256")
+fi
+
 step "Done"
-echo "  tar.gz: $TGZ"
-echo "  deb:    $DEB"
+echo "  tar.gz:   $TGZ"
+echo "  deb:      $DEB"
+[ "${NO_APPIMAGE:-0}" = 1 ] || echo "  AppImage: $APPIMAGE"

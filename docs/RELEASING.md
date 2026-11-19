@@ -55,7 +55,7 @@ Bump the version in the root `Cargo.toml` (`[workspace.package] version`) before
 1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`) and merge it into `main`.
 2. *Actions → Release → Run workflow*, on `main`, with **Publish a release** ticked.
 
-The workflow builds on macOS, Windows, and Linux in parallel, signs and notarizes the Mac app (with the Apple secrets), creates the tag `v<version>` on that commit, and publishes one release with every download: the DMG and the in-app update zip, the Windows installer and zip (`scripts/package-windows.ps1`, Inno Setup), and the Linux `.deb` and `.tar.gz` (`scripts/package-linux.sh`, built on Ubuntu 22.04 so it runs on glibc 2.35 and newer) (marked latest, so the README download link and Margin's updater pick it up). It refuses a version that's already released, or a run from another branch.
+The workflow builds on macOS, Windows, and Linux in parallel, signs and notarizes the Mac app (with the Apple secrets), creates the tag `v<version>` on that commit, and publishes one release with every download: the DMG and the in-app update zip, the Windows installer and zip (`scripts/package-windows.ps1`, Inno Setup), and the Linux AppImage, `.deb` and `.tar.gz` (`scripts/package-linux.sh`, built on Ubuntu 22.04 so it runs on glibc 2.35 and newer; appimagetool and the AppImage runtime are pinned by SHA-256 there) (marked latest, so the README download link and Margin's updater pick it up). It refuses a version that's already released, or a run from another branch.
 
 Untick **Publish a release** to only build: the DMG and zip are then artifacts of the run.
 
