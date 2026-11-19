@@ -3398,11 +3398,7 @@ impl MarginApp {
             _ => {}
         }
         ui.label(
-            egui::RichText::new(if cfg!(target_os = "macos") {
-                "Tokens are kept in your macOS Keychain, not in Margin's settings files."
-            } else {
-                "Tokens are kept in secrets.json in Margin's config folder, readable only by your user."
-            })
+            egui::RichText::new(format!("Tokens are kept in {}, not in Margin's settings files.", margin_core::platform::secrets::store_name()))
             .small()
             .color(theme::TEXT_DIM()),
         );

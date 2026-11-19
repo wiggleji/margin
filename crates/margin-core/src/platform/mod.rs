@@ -4,6 +4,8 @@
 //! (The app has its own `platform` module for desktop integration: opening
 //! folders, terminals, links and folder pickers.)
 
+pub mod secrets;
+
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::Command;
