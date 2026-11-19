@@ -1376,7 +1376,7 @@ impl MarginApp {
                 let UpdateState::Available(r) = &self.update else { return };
                 let r = r.clone();
                 match update::can_install() {
-                    Ok(app) if r.zip.is_some() => {
+                    Ok(app) if r.package.is_some() => {
                         self.update = UpdateState::Downloading(r.clone());
                         self.jobs.spawn(move || Msg::UpdateStaged(update::stage(&r, &app).map(|p| (r, p)).map_err(|e| e.0)));
                     }
@@ -2062,7 +2062,7 @@ impl MarginApp {
                 self.update = UpdateState::Failed(e);
             }
             Ok(Some(r)) if update::is_newer(&r.version, env!("CARGO_PKG_VERSION")) => {
-                let auto = self.settings.update_auto && r.zip.is_some() && update::can_install().is_ok();
+                let auto = self.settings.update_auto && r.package.is_some() && update::can_install().is_ok();
                 if manual && !auto {
                     self.info(format!("Margin {} is available", r.version));
                 }
@@ -3081,7 +3081,7 @@ impl MarginApp {
                     }
                     UpdateState::Available(r) => {
                         ui.label(egui::RichText::new(format!("Margin {} is available", r.version)).strong());
-                        let label = if here.is_ok() && r.zip.is_some() { "Download and install" } else { "Download…" };
+                        let label = if here.is_ok() && r.package.is_some() { "Download and install" } else { "Download…" };
                         if ui.button(label).clicked() {
                             actions.push(Action::DownloadUpdate);
                         }
