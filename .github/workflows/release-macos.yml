@@ -10,7 +10,7 @@
 # Downloads:
 #   macOS    Margin-<v>.dmg (universal), Margin-<v>-macos.zip (in-app updates)
 #   Windows  Margin-<v>-windows-x64-setup.exe (installer), Margin-<v>-windows-x64.zip
-#   Linux    margin_<v>_amd64.deb, margin-<v>-linux-x64.tar.gz
+#   Linux    Margin-<v>-x86_64.AppImage, margin_<v>_amd64.deb, margin-<v>-linux-x64.tar.gz
 # each with a .sha256.
 #
 # With the Apple secrets set (docs/RELEASING.md) the Mac app and DMG are
@@ -195,8 +195,10 @@ jobs:
           path: |
             dist/*.deb
             dist/*-linux-x64.tar.gz
+            dist/*-x86_64.AppImage
             dist/*.deb.sha256
             dist/*-linux-x64.tar.gz.sha256
+            dist/*-x86_64.AppImage.sha256
           if-no-files-found: error
 
   publish:
@@ -225,7 +227,7 @@ jobs:
             echo "|---|---|"
             echo "| **macOS** (Apple Silicon and Intel) | **Margin-$v.dmg** |"
             echo "| **Windows** (64-bit) | **Margin-$v-windows-x64-setup.exe** (installer), or the portable **Margin-$v-windows-x64.zip** |"
-            echo "| **Linux** (x64) | **margin_${v}_amd64.deb** (Debian, Ubuntu), or **margin-$v-linux-x64.tar.gz** (any distribution) |"
+            echo "| **Linux** (x64) | **Margin-$v-x86_64.AppImage** (any distribution), **margin_${v}_amd64.deb** (Debian, Ubuntu), or **margin-$v-linux-x64.tar.gz** |"
             echo
             echo "### macOS"
             echo "Open the DMG and drag **Margin** into **Applications**."
@@ -241,13 +243,13 @@ jobs:
             echo "The installer isn't code-signed yet, so SmartScreen may say *Windows protected your PC*: click **More info → Run anyway**."
             echo
             echo "### Linux"
-            echo "\`sudo apt install ./margin_${v}_amd64.deb\`, or unpack the tar.gz and run \`./install.sh\` (installs to ~/.local). Needs \`git\`; \`zenity\` or \`kdialog\` for folder pickers."
+            echo "**AppImage:** \`chmod +x Margin-$v-x86_64.AppImage\` and run it (it updates itself). **Debian/Ubuntu:** \`sudo apt install ./margin_${v}_amd64.deb\`. **Any distribution:** unpack the tar.gz and run \`./install.sh\` (installs to ~/.local). Needs \`git\`; \`zenity\` or \`kdialog\` for folder pickers."
             echo
             echo "Agents (MCP): \`margin-mcp\` is next to the app (macOS: \`/Applications/Margin.app/Contents/MacOS/margin-mcp\`)."
             echo
             echo "<details><summary>SHA-256</summary>"
             echo
-            for f in "Margin-$v.dmg" "Margin-$v-windows-x64-setup.exe" "Margin-$v-windows-x64.zip" "margin_${v}_amd64.deb" "margin-$v-linux-x64.tar.gz"; do
+            for f in "Margin-$v.dmg" "Margin-$v-windows-x64-setup.exe" "Margin-$v-windows-x64.zip" "Margin-$v-x86_64.AppImage" "margin_${v}_amd64.deb" "margin-$v-linux-x64.tar.gz"; do
               echo "- \`$(sha "$f")\`  $f"
             done
             echo

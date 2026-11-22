@@ -41,7 +41,7 @@ Get the latest from [Releases](https://github.com/wiggleji/margin/releases/lates
   ```
 
 - **Windows** (64-bit): **Margin-&lt;version&gt;-windows-x64-setup.exe** (no administrator rights needed; it can add `margin` to PATH), or the portable zip. Install [Git for Windows](https://git-scm.com/download/win) first. If SmartScreen says *Windows protected your PC*, click **More info → Run anyway** (the installer isn't code-signed yet).
-- **Linux** (x64): **margin_&lt;version&gt;_amd64.deb** for Debian and Ubuntu (`sudo apt install ./margin_<version>_amd64.deb`), or **margin-&lt;version&gt;-linux-x64.tar.gz** for any distribution (unpack, then `./install.sh` installs to `~/.local`). Needs `git`, and `zenity` or `kdialog` for folder pickers.
+- **Linux** (x64): **Margin-&lt;version&gt;-x86_64.AppImage** for any distribution (`chmod +x` it and run; it updates itself), **margin_&lt;version&gt;_amd64.deb** for Debian and Ubuntu (`sudo apt install ./margin_<version>_amd64.deb`), or **margin-&lt;version&gt;-linux-x64.tar.gz** for any distribution (unpack, then `./install.sh` installs to `~/.local`). Needs `git`, and `zenity` or `kdialog` for folder pickers.
 
 ### Open from the terminal
 
@@ -71,6 +71,8 @@ Add Margin's MCP server to your agent's configuration:
   }
 }
 ```
+
+Elsewhere, `command` is `margin-mcp` next to the app: on Windows `%LOCALAPPDATA%\Programs\Margin\margin-mcp.exe` (installer default), from the `.deb` `/usr/bin/margin-mcp`, from the tar.gz `~/.local/bin/margin-mcp`. With the AppImage, use the AppImage itself with `"args": ["mcp", "--repo", "/path/to/repo"]`.
 
 ## Build from source
 

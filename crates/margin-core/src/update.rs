@@ -8,21 +8,22 @@
 //!     be the release's, its code signature must verify, and when the running
 //!     app is Developer ID signed the new one must come from the same team.
 //!   * Windows: `Margin-<v>-windows-x64-setup.exe`, the installer.
-//!   * Linux: `margin-<v>-linux-x64.tar.gz`, unpacked; its `margin --version`
-//!     must print the release's version.
+//!   * Linux: `margin-<v>-linux-x64.tar.gz`, unpacked, or, when Margin runs
+//!     as an AppImage, `Margin-<v>-x86_64.AppImage`; the new
+//!     `margin --version` must print the release's version.
 //! * **Install:**
 //!   * macOS: after Margin quits, a shell helper swaps the new app into place
 //!     (keeping the old one until the swap succeeds).
 //!   * Windows: after Margin quits, the installer runs silently over the
 //!     existing install (same folder, same options).
-//!   * Linux: the files are replaced right away (a running program keeps its
-//!     old copy) and the new one starts after Margin quits.
+//!   * Linux: the files (or the AppImage) are replaced right away (a running
+//!     program keeps its old copy) and the new one starts after Margin quits.
 //!
 //!   "Restart to update" opens the new version once it's in place.
 //!
 //! In place means: macOS — Margin.app in a folder you can write to; Windows —
-//! installed with the installer, for this user; Linux — installed from the
-//! tar.gz in a folder you own (e.g. ~/.local). Elsewhere (a .deb owned by
+//! installed with the installer, for this user; Linux — the AppImage, or the
+//! tar.gz installed in a folder you own (e.g. ~/.local). Elsewhere (a .deb owned by
 //! apt, the portable Windows zip, a development build) Margin opens the
 //! release page instead.
 //!
@@ -60,9 +61,20 @@ pub fn package_name(version: &str) -> String {
         format!("Margin-{version}-macos.zip")
     } else if cfg!(windows) {
         format!("Margin-{version}-windows-x64-setup.exe")
+    } else if appimage().is_some() {
+        format!("Margin-{version}-x86_64.AppImage")
     } else {
         format!("margin-{version}-linux-x64.tar.gz")
     }
+}
+
+/// Linux: the AppImage file Margin runs from (the runtime sets $APPIMAGE).
+pub fn appimage() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let p = PathBuf::from(std::env::var_os("APPIMAGE").filter(|v| !v.is_empty())?);
+    p.is_file().then_some(p)
 }
 
 /// "v1.2.3" / "1.2.3" → (1, 2, 3). Pre-releases ("1.3.0-beta.1") → None.
@@ -224,6 +236,11 @@ pub fn can_install() -> std::result::Result<PathBuf, String> {
         }
         return if writable(&dir) { Ok(dir) } else { Err(format!("Margin is installed for all users; {page} (or run the new installer)")) };
     }
+    // Linux AppImage: the .AppImage file itself is replaced
+    if let Some(image) = appimage() {
+        let dir = image.parent().ok_or("no folder above the AppImage")?;
+        return if writable(dir) { Ok(image) } else { Err(format!("Margin can't write to {}; {page}", dir.display())) };
+    }
     // Linux: <prefix>/bin/margin from the tar.gz (in ~/.local, or unpacked)
     if exe.starts_with("/usr") {
         return Err("Margin was installed with a package manager; update it there, or install the new .deb from the release page".into());
@@ -288,6 +305,21 @@ pub fn stage(rel: &Release, root: &Path) -> Result<PathBuf> {
         }
         return Ok(new);
     }
+    // Linux AppImage: make it runnable and ask it its version (extracting
+    // itself, so no FUSE is needed for the check)
+    if appimage().is_some() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))?;
+        }
+        let out = crate::platform::command(&file).arg("--version").env("APPIMAGE_EXTRACT_AND_RUN", "1").env_remove("APPIMAGE").output();
+        let v = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        if v != format!("margin {}", rel.version) {
+            return fail(format!("the update says {v:?} instead of margin {}", rel.version));
+        }
+        return Ok(file);
+    }
     // Linux: unpack and ask the new program its version
     run("tar", &["-xzf".as_ref(), file.as_os_str(), "-C".as_ref(), dir.as_os_str()])?;
     let _ = std::fs::remove_file(&file);
@@ -304,6 +336,16 @@ pub fn stage(rel: &Release, root: &Path) -> Result<PathBuf> {
 /// process exits; on Linux the files are replaced now.
 pub fn install_after_exit(new: &Path, root: &Path, relaunch: bool) -> Result<()> {
     let pid = std::process::id();
+    if cfg!(target_os = "linux") && root.is_file() {
+        // the AppImage: renamed over the old one (same folder, so atomic; the
+        // running Margin keeps its mounted copy)
+        std::fs::rename(new, root).map_err(|e| Error(format!("{}: {e}", root.display())))?;
+        let _ = std::fs::remove_dir_all(new.parent().unwrap_or(new));
+        if relaunch {
+            spawn_detached(relaunch_after(pid, root))?;
+        }
+        return Ok(());
+    }
     if cfg!(target_os = "linux") {
         replace_files(new, root)?;
         let _ = std::fs::remove_dir_all(new.parent().unwrap_or(new));
