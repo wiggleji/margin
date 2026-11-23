@@ -247,6 +247,60 @@ impl Repo {
             .to_string())
     }
 
+    /// What `head` brings in compared with `base`, from the point where it
+    /// split off (`git diff base...head`): a pull request's "Files changed".
+    pub fn range_diff(&self, base: &str, head: &str, ignore_ws: bool) -> Result<String> {
+        check_rev(base)?;
+        check_rev(head)?;
+        let range = format!("{base}...{head}");
+        let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-M"];
+        if ignore_ws {
+            args.push("-w");
+        }
+        args.extend([range.as_str(), "--"]);
+        self.run(&args)
+    }
+
+    /// Commits on `head` that aren't on `base` (`base..head`), newest first:
+    /// a pull request's "Commits".
+    pub fn range_commits(&self, base: &str, head: &str, limit: usize) -> Result<Vec<Commit>> {
+        check_rev(base)?;
+        check_rev(head)?;
+        self.log_rev(&format!("{base}..{head}"), limit)
+    }
+
+    /// Fetch pull request `number`'s head from `remote` into
+    /// `refs/margin/pr/<number>` (no branch of yours is created or moved).
+    /// Returns its commit.
+    pub fn fetch_pr(&self, remote: &str, number: u64) -> Result<String> {
+        check_rev(remote)?;
+        let dst = format!("refs/margin/pr/{number}");
+        self.run(&["fetch", "--no-tags", "--quiet", remote, &format!("+refs/pull/{number}/head:{dst}")])?;
+        self.resolve(&dst)
+    }
+
+    /// Bring `remote`'s `branch` up to date in `refs/remotes/<remote>/<branch>`.
+    pub fn fetch_branch(&self, remote: &str, branch: &str) -> Result<()> {
+        check_rev(remote)?;
+        check_rev(branch)?;
+        self.run(&["fetch", "--no-tags", "--quiet", remote, &format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}")]).map(drop)
+    }
+
+    /// The branch comparisons start from: the remote's default branch
+    /// (`origin/HEAD` → `main`), else main / master / develop if they exist.
+    pub fn default_base(&self) -> Option<String> {
+        if let Ok(r) = self.run(&["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {
+            let r = r.trim();
+            if let Some(name) = r.strip_prefix("origin/").filter(|n| self.resolve(n).is_ok()) {
+                return Some(name.to_string());
+            }
+            if !r.is_empty() {
+                return Some(r.to_string());
+            }
+        }
+        ["main", "master", "develop", "trunk"].into_iter().find(|b| self.resolve(b).is_ok()).map(str::to_string)
+    }
+
     pub fn commit_detail(&self, id: &str) -> Result<CommitDetail> {
         let out = self.run(&[
             "show",
@@ -913,6 +967,14 @@ fn base_cmd(dir: &Path) -> Command {
 }
 
 /// `MARGIN_GIT` lets enterprises pin a specific git (e.g. a vendored build).
+/// A revision given to git as an argument: refuse ones git would read as an option.
+fn check_rev(rev: &str) -> Result<()> {
+    if rev.is_empty() || rev.starts_with('-') || rev.contains(char::is_whitespace) {
+        bail!("not a branch or commit: {rev:?}");
+    }
+    Ok(())
+}
+
 fn git_binary() -> String {
     std::env::var("MARGIN_GIT").unwrap_or_else(|_| "git".into())
 }
@@ -1110,5 +1172,67 @@ mod worktree_tests {
         repo.remove_worktree(wt.to_str().unwrap(), false).unwrap();
         assert_eq!(repo.worktrees().unwrap().len(), 1);
         assert!(repo.operation("merge", "frobnicate").is_err());
+    }
+}
+
+#[cfg(test)]
+mod compare_tests {
+    use super::*;
+
+    /// main: a → c, feature (from a): b1 → b2. The comparison shows only what
+    /// feature brings in (not c), and only its two commits.
+    #[test]
+    fn compare_branches_like_a_pull_request() {
+        let d = std::env::temp_dir().join(format!("margin-cmp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let g = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&d)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        let put = |f: &str, t: &str| std::fs::write(d.join(f), t).unwrap();
+        g(&["init", "-q"]);
+        put("a.txt", "one\n");
+        g(&["add", "."]);
+        g(&["commit", "-qm", "a"]);
+        g(&["switch", "-qc", "feature"]);
+        put("b.txt", "feature\n");
+        g(&["add", "."]);
+        g(&["commit", "-qm", "b1"]);
+        put("a.txt", "one\ntwo\n");
+        g(&["commit", "-qam", "b2"]);
+        g(&["switch", "-q", "main"]);
+        put("c.txt", "main only\n");
+        g(&["add", "."]);
+        g(&["commit", "-qm", "c"]);
+
+        let repo = Repo::open(&d).unwrap();
+        let diff = repo.range_diff("main", "feature", false).unwrap();
+        assert!(diff.contains("b.txt") && diff.contains("+two"), "{diff}");
+        assert!(!diff.contains("c.txt"), "main's own change isn't part of the comparison");
+        let commits = repo.range_commits("main", "feature", 50).unwrap();
+        assert_eq!(commits.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["b2", "b1"]);
+        assert_eq!(repo.default_base().as_deref(), Some("main"));
+        assert!(repo.range_diff("--output=x", "feature", false).is_err(), "options aren't revisions");
+
+        // a pull request on a remote (GitHub keeps them as refs/pull/<n>/head)
+        let remote = d.with_extension("remote.git");
+        let _ = std::fs::remove_dir_all(&remote);
+        let st = std::process::Command::new("git").args(["init", "-q", "--bare"]).arg(&remote).status().unwrap();
+        assert!(st.success());
+        g(&["remote", "add", "origin", &remote.display().to_string()]);
+        g(&["push", "-q", "origin", "feature:refs/pull/7/head"]);
+        let want = repo.resolve("feature").unwrap();
+        assert_eq!(repo.fetch_pr("origin", 7).unwrap(), want);
+        assert!(repo.run(&["show-ref", "--verify", "refs/heads/pr/7"]).is_err(), "no branch created");
+        let _ = std::fs::remove_dir_all(&remote);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

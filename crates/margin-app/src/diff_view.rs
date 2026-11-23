@@ -50,7 +50,11 @@ pub enum Section {
 }
 
 /// Id of the card for a new comment (not on GitHub yet).
-const DRAFT: &str = "draft";
+pub const DRAFT: &str = "draft";
+
+/// Ids of comments waiting in a review that isn't submitted yet (review
+/// mode): `pending:<n>`. Their cards say Pending and offer Remove.
+pub const PENDING: &str = "pending:";
 
 /// A PR review thread to show inside the diff, on `line` of `path`.
 #[derive(Clone, PartialEq, Debug)]
@@ -91,6 +95,8 @@ pub enum DiffEvent {
     ThreadResolve { id: String, branch: String, resolve: bool },
     /// Start a new review thread on a line of this commit.
     ThreadNew { branch: String, path: String, line: u64, old_side: bool, body: String },
+    /// Take a pending comment (`PENDING…` id) out of the review being written.
+    PendingRemove { id: String },
     /// The focus button: give the diff the whole window, or bring the rest back.
     ToggleFocus,
 }
@@ -173,6 +179,10 @@ pub struct DiffView {
     comment_target: Option<(String, u64)>,
     /// Scroll smoothly to this offset (next / previous change).
     glide_to: Option<f32>,
+    /// A file to scroll to on the next frame (see `goto_file`).
+    goto: Option<usize>,
+    /// The file at the top of the view, as of the last frame.
+    top_file: Option<usize>,
     /// Row of the change last jumped to, and the viewport height.
     nav_row: Option<usize>,
     view_h: f32,
@@ -507,6 +517,32 @@ impl DiffView {
         }
     }
 
+    /// Expand or collapse file `fi` (review mode folds files marked Viewed).
+    pub fn set_file_open(&mut self, fi: usize, open: bool) {
+        // (recorded even when it matches the current default, which may not be
+        // set yet before the first frame)
+        if fi < self.files.len() {
+            self.set_open(fi, open);
+            self.rebuild();
+        }
+    }
+
+    /// Scroll to file `fi` (opening it if it's collapsed).
+    pub fn goto_file(&mut self, fi: usize) {
+        if fi < self.files.len() {
+            if !self.is_open(fi) {
+                self.set_open(fi, true);
+                self.rebuild();
+            }
+            self.goto = Some(fi);
+        }
+    }
+
+    /// The file at the top of the view (for highlighting it in a file list).
+    pub fn top_file(&self) -> Option<usize> {
+        self.top_file
+    }
+
     pub fn section(&self, fi: usize) -> Option<Section> {
         self.sections.get(fi).copied()
     }
@@ -758,6 +794,13 @@ impl DiffView {
             y += if matches!(r, Row::File(_)) { file_h } else { row_h };
         }
         self.row_top.push(y);
+
+        // A file chosen elsewhere (review mode's file list): glide to its header.
+        if let Some(fi) = self.goto.take()
+            && let Some(i) = self.rows.iter().position(|r| matches!(r, Row::File(f) if *f == fi))
+        {
+            self.glide_to = Some((rows_y + self.ry(i) - bar_h).max(0.0));
+        }
 
         // Next / previous change = the next hunk header below / above the top of the view.
         // (a hunk lands just under the sticky toolbar)
@@ -1311,6 +1354,7 @@ impl DiffView {
                             CardAct::Reply => "Reply to this thread".into(),
                             CardAct::Resolve if t.resolved => "Reopen this conversation".into(),
                             CardAct::Resolve => "Mark this conversation as resolved".into(),
+                            CardAct::Remove => "Take this comment out of your review".into(),
                             _ => String::new(),
                         };
                         if resp.on_hover_text(tip).clicked() {
@@ -1457,6 +1501,7 @@ impl DiffView {
                     self.thread_busy.insert(t.id.clone());
                     events.push(DiffEvent::ThreadResolve { id: t.id.clone(), branch: t.branch.clone(), resolve: !t.resolved });
                 }
+                CardAct::Remove => events.push(DiffEvent::PendingRemove { id: t.id.clone() }),
             }
             self.thread_w = 0.0; // re-measure
             ui.ctx().request_repaint();
@@ -1490,6 +1535,7 @@ impl DiffView {
 
         self.offset = out.state.clamped_offset().y;
         self.view_h = out.inner_rect.height();
+        self.top_file = if self.rows.is_empty() { None } else { self.file_at(self.row_at((self.offset - rows_y + bar_h + 1.0).max(0.0))) };
         if let Some(s) = new_sel {
             self.sel = s;
         }
@@ -1525,6 +1571,7 @@ impl DiffView {
 enum CardAct {
     Reply,
     Resolve,
+    Remove,
     Link,
     Send,
     Cancel,
@@ -1622,7 +1669,9 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool, state: ThreadSta
     let mut items = vec![];
     let mut y = 9.0;
     let n = t.comments.len();
+    let pending = t.id.starts_with(PENDING);
     let status = match (t.resolved, t.outdated) {
+        _ if pending => "Pending",
         (true, _) => "Resolved",
         (false, true) => "Outdated",
         _ => "Review",
@@ -1683,8 +1732,10 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool, state: ThreadSta
         fh = fh.max(g.size().y);
         *x += g.size().x + 18.0;
     };
-    let can_write = !t.id.is_empty() && !draft;
-    if busy {
+    let can_write = !t.id.is_empty() && !draft && !pending;
+    if pending {
+        link_item("Remove", Some(CardAct::Remove), theme::ACCENT(), &mut items, &mut x);
+    } else if busy {
         link_item("Working…", None, theme::TEXT_DIM(), &mut items, &mut x);
     } else if can_write {
         if !replying {
@@ -1692,7 +1743,7 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool, state: ThreadSta
         }
         link_item(if t.resolved { "Unresolve" } else { "Resolve" }, Some(CardAct::Resolve), theme::ACCENT(), &mut items, &mut x);
     }
-    if !t.comments.is_empty() {
+    if !t.comments.is_empty() && !pending {
         link_item("Open on GitHub ↗", Some(CardAct::Link), theme::ACCENT(), &mut items, &mut x);
     }
     if fh > 0.0 {

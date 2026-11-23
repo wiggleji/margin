@@ -113,6 +113,17 @@ pub enum Action {
     OpenSettings,
     /// Install the `margin` terminal command.
     InstallCli,
+    /// Review mode: compare `head` with `base` (None: the default branch), or review pull request `pr`.
+    OpenReview { base: Option<String>, head: String, pr: Option<u64> },
+    CloseReview,
+    /// Review mode: reply to a thread, or resolve / reopen it.
+    ReviewThread { id: String, reply: Option<String>, resolve: Option<bool> },
+    /// Review mode: submit the review with its pending comments.
+    ReviewSubmit { event: margin_core::github::ReviewEvent, body: String },
+    /// Review mode, Commits tab: show this commit's diff.
+    ReviewOpenCommit(String),
+    /// Load the open pull requests (to choose one to review).
+    FetchOpenPrs,
     /// Look for a new Margin release now (`manual`: say so when up to date).
     CheckUpdate { manual: bool },
     /// Download the available release and get it ready to install.
@@ -360,6 +371,11 @@ pub struct RepoView {
     /// Local branch → its latest PR.
     pub prs: HashMap<String, PrSummary>,
     pub pr_detail: HashMap<String, Result<PrDetail, String>>,
+    /// Review mode, when it's open (it takes over the history and details).
+    pub review: Option<crate::review::Review>,
+    review_gen: u64,
+    /// Open pull requests of this repository, once loaded.
+    pub open_prs: Option<Result<Vec<margin_core::github::PrListItem>, String>>,
     pub pr_requested: std::collections::HashSet<String>,
     pub prs_fetched_at: Option<f64>,
     /// Notes whose commit/branch is gone (see margin_core::detached).
@@ -458,6 +474,9 @@ impl RepoView {
             github_error: None,
             prs: HashMap::new(),
             pr_detail: HashMap::new(),
+            review: None,
+            review_gen: 0,
+            open_prs: None,
             pr_requested: Default::default(),
             prs_fetched_at: None,
             detached: vec![],
@@ -1363,6 +1382,79 @@ impl MarginApp {
             }
             OpenSettings => self.show_settings = true,
             InstallCli => self.jobs.spawn(|| Msg::CliInstalled(crate::cli::install())),
+            OpenReview { base, head, pr } => {
+                let ws = self.state.diff_ignore_ws;
+                let Some(rv) = &mut self.rv else { return };
+                rv.review_gen += 1;
+                let generation = rv.review_gen;
+                let mut r = crate::review::Review::new(base.clone(), head.clone(), pr, &rv.repo.common_dir, generation);
+                if let Some(old) = &rv.review
+                    && old.pr == pr
+                {
+                    r.tab = old.tab; // (switching branches keeps the tab)
+                }
+                rv.review = Some(r);
+                let (repo, gh, workdir) = (rv.repo.clone(), rv.github.clone(), rv.repo.workdir.clone());
+                self.jobs.spawn(move || {
+                    let result = crate::review::load(&repo, gh.as_deref(), base, head, pr, ws).map(Box::new).map_err(|e| e.0);
+                    Msg::ReviewLoaded { workdir, generation, result }
+                });
+            }
+            CloseReview => {
+                if let Some(rv) = &mut self.rv {
+                    rv.review = None;
+                }
+            }
+            ReviewOpenCommit(sha) => {
+                let ws = self.state.diff_ignore_ws;
+                let Some(rv) = &mut self.rv else { return };
+                let Some(r) = &mut rv.review else { return };
+                r.commit_sel = Some(sha.clone());
+                r.commit_diff.clear();
+                r.commit_diff.loading = true;
+                let (repo, workdir, generation) = (rv.repo.clone(), rv.repo.workdir.clone(), r.generation);
+                self.jobs.spawn(move || {
+                    let result = repo.commit_diff_opts(&sha, ws).map(|t| margin_core::diff::parse(&t)).map_err(|e| e.0);
+                    Msg::ReviewCommit { workdir, generation, sha, result }
+                });
+            }
+            ReviewThread { id, reply, resolve } => {
+                let Some(rv) = &mut self.rv else { return };
+                let Some(gh) = rv.github.clone() else {
+                    if let Some(r) = &mut rv.review {
+                        r.diff.thread_done(&id, false);
+                    }
+                    return self.err("GitHub isn't connected");
+                };
+                let workdir = rv.repo.workdir.clone();
+                self.jobs.spawn(move || {
+                    let result = match (reply, resolve) {
+                        (Some(body), _) => gh.reply_thread(&id, &body),
+                        (None, Some(res)) => gh.set_thread_resolved(&id, res),
+                        _ => Ok(()),
+                    }
+                    .map_err(|e| e.0);
+                    Msg::ReviewThreadDone { workdir, id, result }
+                });
+            }
+            ReviewSubmit { event, body } => {
+                let Some(rv) = &mut self.rv else { return };
+                let Some(gh) = rv.github.clone() else { return self.err("GitHub isn't connected") };
+                let Some(r) = &mut rv.review else { return };
+                let Some(pr_id) = r.detail.as_ref().map(|d| d.id.clone()) else { return };
+                r.submitting = true;
+                let (commit, comments, workdir) = (r.head_oid.clone(), r.pending.clone(), rv.repo.workdir.clone());
+                self.jobs.spawn(move || {
+                    let result = gh.submit_review(&pr_id, &commit, event, &body, &comments).map_err(|e| e.0);
+                    Msg::ReviewSubmitted { workdir, result }
+                });
+            }
+            FetchOpenPrs => {
+                let Some(rv) = &mut self.rv else { return };
+                let Some(gh) = rv.github.clone() else { return };
+                let workdir = rv.repo.workdir.clone();
+                self.jobs.spawn(move || Msg::OpenPrs { workdir, result: gh.open_prs(50).map_err(|e| e.0) });
+            }
             CheckUpdate { manual } => {
                 if matches!(self.update, UpdateState::Checking | UpdateState::Downloading(_)) {
                     return;
@@ -1853,6 +1945,7 @@ impl MarginApp {
                     Err(e) => rv.github_error = Some(e),
                 }
                 self.handle(Action::FetchPrs { force: true });
+                self.handle(Action::FetchOpenPrs);
             }
             Msg::Detached { workdir, renamed, reattached, result } => {
                 let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) else { return };
@@ -2046,11 +2139,75 @@ impl MarginApp {
                     self.update = UpdateState::Failed(e);
                 }
             },
+            Msg::ReviewLoaded { workdir, generation, result } => {
+                let Some(r) = self.review_for(&workdir, generation) else { return };
+                match result {
+                    Ok(l) => r.loaded(*l),
+                    Err(e) => r.failed(e),
+                }
+            }
+            Msg::ReviewCommit { workdir, generation, sha, result } => {
+                let Some(r) = self.review_for(&workdir, generation) else { return };
+                if r.commit_sel.as_deref() != Some(sha.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok((files, truncated)) => r.commit_diff.set(files, truncated),
+                    Err(e) => r.commit_diff.set_error(e),
+                }
+            }
+            Msg::ReviewPr { workdir, generation, result } => {
+                let Some(r) = self.review_for(&workdir, generation) else { return };
+                if let Ok(Some(d)) = result {
+                    r.set_detail(d);
+                }
+            }
+            Msg::ReviewThreadDone { workdir, id, result } => {
+                let Some(r) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir).and_then(|rv| rv.review.as_mut()) else { return };
+                r.diff.thread_done(&id, result.is_ok());
+                match result {
+                    Ok(()) => self.reload_review_pr(),
+                    Err(e) => self.err(format!("GitHub: {e}")),
+                }
+            }
+            Msg::ReviewSubmitted { workdir, result } => {
+                let Some(r) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir).and_then(|rv| rv.review.as_mut()) else { return };
+                r.submitting = false;
+                match result {
+                    Ok(_) => {
+                        r.pending.clear();
+                        r.submit = None;
+                        r.update_threads();
+                        self.info("Review submitted");
+                        self.reload_review_pr();
+                    }
+                    Err(e) => self.err(format!("Review not submitted: {e}")),
+                }
+            }
+            Msg::OpenPrs { workdir, result } => {
+                if let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) {
+                    rv.open_prs = Some(result);
+                }
+            }
             Msg::CliInstalled(r) => match r {
                 Ok(m) => self.info(m),
                 Err(e) => self.err(e),
             },
         }
+    }
+
+    /// The open review of the tab at `workdir`, if it's still the one `generation` was for.
+    fn review_for(&mut self, workdir: &std::path::Path, generation: u64) -> Option<&mut crate::review::Review> {
+        self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir).and_then(|rv| rv.review.as_mut()).filter(|r| r.generation == generation)
+    }
+
+    /// Load the reviewed pull request again (new comments, states).
+    fn reload_review_pr(&mut self) {
+        let Some(rv) = &self.rv else { return };
+        let (Some(r), Some(gh)) = (&rv.review, rv.github.clone()) else { return };
+        let Some(n) = r.pr else { return };
+        let (workdir, generation) = (rv.repo.workdir.clone(), r.generation);
+        self.jobs.spawn(move || Msg::ReviewPr { workdir, generation, result: gh.pr_by_number(n).map_err(|e| e.0) });
     }
 
     fn on_update_checked(&mut self, manual: bool, result: Result<Option<Release>, String>) {
@@ -2687,7 +2844,17 @@ impl eframe::App for MarginApp {
                     crate::details::show(ui, rv, diff_prefs, &task_url, &self.task_cache, actions);
                 });
             };
-            if focus {
+            let reviewing = rv.review.is_some();
+            if reviewing {
+                // Review mode: the sidebar, then the comparison in place of the
+                // history, details and notes.
+                let max_sidebar = (ui.available_width() * 0.4).max(160.0);
+                egui::Panel::left("sidebar").resizable(true).default_size(220.0).min_size(150.0).max_size(max_sidebar).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &task_side, &mut actions);
+                });
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG())).show(ui, |ui| crate::review::show(ui, rv, &mut diff_prefs, &mut actions));
+            } else if focus {
                 // Focus mode: the diff column gets the whole window.
                 egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| details(ui, rv, state, &mut diff_prefs, &mut actions));
             } else {
@@ -2708,7 +2875,7 @@ impl eframe::App for MarginApp {
             }
             // Notes on the left: one wide panel under both the sidebar and the
             // history (added before them, so it spans their full width).
-            if !focus {
+            if !focus && !reviewing {
                 if under_history {
                     notes(ui, rv, state, &mut actions);
                 }

@@ -47,6 +47,18 @@ pub enum Msg {
     MyTasks(Result<Vec<Task>, String>),
     /// Settings → Accounts "Test": who the token signs in as ("github" / "jira").
     AccountTest { which: &'static str, result: Result<String, String> },
+    /// Review mode: the comparison (or pull request) loaded.
+    ReviewLoaded { workdir: PathBuf, generation: u64, result: Result<Box<crate::review::Loaded>, String> },
+    /// Review mode: one commit's diff (Commits tab).
+    ReviewCommit { workdir: PathBuf, generation: u64, sha: String, result: Result<(Vec<FileDiff>, bool), String> },
+    /// Review mode: the pull request again (after a reply, resolve or review).
+    ReviewPr { workdir: PathBuf, generation: u64, result: Result<Option<PrDetail>, String> },
+    /// Review mode: a reply / resolve finished.
+    ReviewThreadDone { workdir: PathBuf, id: String, result: Result<(), String> },
+    /// Review mode: the review was submitted (its URL).
+    ReviewSubmitted { workdir: PathBuf, result: Result<String, String> },
+    /// Open pull requests (for choosing one to review).
+    OpenPrs { workdir: PathBuf, result: Result<Vec<margin_core::github::PrListItem>, String> },
     /// The update check finished: the latest release, if any.
     UpdateChecked { manual: bool, result: Result<Option<margin_core::update::Release>, String> },
     /// The update was downloaded and checked: the new Margin.app.
@@ -84,6 +96,12 @@ impl Msg {
             | Msg::Prs { workdir, .. }
             | Msg::PrDetail { workdir, .. }
             | Msg::ThreadOp { workdir, .. }
+            | Msg::ReviewLoaded { workdir, .. }
+            | Msg::ReviewCommit { workdir, .. }
+            | Msg::ReviewPr { workdir, .. }
+            | Msg::ReviewThreadDone { workdir, .. }
+            | Msg::ReviewSubmitted { workdir, .. }
+            | Msg::OpenPrs { workdir, .. }
             | Msg::Detached { workdir, .. } => Some(workdir),
             Msg::Task { .. } | Msg::MyTasks(_) | Msg::AccountTest { .. } | Msg::CliInstalled(_) | Msg::UpdateChecked { .. } | Msg::UpdateStaged(_) => None,
         }
