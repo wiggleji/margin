@@ -1,5 +1,5 @@
 # Homebrew cask for Margin, published to the wiggleji/homebrew-tap repository
-# by the Release workflow (@VERSION@ and @SHA256@ filled in for each release).
+# by the Release workflow, with the version and the DMG's SHA-256 filled in.
 #   brew install --cask wiggleji/tap/margin
 cask "margin" do
   version "@VERSION@"
