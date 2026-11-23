@@ -86,6 +86,8 @@ pub enum DiffEvent {
     Hunk(DiffAction),
     Stage(Vec<String>),
     Unstage(Vec<String>),
+    /// Open the conflict editor on this file.
+    Resolve(String),
     /// Asks for confirmation first.
     Discard(Vec<String>),
     CopyPath(String),
@@ -956,7 +958,7 @@ impl DiffView {
                             // (`src/…/login.rs`, `too…long.png`), full on hover.
                             let row_buttons: &[&str] = match sec {
                                 Section::Staged => &["Unstage"],
-                                Section::Conflicted => &["Stage"],
+                                Section::Conflicted => &["Resolve…"],
                                 Section::Unstaged => &["Discard", "Stage"],
                                 _ => &[],
                             };
@@ -1022,6 +1024,7 @@ impl DiffView {
                                         events.push(match l {
                                             "Unstage" => DiffEvent::Unstage(vec![path.clone()]),
                                             "Discard" => DiffEvent::Discard(vec![path.clone()]),
+                                            "Resolve…" => DiffEvent::Resolve(path.clone()),
                                             _ => DiffEvent::Stage(vec![path.clone()]),
                                         });
                                     }
@@ -1031,12 +1034,24 @@ impl DiffView {
                             let resp = if elided { resp.on_hover_text(&full) } else { resp };
                             if resp.double_clicked() && matches!(sec, Section::Unstaged | Section::Staged) {
                                 events.push(if sec == Section::Staged { DiffEvent::Unstage(vec![path.clone()]) } else { DiffEvent::Stage(vec![path.clone()]) });
+                            } else if resp.clicked() && sec == Section::Conflicted {
+                                events.push(DiffEvent::Resolve(path.clone()));
                             } else if resp.clicked() {
                                 toggle = Some(fi);
                             }
                             resp.context_menu(|ui| {
                                 match sec {
-                                    Section::Unstaged | Section::Conflicted => {
+                                    Section::Conflicted => {
+                                        if ui.button("Resolve…").clicked() {
+                                            events.push(DiffEvent::Resolve(path.clone()));
+                                            ui.close();
+                                        }
+                                        if ui.button("Mark resolved as it is").clicked() {
+                                            events.push(DiffEvent::Stage(vec![path.clone()]));
+                                            ui.close();
+                                        }
+                                    }
+                                    Section::Unstaged => {
                                         if ui.button("Stage").clicked() {
                                             events.push(DiffEvent::Stage(vec![path.clone()]));
                                             ui.close();
@@ -1065,7 +1080,7 @@ impl DiffView {
                         Row::Note(fi) => {
                             let f = &self.files[fi];
                             let msg = if self.sections.get(fi) == Some(&Section::Conflicted) {
-                                "Merge conflict: resolve it in your editor, then stage the file."
+                                "Merge conflict: click to resolve it"
                             } else if f.binary {
                                 "Binary file"
                             } else {

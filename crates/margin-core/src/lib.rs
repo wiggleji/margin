@@ -13,8 +13,10 @@
 //! * `github`   – pull-request status (merge readiness, CI, comments).
 //! * `gitflow`  – native git-flow (feature/bugfix/release/hotfix/support).
 //! * `config`   – config + secret lookup (env var / macOS Keychain).
+//! * `conflict` – merge conflicts: parse markers, choose sides, mark resolved.
 
 pub mod config;
+pub mod conflict;
 pub mod detached;
 pub mod diff;
 pub mod git;

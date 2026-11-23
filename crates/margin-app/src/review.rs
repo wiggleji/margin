@@ -223,7 +223,7 @@ impl Review {
                     }
                 }
                 // (nothing to stage in a comparison; focus mode is the history's)
-                DiffEvent::Hunk(_) | DiffEvent::Stage(_) | DiffEvent::Unstage(_) | DiffEvent::Discard(_) | DiffEvent::ToggleFocus => {}
+                DiffEvent::Hunk(_) | DiffEvent::Stage(_) | DiffEvent::Unstage(_) | DiffEvent::Resolve(_) | DiffEvent::Discard(_) | DiffEvent::ToggleFocus => {}
             }
         }
     }
@@ -434,7 +434,7 @@ fn files_tab(ui: &mut Ui, r: &mut Review, prefs: &mut DiffPrefs, actions: &mut V
 /// rows of the history. `checkbox`: a Viewed box at the left, which keeps its
 /// own clicks. Returns the block's response and the box's new value when it
 /// was clicked.
-fn entry_block(ui: &mut Ui, id: egui::Id, selected: bool, checkbox: Option<bool>, content: impl FnOnce(&mut Ui)) -> (egui::Response, Option<bool>) {
+pub(crate) fn entry_block(ui: &mut Ui, id: egui::Id, selected: bool, checkbox: Option<bool>, content: impl FnOnce(&mut Ui)) -> (egui::Response, Option<bool>) {
     let pad = egui::vec2(6.0, 4.0);
     let w = ui.available_width();
     let left = if checkbox.is_some() { ui.spacing().interact_size.y + 2.0 } else { 0.0 };

@@ -152,6 +152,11 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
 }
 
 fn operation(rv: &RepoView, v: &mut Vec<Command>) {
+    let conflicts = rv.snap.as_ref().map_or(0, |s| s.status.files.iter().filter(|f| f.conflicted).count());
+    if conflicts > 0 {
+        let hint = if conflicts == 1 { "1 file".to_string() } else { format!("{conflicts} files") };
+        v.push(c(Group::Operation, "Resolve conflicts…", &hint, "conflict merge resolve editor ours theirs", vec![], act(|_| vec![Action::OpenConflicts(None)])));
+    }
     let Some(op) = rv.snap.as_ref().and_then(|s| s.pending_op) else { return };
     let verbs: &[&str] = if op == "merge" { &["continue", "abort"] } else { &["continue", "skip", "abort"] };
     for &verb in verbs {
