@@ -102,12 +102,20 @@ Everything Margin does, in detail. For a quick start see the [README](../README.
 
 **MCP (for agents)**: 18 tools. `get_context`, `git_status`, `git_log`, `git_show`, and `list_branches` read git. `read_note`, `write_note`, `append_note`, `list_notes`, `search_notes`, and `link_task` work on notes. `get_task`, `search_tasks`, and `my_tasks` read Jira. `get_pr` gives agents the PR's readiness, failing checks, and review comments, so they can address feedback. `list_detached_notes`, `move_note`, and `undo_reattach` let agents tidy notes after a rebase. Git access is **read-only** for agents.
 
+## View
+
+Show or hide parts of the window: **View** in the macOS menu bar (the **View ▾** button in the toolbar on Windows and Linux), or ⌘P / Ctrl+P → *Show / Hide …*. Remembered across restarts.
+
+- **Focus on diff** (⇧⌘↩ / Ctrl+Shift+Enter): the diff takes the whole window. While it's on, the toolbar shows **Exit focus**.
+- Panels: **Sidebar** (⌥⌘1 / Ctrl+Alt+1), **History** (⌥⌘2), **Details and diff** (⌥⌘3), **Notes** (⌥⌘4). With the history hidden the details take its place, and the other way round; they're never both hidden.
+- **Sidebar sections:** Branches, Pull requests, Remotes, Tags, Stashes, Worktrees, My tasks. The Pull requests list starts open only when it's short (8 or fewer) and shows 10 at a time (**Show N more**).
+
 ## Review mode
 
 Compare two branches the way a pull request shows them, or review a GitHub pull request without leaving Margin. Review mode takes over the history and details (the sidebar stays); **‹ History** or Esc goes back.
 
 **Open it:**
-- **⌘P / Ctrl+P → Compare branches…** (pick the branch with the changes, then the base), or right-click a branch → **Compare with…** / **Compare with the default branch**.
+- Right-click a branch → **Compare with <current branch> (current)**, **Compare with the default branch**, or **Compare two branches…**; or **⌘P / Ctrl+P → Compare branches…** (pick the branch with the changes, then the base). Any two local branches work, pushed or not, with or without GitHub; the base and compared branch can be changed in review mode's header.
 - A pull request: click it under **PULL REQUESTS** in the sidebar (open PRs, the ones waiting for your review first, marked ●), **⌘P → Review pull request…**, a branch's right-click menu → **Review pull request #n**, or **Review** on the PR card in the notes panel.
 
 **What it shows**, like GitHub:

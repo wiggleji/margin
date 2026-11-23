@@ -47,6 +47,8 @@ pub enum Cmd {
     Forward,
     WorkingDirectory,
     FocusDiff,
+    // View
+    ToggleView(&'static str),
     // Window
     NextTab,
     PrevTab,
@@ -66,7 +68,7 @@ impl MenuBar {
     pub fn new(_ctx: &eframe::egui::Context) -> Self {
         MenuBar
     }
-    pub fn update(&mut self, _recent: &[String], _has_repo: bool) {}
+    pub fn update(&mut self, _recent: &[String], _has_repo: bool, _hidden: &[String], _focus: bool) {}
     pub fn poll(&mut self) -> Vec<Cmd> {
         vec![]
     }
@@ -76,7 +78,7 @@ impl MenuBar {
 mod mac {
     use super::Cmd;
     use eframe::egui;
-    use muda::{AboutMetadata, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu, accelerator::Accelerator};
+    use muda::{AboutMetadata, CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu, accelerator::Accelerator};
     use std::collections::HashMap;
     use std::sync::mpsc::{Receiver, channel};
 
@@ -90,11 +92,15 @@ mod mac {
         repo_items: Vec<MenuItem>,
         repo_menus: Vec<Submenu>,
         shown: Option<(Vec<String>, bool)>,
+        /// View's check items: (view id, or "focus"), kept in step with the app.
+        checks: Vec<(String, CheckMenuItem)>,
+        view_shown: Option<(Vec<String>, bool)>,
     }
 
     struct Builder {
         ids: HashMap<MenuId, Cmd>,
         repo_items: Vec<MenuItem>,
+        checks: Vec<(String, CheckMenuItem)>,
     }
 
     impl Builder {
@@ -103,6 +109,14 @@ mod mac {
             let accel = key.map(|k| k.parse::<Accelerator>().expect("valid accelerator"));
             let it = MenuItem::new(title, true, accel);
             self.ids.insert(it.id().clone(), cmd);
+            it
+        }
+        /// A View item with a check mark for `view` (a view id, or "focus").
+        fn check(&mut self, title: &str, key: Option<&str>, view: &str, cmd: Cmd) -> CheckMenuItem {
+            let accel = key.map(|k| k.parse::<Accelerator>().expect("valid accelerator"));
+            let it = CheckMenuItem::new(title, true, false, accel);
+            self.ids.insert(it.id().clone(), cmd);
+            self.checks.push((view.to_string(), it.clone()));
             it
         }
         /// Same, disabled while no repository is open.
@@ -121,7 +135,7 @@ mod mac {
         /// Install the menu bar. Must run on the main thread once the app has
         /// launched (eframe's app-creation callback qualifies).
         pub fn new(ctx: &egui::Context) -> Self {
-            let mut b = Builder { ids: HashMap::new(), repo_items: vec![] };
+            let mut b = Builder { ids: HashMap::new(), repo_items: vec![], checks: vec![] };
             let menu = Menu::new();
 
             // --- Margin (application menu; macOS titles it with the app name)
@@ -221,13 +235,31 @@ mod mac {
                     &b.repo("Forward", Some("cmd+BracketRight"), Cmd::Forward),
                     &sep(),
                     &b.repo("Working Directory", None, Cmd::WorkingDirectory),
-                    &b.repo("Focus on Diff", Some("shift+cmd+Enter"), Cmd::FocusDiff),
                     &b.repo("Go to Branch…", None, Cmd::Palette("Go to/Go to branch…")),
                     &b.repo("Go to Tag…", None, Cmd::Palette("Go to/Go to tag…")),
                     &b.repo("Go to Commit…", None, Cmd::Palette("Go to/Go to commit…")),
                 ],
             )
             .expect("navigate menu");
+
+            // --- View: panels and sidebar sections (check marks follow the app)
+            let sections = Submenu::new("Sidebar Sections", true);
+            for (id, label) in crate::view::SECTIONS {
+                let view: &'static str = Box::leak(crate::view::section_id(id).into_boxed_str());
+                let _ = sections.append(&b.check(label, None, view, Cmd::ToggleView(view)));
+            }
+            let mut view_items: Vec<CheckMenuItem> = vec![b.check("Focus on Diff", Some("shift+cmd+Enter"), "focus", Cmd::FocusDiff)];
+            for p in &crate::view::PANES {
+                view_items.push(b.check(p.label, Some(&format!("alt+cmd+Digit{}", p.digit)), p.id, Cmd::ToggleView(p.id)));
+            }
+            let view = Submenu::new("View", true);
+            let _ = view.append(&view_items[0]);
+            let _ = view.append(&sep());
+            for it in &view_items[1..] {
+                let _ = view.append(it);
+            }
+            let _ = view.append(&sep());
+            let _ = view.append(&sections);
 
             // --- Window
             let window = Submenu::with_items(
@@ -254,7 +286,7 @@ mod mac {
             )
             .expect("help menu");
 
-            menu.append_items(&[&app, &file, &edit, &repository, &navigate, &window, &help]).expect("menu bar");
+            menu.append_items(&[&app, &file, &edit, &repository, &navigate, &view, &window, &help]).expect("menu bar");
             menu.init_for_nsapp();
             window.set_as_windows_menu_for_nsapp();
             help.set_as_help_menu_for_nsapp();
@@ -276,11 +308,21 @@ mod mac {
                 repo_items: b.repo_items,
                 repo_menus: vec![repository],
                 shown: None,
+                checks: b.checks,
+                view_shown: None,
             }
         }
 
         /// Keep "Open Recent" and the enabled state in sync (cheap when unchanged).
-        pub fn update(&mut self, recent: &[String], has_repo: bool) {
+        pub fn update(&mut self, recent: &[String], has_repo: bool, hidden: &[String], focus: bool) {
+            // View's check marks (a click flips its own mark: set them from the app's state)
+            let view_now = (hidden.to_vec(), focus);
+            if self.view_shown.as_ref() != Some(&view_now) {
+                for (id, it) in &self.checks {
+                    it.set_checked(if id == "focus" { focus } else { !hidden.contains(id) });
+                }
+                self.view_shown = Some(view_now);
+            }
             let now = (recent.to_vec(), has_repo);
             if self.shown.as_ref() == Some(&now) {
                 return;

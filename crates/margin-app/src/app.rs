@@ -124,6 +124,8 @@ pub enum Action {
     ReviewOpenCommit(String),
     /// Load the open pull requests (to choose one to review).
     FetchOpenPrs,
+    /// View: show or hide a panel or sidebar section (see `view`).
+    ToggleView(String),
     /// Look for a new Margin release now (`manual`: say so when up to date).
     CheckUpdate { manual: bool },
     /// Download the available release and get it ready to install.
@@ -897,6 +899,7 @@ impl MarginApp {
             Cmd::Settings => Action::OpenSettings,
             Cmd::InstallCli => Action::InstallCli,
             Cmd::CheckUpdates => Action::CheckUpdate { manual: true },
+            Cmd::ToggleView(id) => Action::ToggleView(id.to_string()),
             Cmd::OpenFolder => Action::OpenFolderDialog,
             Cmd::OpenRecent(p) => Action::OpenRepo(PathBuf::from(p)),
             Cmd::SaveNote => return self.save_note(),
@@ -1448,6 +1451,10 @@ impl MarginApp {
                     let result = gh.submit_review(&pr_id, &commit, event, &body, &comments).map_err(|e| e.0);
                     Msg::ReviewSubmitted { workdir, result }
                 });
+            }
+            ToggleView(id) => {
+                crate::view::toggle(&mut self.state, &id);
+                let _ = config::save_state(&self.state);
             }
             FetchOpenPrs => {
                 let Some(rv) = &mut self.rv else { return };
@@ -2516,6 +2523,22 @@ impl MarginApp {
             if left.add_enabled(can_fwd, egui::Button::new(egui::RichText::new("›").size(17.0))).on_hover_text(format!("Forward ({mod_key}])")).clicked() {
                 actions.push(Action::NavForward);
             }
+            // View (macOS has it in the menu bar): panels and sidebar sections
+            if !cfg!(target_os = "macos") {
+                left.add_space(4.0);
+                let (state, focus) = (&self.state, self.focus_diff);
+                left.menu_button("View ▾", |ui| crate::view::menu(ui, state, focus, actions))
+                    .response
+                    .on_hover_text("Show or hide the sidebar, history, details, notes, and sidebar sections");
+            }
+            // Focus on diff hides everything else: always offer the way back
+            if self.focus_diff {
+                left.add_space(4.0);
+                let key = if cfg!(target_os = "macos") { "⇧⌘↩" } else { "Ctrl+Shift+Enter" };
+                if crate::widgets::primary_button(&mut left, "Exit focus").on_hover_text(format!("Bring back the sidebar, history and notes ({key})")).clicked() {
+                    actions.push(Action::ToggleFocusDiff);
+                }
+            }
             let left_end = left.min_rect().right();
 
             // ---- right: pull / push with counts
@@ -2686,7 +2709,7 @@ impl eframe::App for MarginApp {
         // Native menu bar (macOS): keep it current, then run what was chosen.
         let tabs = self.tabs();
         let recent = self.recent_closed(&tabs);
-        self.menu.update(&recent, self.rv.is_some());
+        self.menu.update(&recent, self.rv.is_some(), &self.state.hidden_views, self.focus_diff);
         for cmd in self.menu.poll() {
             self.menu_cmd(cmd, &ctx);
         }
@@ -2721,6 +2744,13 @@ impl eframe::App for MarginApp {
                     || i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P),
             )
         });
+        // ⌘⌥1…4 (Ctrl+Alt elsewhere): show / hide the sidebar, history, details, notes
+        for p in &crate::view::PANES {
+            let key = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4][(p.digit - 1) as usize];
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::ALT, key)) {
+                self.handle(Action::ToggleView(p.id.to_string()));
+            }
+        }
         let (back, fwd) = ctx.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) || i.pointer.button_pressed(egui::PointerButton::Extra1),
@@ -2834,10 +2864,17 @@ impl eframe::App for MarginApp {
                 focused: self.focus_diff,
             };
             let mut diff_prefs = before;
+            // View: which panels are shown (the history and details never both hidden)
+            let shown = |id: &str| crate::view::shown(&self.state, id);
+            let (show_sidebar, show_history, show_details, show_notes) = (shown("sidebar"), shown("history"), shown("details"), shown("notes"));
+            let hidden_sections = self.state.hidden_views.clone();
+            // Notes sit under the details, unless they're under the history or
+            // the details are hidden.
+            let notes_left = under_history || !show_details;
             let state = &mut self.state;
             let focus = self.focus_diff;
             let details = |ui: &mut egui::Ui, rv: &mut RepoView, state: &mut State, diff_prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>| {
-                if !under_history {
+                if !notes_left && show_notes {
                     notes(ui, rv, state, actions);
                 }
                 egui::CentralPanel::default().show(ui, |ui| {
@@ -2849,15 +2886,17 @@ impl eframe::App for MarginApp {
                 // Review mode: the sidebar, then the comparison in place of the
                 // history, details and notes.
                 let max_sidebar = (ui.available_width() * 0.4).max(160.0);
-                egui::Panel::left("sidebar").resizable(true).default_size(220.0).min_size(150.0).max_size(max_sidebar).show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &task_side, &mut actions);
-                });
+                if show_sidebar {
+                    egui::Panel::left("sidebar").resizable(true).default_size(220.0).min_size(150.0).max_size(max_sidebar).show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &task_side, &hidden_sections, &mut actions);
+                    });
+                }
                 egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG())).show(ui, |ui| crate::review::show(ui, rv, &mut diff_prefs, &mut actions));
             } else if focus {
                 // Focus mode: the diff column gets the whole window.
                 egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| details(ui, rv, state, &mut diff_prefs, &mut actions));
-            } else {
+            } else if show_details && show_history {
                 // The details column can't grow over the branches and history:
                 // they keep enough width that their edges stay grabbable.
                 let max_details = (ui.available_width() - 320.0).max(360.0);
@@ -2876,19 +2915,26 @@ impl eframe::App for MarginApp {
             // Notes on the left: one wide panel under both the sidebar and the
             // history (added before them, so it spans their full width).
             if !focus && !reviewing {
-                if under_history {
+                if notes_left && show_notes {
                     notes(ui, rv, state, &mut actions);
                 }
-                let max_sidebar = (ui.available_width() * 0.5).max(160.0);
-                egui::Panel::left("sidebar").resizable(true).default_size(220.0).min_size(150.0).max_size(max_sidebar).show(ui, |ui| {
-                    // Fill the panel: otherwise it shrinks to its content when no
-                    // row has a right-aligned badge (e.g. a repo without upstreams).
-                    ui.set_min_width(ui.available_width());
-                    crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &task_side, &mut actions);
-                });
-                egui::CentralPanel::default().show(ui, |ui| {
-                    crate::commit_list::show(ui, rv, &mut actions);
-                });
+                if show_sidebar {
+                    let max_sidebar = (ui.available_width() * 0.5).max(160.0);
+                    egui::Panel::left("sidebar").resizable(true).default_size(220.0).min_size(150.0).max_size(max_sidebar).show(ui, |ui| {
+                        // Fill the panel: otherwise it shrinks to its content when no
+                        // row has a right-aligned badge (e.g. a repo without upstreams).
+                        ui.set_min_width(ui.available_width());
+                        crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &task_side, &hidden_sections, &mut actions);
+                    });
+                }
+                if show_history {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        crate::commit_list::show(ui, rv, &mut actions);
+                    });
+                } else {
+                    // History hidden: the details take its place.
+                    egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| details(ui, rv, state, &mut diff_prefs, &mut actions));
+                }
             }
         }
         self.auto_fetch_tick(&ctx);

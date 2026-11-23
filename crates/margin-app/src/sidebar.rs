@@ -17,7 +17,9 @@ pub struct TaskSide {
     pub suggest_github: bool,
 }
 
-pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Option<&Result<Vec<Task>, String>>, task_side: &TaskSide, actions: &mut Vec<Action>) {
+pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Option<&Result<Vec<Task>, String>>, task_side: &TaskSide, hidden: &[String], actions: &mut Vec<Action>) {
+    // sections hidden with View (read by `section_f`)
+    ui.data_mut(|d| d.insert_temp(egui::Id::unique("sidebar-hidden"), hidden.to_vec()));
     if rv.snap.is_none() {
         return;
     }
@@ -99,11 +101,18 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
             let mut list: Vec<_> = list.iter().collect();
             list.sort_by_key(|p| (!p.review_requested, !p.mine));
             let reviewing = rv.review.as_ref().and_then(|r| r.pr);
-            list_section(ui, &format!("PULL REQUESTS ({})", list.len()), "pulls", true, |ui| {
+            // open by default only when the list is short: a busy repository's
+            // dozens of PRs would push everything below out of view
+            let short = list.len() <= 8;
+            let all_id = egui::Id::unique(("pulls-all", rv.repo.workdir.as_path()));
+            let all: bool = ui.data(|d| d.get_temp(all_id)).unwrap_or(false);
+            list_section(ui, &format!("PULL REQUESTS ({})", list.len()), "pulls", short, |ui| {
                 if list.is_empty() {
                     ui.weak("No open pull requests");
                 }
-                for p in list {
+                const FIRST: usize = 10;
+                let more = list.len().saturating_sub(FIRST);
+                for p in list.iter().take(if all { usize::MAX } else { FIRST }) {
                     // ● waiting for your review
                     let mut text = RichText::new(format!("{}#{} {}", if p.review_requested { "● " } else { "" }, p.number, p.title));
                     if p.draft {
@@ -114,6 +123,12 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
                     let tip = format!("{} → {}\n{who} · +{} −{}{}\nClick to review", p.head, p.base, p.additions, p.deletions, if p.draft { " · draft" } else { "" });
                     if resp.on_hover_text(tip).clicked() {
                         actions.push(Action::OpenReview { base: None, head: String::new(), pr: Some(p.number) });
+                    }
+                }
+                if more > 0 {
+                    let label = if all { "Show fewer".to_string() } else { format!("Show {more} more") };
+                    if ui.link(RichText::new(label).small().color(theme::TEXT_DIM())).clicked() {
+                        ui.data_mut(|d| d.insert_temp(all_id, !all));
                     }
                 }
             });
@@ -516,6 +531,10 @@ fn section(ui: &mut Ui, title: &str, id: &str, default_open: bool, body: impl Fn
 
 /// Same; `force` shows the body even when the section is folded (filtering).
 fn section_f(ui: &mut Ui, title: &str, id: &str, default_open: bool, force: bool, body: impl FnOnce(&mut Ui)) -> bool {
+    let hidden: Vec<String> = ui.data(|d| d.get_temp(egui::Id::unique("sidebar-hidden"))).unwrap_or_default();
+    if hidden.contains(&crate::view::section_id(id)) {
+        return false;
+    }
     let open = toggle_row(ui, egui::Id::unique(("section", id)), 0, default_open, |ui| {
         ui.label(RichText::new(title).small().strong());
     });
@@ -844,12 +863,19 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
         if !is_head {
             item(ui, "Merge into current branch", Action::Confirm { msg: format!("Merge {name} into the current branch?"), action: Box::new(Action::Merge(name.clone())) });
         }
-        item(ui, "Compare with…", Action::OpenPaletteWith("compare branches".into()));
+        // compare this branch's changes (review mode; the base can be changed there)
         if let Some(pr) = rv.prs.get(&name).filter(|p| p.state == "OPEN") {
             item(ui, &format!("Review pull request #{}", pr.number), Action::OpenReview { base: None, head: String::new(), pr: Some(pr.number) });
-        } else {
+        }
+        let current = rv.snap.as_ref().and_then(|s| s.status.branch.clone()).filter(|c| *c != name);
+        // (on main itself, "the default branch" and "current" are the same item)
+        if !current.as_deref().is_some_and(margin_core::history::is_major) {
             item(ui, "Compare with the default branch", Action::OpenReview { base: None, head: name.clone(), pr: None });
         }
+        if let Some(cur) = current {
+            item(ui, &format!("Compare with {cur} (current)"), Action::OpenReview { base: Some(cur.clone()), head: name.clone(), pr: None });
+        }
+        item(ui, "Compare two branches…", Action::OpenPaletteWith("compare branches".into()));
         item(ui, "New branch from here…", Action::NewBranchDialog { start: Some(name.clone()), name: String::new() });
         item(ui, "Branch notes", Action::FocusBranch(name.clone()));
         item(ui, "Link task…", Action::LinkTaskDialog { branch: name.clone() });

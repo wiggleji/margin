@@ -111,6 +111,19 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
     let key = if cfg!(target_os = "macos") { "⌘⇧↩" } else { "Ctrl+Shift+Enter" };
     let t = if app.focus_diff { "Show the branches and history again" } else { "Focus on the diff" };
     v.push(c(Group::Navigate, t, key, "full width review zen hide sidebar history layout", vec![], act(|_| vec![Action::ToggleFocusDiff])));
+    // View: each panel and sidebar section, as a toggle
+    for p in &crate::view::PANES {
+        let on = crate::view::shown(&app.state, p.id);
+        let title = format!("{} {}", if on { "Hide" } else { "Show" }, p.label.to_lowercase());
+        let id = p.id.to_string();
+        v.push(c(Group::Navigate, &title, &crate::view::shortcut(p.digit), "view toggle panel layout show hide", vec![], act(move |_| vec![Action::ToggleView(id.clone())])));
+    }
+    for (sec, label) in crate::view::SECTIONS {
+        let id = crate::view::section_id(sec);
+        let on = crate::view::shown(&app.state, &id);
+        let title = format!("{} {} in the sidebar", if on { "Hide" } else { "Show" }, label.to_lowercase());
+        v.push(c(Group::Navigate, &title, "sidebar section", "view toggle sidebar section show hide", vec![], act(move |_| vec![Action::ToggleView(id.clone())])));
+    }
     let dock = if app.state.notes_under_history { "Move notes under the commit details" } else { "Move notes under the branches and history" };
     v.push(c(Group::Notes, dock, "", "panel position dock layout left right", vec![], act(|_| vec![Action::ToggleNotesDock])));
     v.push(c(Group::Notes, "Notes sync settings…", "iCloud · Dropbox · Drive", "cloud sync icloud dropbox google drive", vec![], act(|_| vec![Action::OpenSettings])));
