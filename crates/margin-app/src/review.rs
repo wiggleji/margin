@@ -223,7 +223,7 @@ impl Review {
                     }
                 }
                 // (nothing to stage in a comparison; focus mode is the history's)
-                DiffEvent::Hunk(_) | DiffEvent::Stage(_) | DiffEvent::Unstage(_) | DiffEvent::Resolve(_) | DiffEvent::Discard(_) | DiffEvent::ToggleFocus => {}
+                DiffEvent::Hunk(_) | DiffEvent::Stage(_) | DiffEvent::Unstage(_) | DiffEvent::Resolve(_) | DiffEvent::Stash(_) | DiffEvent::Discard(_) | DiffEvent::ToggleFocus => {}
             }
         }
     }

@@ -142,7 +142,43 @@ pub struct Worktree {
 pub struct Stash {
     pub name: String, // stash@{0}
     pub id: String,
+    /// What git shows: `On main: message` or `WIP on main: abc123 subject`.
     pub message: String,
+    /// The message alone (`message`, or the commit subject for a WIP stash).
+    pub title: String,
+    /// The branch it was made on.
+    pub branch: String,
+    pub time: i64,
+}
+
+/// What `git stash push` takes.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StashOptions {
+    pub message: String,
+    /// Also untracked files (with everything, or with `paths`).
+    pub untracked: bool,
+    /// Only what's staged (`--staged`): stage some hunks, then stash just those.
+    pub staged_only: bool,
+    /// Leave the staged changes in place as well (`--keep-index`).
+    pub keep_staged: bool,
+    /// Only these files (empty: all changes).
+    pub paths: Vec<String>,
+}
+
+/// `On main: msg` → ("main", "msg"); `WIP on main: abc1234 subject` → ("main", "subject").
+fn stash_title(message: &str) -> (String, String) {
+    let (wip, rest) = match message.strip_prefix("WIP on ") {
+        Some(r) => (true, r),
+        None => (false, message.strip_prefix("On ").unwrap_or(message)),
+    };
+    match rest.split_once(": ") {
+        Some((branch, m)) => {
+            // a WIP stash: "abc1234 subject of HEAD"
+            let m = if wip { m.split_once(' ').map_or(m, |(_, s)| s) } else { m };
+            (branch.to_string(), if wip { format!("WIP: {m}") } else { m.to_string() })
+        }
+        None => (String::new(), message.to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -594,15 +630,14 @@ impl Repo {
     }
 
     pub fn stashes(&self) -> Result<Vec<Stash>> {
-        let out = self.run(&["stash", "list", "--format=%gd%x1f%H%x1f%s"])?;
+        let out = self.run(&["stash", "list", "--format=%gd%x1f%H%x1f%ct%x1f%s"])?;
         Ok(out
             .lines()
             .filter_map(|l| {
-                let f: Vec<&str> = l.splitn(3, '\x1f').collect();
-                (f.len() == 3).then(|| Stash {
-                    name: f[0].into(),
-                    id: f[1].into(),
-                    message: f[2].into(),
+                let f: Vec<&str> = l.splitn(4, '\x1f').collect();
+                (f.len() == 4).then(|| {
+                    let (branch, title) = stash_title(f[3]);
+                    Stash { name: f[0].into(), id: f[1].into(), time: f[2].parse().unwrap_or(0), message: f[3].into(), title, branch }
                 })
             })
             .collect())
@@ -909,11 +944,154 @@ impl Repo {
     }
 
     pub fn stash_push(&self, message: Option<&str>) -> Result<()> {
-        let mut a = vec!["stash", "push", "--include-untracked"];
-        if let Some(m) = message {
-            a.extend_from_slice(&["-m", m]);
+        self.stash_with(&StashOptions { message: message.unwrap_or_default().to_string(), untracked: true, ..Default::default() })
+    }
+
+    /// `git stash push` with these options.
+    pub fn stash_with(&self, o: &StashOptions) -> Result<()> {
+        let mut a: Vec<String> = vec!["stash".into(), "push".into()];
+        if o.staged_only {
+            a.push("--staged".into());
+        } else {
+            if o.untracked {
+                a.push("--include-untracked".into());
+            }
+            if o.keep_staged {
+                a.push("--keep-index".into());
+            }
         }
-        self.run(&a).map(drop)
+        let m = o.message.trim();
+        if !m.is_empty() {
+            a.extend(["-m".into(), m.to_string()]);
+        }
+        if !o.paths.is_empty() && !o.staged_only {
+            // git records the whole staging area in a stash of some files, so
+            // staged changes to other files would ride along: build it exactly
+            let staged = self.run(&["diff", "--cached", "--name-only", "-z"])?;
+            if staged.split('\0').any(|f| !f.is_empty() && !o.paths.iter().any(|p| p == f)) {
+                return self.stash_paths_exact(o);
+            }
+            a.push("--".into());
+            a.extend(o.paths.iter().map(|p| format!(":(literal){p}")));
+        }
+        let out = self.run(&a.iter().map(String::as_str).collect::<Vec<_>>())?;
+        if out.contains("No local changes to save") {
+            bail!("nothing to stash");
+        }
+        Ok(())
+    }
+
+    /// A stash of just `o.paths` (their staged and unstaged changes, and the
+    /// untracked ones if `o.untracked`), made like `git stash` makes one, then
+    /// those files put back as they are in HEAD. Other files, staged or not,
+    /// are left alone and kept out of the stash.
+    fn stash_paths_exact(&self, o: &StashOptions) -> Result<()> {
+        let dir = self.common_dir.join("margin");
+        std::fs::create_dir_all(&dir)?;
+        let idx = |n: &str| dir.join(format!("stash-index-{n}-{}", std::process::id()));
+        let (i1, i2, i3) = (idx("i"), idx("w"), idx("u"));
+        let cleanup = || {
+            for f in [&i1, &i2, &i3] {
+                let _ = std::fs::remove_file(f);
+            }
+        };
+        let result = (|| -> Result<()> {
+            let head = self.run(&["rev-parse", "--verify", "HEAD"])?.trim().to_string();
+            let branch = self.run(&["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
+            let untracked: Vec<String> = self.run(&["ls-files", "--others", "--exclude-standard", "-z", "--"])?.split('\0').filter(|f| !f.is_empty()).map(String::from).collect();
+            let (new, tracked): (Vec<&String>, Vec<&String>) = o.paths.iter().partition(|p| untracked.contains(p));
+            let lit = |p: &str| format!(":(literal){p}");
+            let with = |f: &std::path::Path, args: &[&str]| self.run_env(args, &[("GIT_INDEX_FILE", f.to_str().unwrap_or_default())]);
+            // the staging area: HEAD plus the picked files' staged versions
+            with(&i1, &["read-tree", &head])?;
+            for p in &tracked {
+                let entry = self.run(&["ls-files", "-s", "--", &lit(p)])?;
+                match entry.lines().next().and_then(|l| l.split_once('\t')).map(|(m, _)| m.split_whitespace().collect::<Vec<_>>()) {
+                    Some(f) if f.len() >= 2 => {
+                        with(&i1, &["update-index", "--add", "--cacheinfo", &format!("{},{},{p}", f[0], f[1])])?;
+                    }
+                    _ => {
+                        with(&i1, &["update-index", "--force-remove", "--", p])?;
+                    }
+                }
+            }
+            let i_tree = with(&i1, &["write-tree"])?.trim().to_string();
+            // the working tree: that, plus the picked files as they are now
+            with(&i2, &["read-tree", &i_tree])?;
+            for p in &tracked {
+                if self.workdir.join(p.as_str()).exists() {
+                    with(&i2, &["update-index", "--add", "--", p])?;
+                } else {
+                    with(&i2, &["update-index", "--force-remove", "--", p])?;
+                }
+            }
+            let w_tree = with(&i2, &["write-tree"])?.trim().to_string();
+            let short = self.run(&["log", "-1", "--format=%h %s", &head])?.trim().to_string();
+            let m = o.message.trim();
+            let msg = if m.is_empty() { format!("WIP on {branch}: {short}") } else { format!("On {branch}: {m}") };
+            let i_commit = self.run(&["commit-tree", &i_tree, "-p", &head, "-m", &format!("index on {branch}: {short}")])?.trim().to_string();
+            let mut parents = vec!["-p".to_string(), head.clone(), "-p".into(), i_commit];
+            let new: Vec<&String> = if o.untracked { new } else { vec![] };
+            if !new.is_empty() {
+                with(&i3, &["read-tree", "--empty"])?;
+                let mut a = vec!["update-index", "--add", "--"];
+                a.extend(new.iter().map(|s| s.as_str()));
+                with(&i3, &a)?;
+                let u_tree = with(&i3, &["write-tree"])?.trim().to_string();
+                let u = self.run(&["commit-tree", &u_tree, "-m", &format!("untracked files on {branch}: {short}")])?.trim().to_string();
+                parents.extend(["-p".to_string(), u]);
+            }
+            let mut a: Vec<&str> = vec!["commit-tree", &w_tree];
+            a.extend(parents.iter().map(String::as_str));
+            a.extend(["-m", &msg]);
+            let w = self.run(&a)?.trim().to_string();
+            self.run(&["stash", "store", "-m", &msg, &w])?;
+            // put the picked files back as they are in HEAD
+            for p in &tracked {
+                if self.run(&["cat-file", "-e", &format!("{head}:{p}")]).is_ok() {
+                    self.run(&["restore", "--source", &head, "--staged", "--worktree", "--", &lit(p)])?;
+                } else {
+                    self.run(&["rm", "-q", "-f", "--cached", "--", &lit(p)])?;
+                    let _ = std::fs::remove_file(self.workdir.join(p.as_str()));
+                }
+            }
+            for p in &new {
+                let _ = std::fs::remove_file(self.workdir.join(p.as_str()));
+            }
+            Ok(())
+        })();
+        cleanup();
+        result
+    }
+
+    /// The changes a stash holds, as one patch: tracked changes (against the
+    /// commit it was made on) and the untracked files it saved.
+    pub fn stash_diff(&self, id: &str, ignore_ws: bool) -> Result<String> {
+        check_rev(id)?;
+        let base = format!("{id}^1");
+        let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-M"];
+        if ignore_ws {
+            args.push("-w");
+        }
+        args.extend([base.as_str(), id]);
+        let mut out = self.run(&args)?;
+        let untracked = format!("{id}^3");
+        if self.run(&["rev-parse", "--verify", "-q", &untracked]).is_ok() {
+            out += &self.run(&["diff-tree", "--no-commit-id", "-p", "--no-color", "--no-ext-diff", "--root", "-r", &untracked])?;
+        }
+        Ok(out)
+    }
+
+    /// Check out a new branch at the commit the stash was made on, with the
+    /// stash applied (and dropped if it applies cleanly).
+    pub fn stash_branch(&self, branch: &str, name: &str) -> Result<()> {
+        check_rev(branch)?;
+        self.run(&["stash", "branch", branch, name]).map(drop)
+    }
+
+    /// Apply, restoring what was staged as staged (`--index`).
+    pub fn stash_apply_index(&self, name: &str) -> Result<()> {
+        self.run(&["stash", "apply", "--index", name]).map(drop)
     }
 
     pub fn stash_pop(&self, name: &str) -> Result<()> {
@@ -1243,6 +1421,98 @@ mod compare_tests {
         assert_eq!(repo.fetch_pr("origin", 7).unwrap(), want);
         assert!(repo.run(&["show-ref", "--verify", "refs/heads/pr/7"]).is_err(), "no branch created");
         let _ = std::fs::remove_dir_all(&remote);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod stash_tests {
+    use super::*;
+
+    #[test]
+    fn titles() {
+        assert_eq!(stash_title("On main: try knots"), ("main".into(), "try knots".into()));
+        assert_eq!(stash_title("WIP on feature/x: abc1234 Add units"), ("feature/x".into(), "WIP: Add units".into()));
+        assert_eq!(stash_title("odd"), (String::new(), "odd".into()));
+    }
+
+    /// Stash a picked file with an untracked one, then only staged changes;
+    /// the stash's diff includes its untracked files; a branch from a stash.
+    #[test]
+    fn stash_files_staged_and_untracked() {
+        let d = std::env::temp_dir().join(format!("margin-stash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let g = |args: &[&str]| {
+            let o = std::process::Command::new("git").arg("-C").arg(&d).args(["-c", "init.defaultBranch=main"]).args(args).output().unwrap();
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        };
+        let put = |f: &str, t: &str| std::fs::write(d.join(f), t).unwrap();
+        g(&["init", "-q"]);
+        g(&["config", "user.name", "t"]);
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "commit.gpgsign", "false"]);
+        g(&["config", "core.autocrlf", "false"]); // (Windows runners may convert line endings)
+        put("a.txt", "a\n");
+        put("b.txt", "b\n");
+        g(&["add", "."]);
+        g(&["commit", "-qm", "base"]);
+        let repo = Repo::open(&d).unwrap();
+
+        // only a.txt and the new file; b.txt stays
+        put("a.txt", "a changed\n");
+        put("b.txt", "b changed\n");
+        put("new.txt", "new\n");
+        repo.stash_with(&StashOptions { message: "a and new".into(), untracked: true, paths: vec!["a.txt".into(), "new.txt".into()], ..Default::default() }).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "a\n");
+        assert_eq!(std::fs::read_to_string(d.join("b.txt")).unwrap(), "b changed\n");
+        assert!(!d.join("new.txt").exists());
+        let s = repo.stashes().unwrap();
+        assert_eq!((s[0].title.as_str(), s[0].branch.as_str()), ("a and new", "main"));
+        let diff = repo.stash_diff(&s[0].id, false).unwrap();
+        assert!(diff.contains("+a changed") && diff.contains("new.txt") && diff.contains("+new") && !diff.contains("b changed"), "{diff}");
+        assert!(diff.lines().all(|l| l.len() != 40 || !l.chars().all(|c| c.is_ascii_hexdigit())), "no commit id lines: {diff}");
+
+        // some files while another is staged: that one stays out of the stash (and staged)
+        put("c.txt", "c\n");
+        g(&["add", "c.txt"]);
+        put("a.txt", "a picked\n");
+        put("other-new.txt", "x\n");
+        repo.stash_with(&StashOptions { message: "just a".into(), untracked: true, paths: vec!["a.txt".into(), "other-new.txt".into()], ..Default::default() }).unwrap();
+        let st = repo.stashes().unwrap();
+        assert_eq!(st[0].title, "just a");
+        let diff = repo.stash_diff(&st[0].id, false).unwrap();
+        assert!(diff.contains("+a picked") && diff.contains("other-new.txt") && !diff.contains("c.txt") && !diff.contains("b changed"), "{diff}");
+        assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "a\n");
+        assert!(!d.join("other-new.txt").exists());
+        assert!(repo.run(&["diff", "--cached", "--name-only"]).unwrap().contains("c.txt"), "c.txt still staged");
+        // it pops back like any stash
+        repo.stash_pop("stash@{0}").unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "a picked\n");
+        assert!(d.join("other-new.txt").exists());
+        g(&["checkout", "-q", "--", "a.txt"]);
+        g(&["rm", "-q", "-f", "--cached", "c.txt"]);
+        std::fs::remove_file(d.join("c.txt")).unwrap();
+        std::fs::remove_file(d.join("other-new.txt")).unwrap();
+
+        // only what's staged
+        g(&["add", "b.txt"]);
+        put("a.txt", "a again\n");
+        repo.stash_with(&StashOptions { message: "staged b".into(), staged_only: true, ..Default::default() }).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("b.txt")).unwrap(), "b\n");
+        assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "a again\n");
+        assert_eq!(repo.stashes().unwrap().len(), 2);
+
+        // nothing to stash
+        g(&["checkout", "-q", "--", "a.txt"]);
+        assert!(repo.stash_with(&StashOptions::default()).is_err());
+
+        // a branch from the older stash: applied there, and dropped
+        repo.stash_branch("from-stash", "stash@{1}").unwrap();
+        assert_eq!(repo.run(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap().trim(), "from-stash");
+        assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "a changed\n");
+        assert!(d.join("new.txt").exists());
+        assert_eq!(repo.stashes().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

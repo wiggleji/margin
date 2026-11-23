@@ -53,7 +53,11 @@ pub enum Action {
     Fetch,
     Pull,
     Push { force: bool },
-    StashPush,
+    /// The stash dialog (name it, choose what to stash), with these files picked.
+    StashDialog { paths: Vec<String> },
+    StashWith(margin_core::git::StashOptions),
+    /// Ask for a branch name, then make it from the stash (`stash branch`).
+    StashBranchDialog(String),
     StashPop(String),
     StashApply(String),
     StashDrop(String),
@@ -342,6 +346,15 @@ pub enum Dialog {
     LinkTask { branch: String, key: String },
     RenameBranch { old: String, new: String },
     Reattach { from: NoteTarget, to_commit: bool, value: String },
+    Stash { opts: margin_core::git::StashOptions, mode: StashMode, picked: Vec<String>, focus: bool },
+    StashBranch { stash: String, name: String },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum StashMode {
+    All,
+    Staged,
+    Files,
 }
 
 pub struct RepoView {
@@ -789,6 +802,7 @@ impl MarginApp {
 
     fn load_commit(&mut self, id: String) {
         let Some(rv) = &mut self.rv else { return };
+        let is_stash = rv.snap.as_ref().is_some_and(|s| s.stashes.iter().any(|st| st.id == id));
         rv.generation += 1;
         // Keep showing the previous commit until this one arrives (no blank
         // flash while moving through the history); the toolbar shows a spinner.
@@ -799,7 +813,9 @@ impl MarginApp {
         self.jobs.spawn(move || {
             let r = (|| {
                 let d = repo.commit_detail(&id)?;
-                let (files, trunc) = diff::parse(&repo.commit_diff_opts(&id, ignore_ws)?);
+                // a stash: its changes against where it was made, untracked files too
+                let patch = if is_stash { repo.stash_diff(&id, ignore_ws)? } else { repo.commit_diff_opts(&id, ignore_ws)? };
+                let (files, trunc) = diff::parse(&patch);
                 let branches = repo.branches_containing(&id).unwrap_or_default();
                 Ok::<_, margin_core::Error>((d, files, trunc, branches))
             })();
@@ -950,7 +966,7 @@ impl MarginApp {
                 }
                 Action::Select(Sel::Working)
             }
-            Cmd::Stash => Action::StashPush,
+            Cmd::Stash => Action::StashDialog { paths: vec![] },
             Cmd::NewBranch => Action::NewBranchDialog { start: None, name: String::new() },
             Cmd::Palette(key) => Action::RunPaletteCommand(key.to_string()),
             Cmd::Refresh => return self.refresh(),
@@ -1599,7 +1615,19 @@ impl MarginApp {
                 let needs_upstream = rv.snap.as_ref().is_some_and(|s| s.status.upstream.is_none());
                 self.op("Push", move |r| r.push(needs_upstream, force));
             }
-            StashPush => self.op("Stash", |r| r.stash_push(None).map(|_| String::new())),
+            StashDialog { paths } => {
+                let Some(rv) = &self.rv else { return };
+                let changed = rv.snap.as_ref().map_or(0, |s| s.status.files.iter().filter(|f| !f.conflicted).count());
+                if changed == 0 {
+                    self.err("Nothing to stash: no changes in the working directory.");
+                    return;
+                }
+                let mode = if paths.is_empty() { StashMode::All } else { StashMode::Files };
+                let opts = margin_core::git::StashOptions { untracked: true, ..Default::default() };
+                self.dialog = Some(Dialog::Stash { opts, mode, picked: paths, focus: true });
+            }
+            StashWith(o) => self.op("Stash", move |r| r.stash_with(&o).map(|_| String::new())),
+            StashBranchDialog(stash) => self.dialog = Some(Dialog::StashBranch { stash, name: String::new() }),
             StashPop(n) => self.op("Stash pop", move |r| r.stash_pop(&n).map(|_| String::new())),
             StashApply(n) => self.op("Stash apply", move |r| r.stash_apply(&n).map(|_| String::new())),
             StashDrop(n) => self.op("Stash drop", move |r| r.stash_drop(&n).map(|_| String::new())),
@@ -2322,6 +2350,11 @@ impl MarginApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        // the changed files, for the stash dialog: (path, staged, untracked)
+        let stash_files: Vec<(String, bool, bool)> = match (&self.dialog, &self.rv) {
+            (Some(Dialog::Stash { .. }), Some(rv)) => rv.snap.as_ref().map_or(vec![], |s| s.status.files.iter().filter(|f| !f.conflicted).map(|f| (f.path.clone(), f.is_staged(), f.is_untracked())).collect()),
+            _ => vec![],
+        };
         let Some(d) = &mut self.dialog else { return };
         let mut run: Option<Action> = None;
         let mut close = false;
@@ -2400,6 +2433,90 @@ impl MarginApp {
                         if ui.add_enabled(ok, egui::Button::new("Move")).clicked() || (ok && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                             let kind = if *to_commit { "commit" } else { "branch" };
                             run = Some(Action::MoveNote { from: from.clone(), to: format!("{kind}:{}", value.trim()) });
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::Stash { opts, mode, picked, focus } => {
+                    ui.heading("Stash changes");
+                    ui.weak("Put changes aside to get back to later (the sidebar's STASHES).");
+                    ui.add_space(4.0);
+                    let r = ui.add(egui::TextEdit::singleline(&mut opts.message).hint_text("What's in it (optional, but it helps you find it)").desired_width(f32::INFINITY));
+                    if std::mem::take(focus) {
+                        r.request_focus();
+                    }
+                    ui.add_space(4.0);
+                    let staged_n = stash_files.iter().filter(|f| f.1).count();
+                    ui.radio_value(mode, StashMode::All, format!("All changes ({} file{})", stash_files.len(), if stash_files.len() == 1 { "" } else { "s" }));
+                    ui.add_enabled_ui(staged_n > 0, |ui| {
+                        ui.radio_value(mode, StashMode::Staged, format!("Only staged changes ({staged_n})"))
+                            .on_hover_text("Stage the hunks or files to put aside, then stash just those")
+                            .on_disabled_hover_text("Nothing is staged: stage the hunks or files to put aside first");
+                    });
+                    ui.radio_value(mode, StashMode::Files, "Only some files");
+                    if *mode == StashMode::Files {
+                        egui::Frame::new().fill(theme::BG_DARK()).corner_radius(4.0).inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(format!("{} of {} picked", picked.len(), stash_files.len())).small().color(theme::TEXT_DIM()));
+                                if ui.small_button("All").clicked() {
+                                    *picked = stash_files.iter().map(|f| f.0.clone()).collect();
+                                }
+                                if ui.small_button("None").clicked() {
+                                    picked.clear();
+                                }
+                            });
+                            egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                                for (path, _, untracked) in &stash_files {
+                                    let mut on = picked.contains(path);
+                                    let label = if *untracked { format!("{path}  (new)") } else { path.clone() };
+                                    if ui.checkbox(&mut on, label).changed() {
+                                        if on {
+                                            picked.push(path.clone());
+                                        } else {
+                                            picked.retain(|p| p != path);
+                                        }
+                                    }
+                                }
+                            });
+                        });
+                    }
+                    if *mode != StashMode::Staged {
+                        ui.checkbox(&mut opts.untracked, "Include new (untracked) files");
+                    }
+                    if *mode == StashMode::All {
+                        ui.checkbox(&mut opts.keep_staged, "Keep staged changes in place too").on_hover_text("Stash everything, but leave what's staged in the working directory (--keep-index)");
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let ok = *mode != StashMode::Files || !picked.is_empty();
+                        if ui.add_enabled(ok, egui::Button::new("Stash")).clicked() || (ok && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                            let mut o = opts.clone();
+                            o.staged_only = *mode == StashMode::Staged;
+                            o.paths = if *mode == StashMode::Files { picked.clone() } else { vec![] };
+                            if *mode != StashMode::All {
+                                o.keep_staged = false;
+                            }
+                            run = Some(Action::StashWith(o));
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::StashBranch { stash, name } => {
+                    ui.heading("New branch from stash");
+                    ui.weak(format!("{stash}: a branch at the commit it was made on, checked out, with the stash applied (and removed if it applies cleanly)"));
+                    let r = ui.add(egui::TextEdit::singleline(name).hint_text("feature/PROJ-123-short-name").desired_width(f32::INFINITY));
+                    r.request_focus();
+                    ui.horizontal(|ui| {
+                        let ok = !name.trim().is_empty();
+                        if ui.add_enabled(ok, egui::Button::new("Create")).clicked() || (ok && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                            let (b, st) = (name.trim().to_string(), stash.clone());
+                            run = Some(Action::RunGit { label: "Branch from stash".into(), f: Arc::new(move |r| r.stash_branch(&b, &st).map(|_| String::new())) });
                             close = true;
                         }
                         if ui.button("Cancel").clicked() {

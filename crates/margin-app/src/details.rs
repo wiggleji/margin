@@ -20,6 +20,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPr
 fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>) {
     let Some(snap) = rv.snap.as_ref() else { return };
     let staged_n = snap.status.files.iter().filter(|f| f.is_staged()).count();
+    let changed = snap.status.files.iter().any(|f| !f.conflicted);
     ui.vertical(|ui| {
         // ---- commit box
         let task = rv.current_branch().and_then(|b| rv.notes.task_for_branch_in(b, rv.task_style));
@@ -85,13 +86,16 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             }
             // Summary length: git convention is ≤ 50 (soft) and ≤ 72 (hard).
             let n = summary.chars().count();
-            if n > 0 {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if changed && ui.small_button("Stash…").on_hover_text("Put changes aside (all, only staged, or some files) to get back to later").clicked() {
+                    actions.push(Action::StashDialog { paths: vec![] });
+                }
+                if n > 0 {
                     let color = if n > 72 { theme::ERROR() } else if n > 50 { theme::ACCENT() } else { theme::TEXT_DIM() };
                     ui.label(RichText::new(format!("{n}")).small().color(color))
                         .on_hover_text("Summary length. Keep it under 50 characters if you can (72 at most).");
-                });
-            }
+                }
+            });
         });
         ui.separator();
     });
@@ -112,6 +116,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             DiffEvent::Stage(p) => Action::Stage(p),
             DiffEvent::Unstage(p) => Action::Unstage(p),
             DiffEvent::Resolve(p) => Action::OpenConflicts(Some(p)),
+            DiffEvent::Stash(p) => Action::StashDialog { paths: p },
             DiffEvent::Discard(p) => {
                 let what = if p.len() == 1 { p[0].clone() } else { format!("{} files", p.len()) };
                 Action::Confirm { msg: format!("Discard changes to {what}? Untracked files are deleted. This cannot be undone."), action: Box::new(Action::Discard(p)) }
@@ -126,6 +131,15 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
 }
 
 fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPrefs, task_url: &dyn Fn(&str) -> Option<String>, tasks: &TaskCache, actions: &mut Vec<Action>) {
+    // a stash: what it holds, and what to do with it
+    let stash = match &rv.sel {
+        Sel::Commit(id) => rv.snap.as_ref().and_then(|s| s.stashes.iter().find(|st| &st.id == id)).cloned(),
+        _ => None,
+    };
+    if let Some(st) = stash {
+        stash_view(ui, rv, &st, prefs, actions);
+        return;
+    }
     let Some(d) = rv.commit_detail.clone() else {
         ui.horizontal(|ui| {
             ui.add(egui::Spinner::new().size(12.0));
@@ -346,6 +360,84 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
             DiffEvent::ThreadReply { id, branch, body } => actions.push(Action::ReplyThread { id, branch, body }),
             DiffEvent::ThreadResolve { id, branch, resolve } => actions.push(Action::ResolveThread { id, branch, resolve }),
             DiffEvent::ThreadNew { branch, path, line, old_side, body } => actions.push(Action::NewThread { branch, path, line, old_side, body }),
+            _ => {}
+        }
+    }
+}
+
+/// A stash: its message, where and when it was made, Apply / Pop / Drop /
+/// New branch, then what it holds (untracked files included).
+fn stash_view(ui: &mut Ui, rv: &mut RepoView, st: &margin_core::git::Stash, prefs: &mut crate::diff_view::DiffPrefs, actions: &mut Vec<Action>) {
+    let files: Vec<(usize, usize)> = rv.commit_diff.files.iter().map(|f| (f.added, f.removed)).collect();
+    let title = format!("Stash  {}", st.title);
+    let mut header = |ui: &mut Ui| {
+        let now = margin_core::time_now();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("STASH").small().strong().color(theme::lane(3)));
+            ui.label(RichText::new(&st.name).small().monospace().color(theme::TEXT_DIM()));
+        });
+        let big = crate::theme::content_size() + 2.0;
+        ui.add(egui::Label::new(RichText::new(&st.title).strong().size(big)).selectable(true).wrap());
+        ui.horizontal_wrapped(|ui| {
+            let mut meta = String::new();
+            if !st.branch.is_empty() {
+                meta = format!("made on {} · ", st.branch);
+            }
+            meta += &crate::commit_list::rel_time(now, st.time);
+            let (a, r) = files.iter().fold((0, 0), |(a, r), f| (a + f.0, r + f.1));
+            ui.label(RichText::new(meta).color(theme::TEXT_DIM()));
+            ui.label(RichText::new(format!("· {} file{}", files.len(), if files.len() == 1 { "" } else { "s" })).color(theme::TEXT_DIM()));
+            if a > 0 {
+                ui.label(RichText::new(format!("+{a}")).color(theme::ADDED()));
+            }
+            if r > 0 {
+                ui.label(RichText::new(format!("−{r}")).color(theme::REMOVED()));
+            }
+        });
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            let name = st.name.clone();
+            if crate::widgets::primary_button(ui, "Pop").on_hover_text("Apply it to the working directory and remove the stash").clicked() {
+                actions.push(Action::StashPop(name.clone()));
+            }
+            if ui.button("Apply").on_hover_text("Apply it and keep the stash").clicked() {
+                actions.push(Action::StashApply(name.clone()));
+            }
+            ui.menu_button("More ▾", |ui| {
+                if ui.button("Apply, restoring what was staged").on_hover_text("Changes that were staged when you stashed come back staged").clicked() {
+                    let n = name.clone();
+                    actions.push(Action::RunGit { label: "Stash apply".into(), f: std::sync::Arc::new(move |r| r.stash_apply_index(&n).map(|_| String::new())) });
+                    ui.close();
+                }
+                if ui.button("New branch from stash…").on_hover_text("A branch at the commit it was made on, with the stash applied (and removed)").clicked() {
+                    actions.push(Action::StashBranchDialog(name.clone()));
+                    ui.close();
+                }
+                if ui.button("Copy message").clicked() {
+                    actions.push(Action::Copy(st.title.clone()));
+                    ui.close();
+                }
+            });
+            if ui.button(RichText::new("Drop…").color(theme::ERROR())).on_hover_text("Delete the stash").clicked() {
+                actions.push(Action::Confirm { msg: format!("Drop the stash “{}”? It can't be recovered easily.", st.title), action: Box::new(Action::StashDrop(name)) });
+            }
+        });
+        ui.add_space(4.0);
+        ui.separator();
+    };
+    if rv.commit_diff.loading && rv.commit_diff.files.is_empty() {
+        header(ui);
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(12.0));
+            ui.weak("Loading stash…");
+        });
+        return;
+    }
+    for e in rv.commit_diff.show(ui, DiffMode::Commit, "stashdiff", prefs, Some(crate::diff_view::Header { ui: &mut header, title })) {
+        match e {
+            DiffEvent::ToggleFocus => actions.push(Action::ToggleFocusDiff),
+            DiffEvent::OpenUrl(u) => actions.push(Action::OpenUrl(u)),
+            DiffEvent::CopyPath(p) => actions.push(Action::Copy(p)),
             _ => {}
         }
     }
