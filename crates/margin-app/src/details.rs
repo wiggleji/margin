@@ -136,17 +136,6 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
     // The metadata and message scroll with the diff (one page; the diff's
     // toolbar sticks to the top and shows the title once they're out of view).
     let branches = rv.commit_branches.clone();
-    let files: Vec<(usize, usize)> = rv.commit_diff.files.iter().map(|f| (f.added, f.removed)).collect();
-    // How many files were added / deleted / renamed (modified ones are the rest).
-    let kinds = rv.commit_diff.files.iter().fold([0usize; 3], |mut k, f| {
-        match (&f.old_path, &f.new_path) {
-            (None, Some(_)) => k[0] += 1,
-            (Some(_), None) => k[1] += 1,
-            (Some(o), Some(n)) if o != n => k[2] += 1,
-            _ => {}
-        }
-        k
-    });
     let (title, _) = split_message(&d.message);
     let title = format!("{}  {}", &d.id[..8.min(d.id.len())], title);
     // Task keys in the message, with what's known about them (looked up once)
@@ -189,20 +178,32 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
             ui.end_row();
             // name, then the email and the time (with how long ago) quieter
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_secs() as i64);
+            // who: the author (a different committer, e.g. who rebased or
+            // applied it, as a quiet note)
             ui.weak("Author");
             ui.horizontal_wrapped(|ui| {
                 ui.label(&d.author);
                 ui.label(RichText::new(&d.email).small().color(theme::TEXT_DIM()));
-                ui.label(RichText::new(format!("·  {}  ·  {}", when(d.author_time), crate::commit_list::rel_time(now, d.author_time))).color(theme::TEXT_DIM()));
+                if d.committer != d.author {
+                    ui.label(RichText::new(format!("· committed by {}", d.committer)).small().color(theme::TEXT_DIM()));
+                }
             });
             ui.end_row();
-            if d.committer != d.author || d.commit_time != d.author_time {
-                ui.weak("Committer");
-                ui.label(format!("{}  ·  {}", d.committer, when(d.commit_time)));
-                ui.end_row();
-            }
+            // when: written; the commit time too when it's different (rebased, amended)
+            ui.weak("Date");
+            ui.horizontal_wrapped(|ui| {
+                let r = ui.label(when(d.author_time));
+                ui.label(RichText::new(format!("· {}", crate::commit_list::rel_time(now, d.author_time))).color(theme::TEXT_DIM()));
+                if d.commit_time != d.author_time {
+                    let c = ui.label(RichText::new("· committed later").small().color(theme::TEXT_DIM()));
+                    let tip = format!("Written {}\nCommitted {} ({})", when(d.author_time), when(d.commit_time), crate::commit_list::rel_time(now, d.commit_time));
+                    r.on_hover_text(&tip);
+                    c.on_hover_text(tip);
+                }
+            });
+            ui.end_row();
             if !d.parents.is_empty() {
-                ui.weak("Parents");
+                ui.weak(if d.parents.len() == 1 { "Parent" } else { "Parents" });
                 // each parent: its short SHA (a link) and its title
                 ui.vertical(|ui| {
                     for p in &d.parents {
@@ -247,29 +248,6 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
                         }
                     }
                 }));
-                ui.end_row();
-            }
-            // Changes: files and lines in this commit.
-            let files = &files;
-            if !files.is_empty() {
-                let (a, r) = files.iter().fold((0, 0), |(a, r), f| (a + f.0, r + f.1));
-                ui.weak("Changes");
-                ui.horizontal(|ui| {
-                    ui.label(format!("{} file{}", files.len(), if files.len() == 1 { "" } else { "s" }));
-                    if a > 0 {
-                        ui.label(RichText::new(format!("+{a}")).color(theme::ADDED()));
-                    }
-                    if r > 0 {
-                        ui.label(RichText::new(format!("−{r}")).color(theme::REMOVED()));
-                    }
-                    // "· 1 added · 1 deleted · 1 renamed"
-                    for (n, word, color) in [(kinds[0], "added", theme::ADDED()), (kinds[1], "deleted", theme::REMOVED()), (kinds[2], "renamed", theme::lane(0))] {
-                        if n > 0 {
-                            ui.label(RichText::new("·").color(theme::TEXT_DIM()));
-                            ui.label(RichText::new(format!("{n} {word}")).color(color));
-                        }
-                    }
-                });
                 ui.end_row();
             }
             // Tasks: each key links to its ticket, with its title and status
