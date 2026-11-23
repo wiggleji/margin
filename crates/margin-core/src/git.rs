@@ -180,6 +180,16 @@ impl Repo {
         base_cmd(&self.workdir)
     }
 
+    /// Run git with extra environment variables (exit code 0 required).
+    pub(crate) fn run_env(&self, args: &[&str], env: &[(&str, &str)]) -> Result<String> {
+        let mut c = self.cmd();
+        c.args(args);
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        run_cmd(&mut c, None, &[0])
+    }
+
     /// Run git, require exit code 0, return stdout.
     pub fn run(&self, args: &[&str]) -> Result<String> {
         run_cmd(self.cmd().args(args), None, &[0])
@@ -968,7 +978,7 @@ fn base_cmd(dir: &Path) -> Command {
 
 /// `MARGIN_GIT` lets enterprises pin a specific git (e.g. a vendored build).
 /// A revision given to git as an argument: refuse ones git would read as an option.
-fn check_rev(rev: &str) -> Result<()> {
+pub(crate) fn check_rev(rev: &str) -> Result<()> {
     if rev.is_empty() || rev.starts_with('-') || rev.contains(char::is_whitespace) {
         bail!("not a branch or commit: {rev:?}");
     }

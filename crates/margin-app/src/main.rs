@@ -21,6 +21,7 @@ mod search;
 mod path_elide;
 mod platform;
 mod pr_view;
+mod rebase;
 mod review;
 mod sidebar;
 mod syntax;

@@ -14,6 +14,7 @@
 //! * `gitflow`  – native git-flow (feature/bugfix/release/hotfix/support).
 //! * `config`   – config + secret lookup (env var / macOS Keychain).
 //! * `conflict` – merge conflicts: parse markers, choose sides, mark resolved.
+//! * `rebase`   – interactive rebase from a plan (no editor).
 
 pub mod config;
 pub mod conflict;
@@ -29,6 +30,7 @@ pub mod graph;
 pub mod markdown;
 pub mod notes;
 pub mod platform;
+pub mod rebase;
 pub mod review;
 pub mod sync;
 pub mod tasks;

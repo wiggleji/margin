@@ -119,6 +119,10 @@ pub enum Action {
     /// The conflict editor, on this file (None: the first conflicted one).
     OpenConflicts(Option<String>),
     CloseConflicts,
+    /// Plan an interactive rebase of the commits after this one (None: since
+    /// the branch split off from the default branch).
+    OpenRebase(Option<String>),
+    CloseRebase,
     /// Review mode: reply to a thread, or resolve / reopen it.
     ReviewThread { id: String, reply: Option<String>, resolve: Option<bool> },
     /// Review mode: submit the review with its pending comments.
@@ -380,6 +384,8 @@ pub struct RepoView {
     pub review: Option<crate::review::Review>,
     /// The conflict editor, when open (in place of the history, like review mode).
     pub conflicts: Option<crate::conflicts::Conflicts>,
+    /// An interactive rebase being planned (in place of the history).
+    pub rebase: Option<crate::rebase::Plan>,
     /// A git step failed: open the conflict editor if it left conflicts.
     conflict_check: bool,
     review_gen: u64,
@@ -485,7 +491,9 @@ impl RepoView {
             pr_detail: HashMap::new(),
             review: None,
             conflicts: None,
-            conflict_check: false,
+            rebase: None,
+            // a repository opened in the middle of a conflicted merge: show the editor
+            conflict_check: true,
             review_gen: 0,
             open_prs: None,
             pr_requested: Default::default(),
@@ -1432,6 +1440,33 @@ impl MarginApp {
                     rv.conflicts = None;
                 }
             }
+            OpenRebase(base) => {
+                let Some(rv) = &mut self.rv else { return };
+                if let Some(op) = rv.snap.as_ref().and_then(|s| s.pending_op) {
+                    self.err(format!("A {op} is in progress: finish or abort it first."));
+                    return;
+                }
+                let base = match base {
+                    Some(b) => Ok(b),
+                    None => match rv.repo.default_base() {
+                        Some(d) => rv.repo.run(&["merge-base", "HEAD", &d]).map(|s| s.trim().to_string()).map_err(|e| e.0),
+                        None => Err("No default branch to start from: right-click a commit in the history → Interactive rebase from here…".into()),
+                    },
+                };
+                match base.and_then(|b| crate::rebase::Plan::new(&rv.repo, &b)) {
+                    Ok(p) => {
+                        rv.review = None;
+                        rv.conflicts = None;
+                        rv.rebase = Some(p);
+                    }
+                    Err(e) => self.err(format!("Interactive rebase: {e}")),
+                }
+            }
+            CloseRebase => {
+                if let Some(rv) = &mut self.rv {
+                    rv.rebase = None;
+                }
+            }
             ReviewOpenCommit(sha) => {
                 let ws = self.state.diff_ignore_ws;
                 let Some(rv) = &mut self.rv else { return };
@@ -2089,7 +2124,7 @@ impl MarginApp {
                                 rv.conflicts = None;
                             }
                         }
-                        if std::mem::take(&mut rv.conflict_check) && conflicted > 0 && rv.conflicts.is_none() && rv.review.is_none() {
+                        if std::mem::take(&mut rv.conflict_check) && conflicted > 0 && rv.conflicts.is_none() && rv.review.is_none() && rv.rebase.is_none() {
                             rv.conflicts = Some(crate::conflicts::Conflicts::new(None));
                         }
                         if rv.amend && rv.commit_msg.is_empty() {
@@ -2929,7 +2964,8 @@ impl eframe::App for MarginApp {
                 });
             };
             let resolving = rv.conflicts.is_some();
-            let reviewing = rv.review.is_some() || resolving;
+            let rebasing = rv.rebase.is_some();
+            let reviewing = rv.review.is_some() || resolving || rebasing;
             if reviewing {
                 // Review mode: the sidebar, then the comparison in place of the
                 // history, details and notes.
@@ -2941,7 +2977,9 @@ impl eframe::App for MarginApp {
                     });
                 }
                 egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG())).show(ui, |ui| {
-                    if resolving {
+                    if rebasing {
+                        crate::rebase::show(ui, rv, &mut actions)
+                    } else if resolving {
                         crate::conflicts::show(ui, rv, &mut actions)
                     } else {
                         crate::review::show(ui, rv, &mut diff_prefs, &mut actions)

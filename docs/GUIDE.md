@@ -125,6 +125,15 @@ Compare two branches the way a pull request shows them, or review a GitHub pull 
 
 **Reviewing a pull request:** hover a line and click **+** to comment; the comment waits as **Pending** (Remove takes it out). **Review changes** (top right) writes a summary and submits it with the pending comments as **Comment**, **Approve**, or **Request changes**, on the commit you reviewed. A pull request from someone else's fork works too: its head is fetched into `refs/margin/pr/<n>` (no branch of yours is created), and its base is fetched fresh from the remote.
 
+## Interactive rebase
+
+Reorder, reword, squash or drop commits before you push (or share a cleaner history). Right-click a commit in the history → **Interactive rebase from here…** (that commit and the ones after it on the current branch), or **⌘P / Ctrl+P → Interactive rebase…** (every commit since the branch split off from the default branch). The plan takes the place of the history; **‹ History** or Esc leaves without changing anything.
+
+- The commits read like the history, newest at the top. Give each an action, from its menu or with a key on the selected row: **Pick** (P) keeps it, **Reword** (R) keeps the changes with a new message, **Edit** (E) stops after it so you can amend it or add commits, **Squash** (S) folds it into the commit below and lets you write the combined message, **Fixup** (F) folds it in keeping the message below, **Drop** (D) leaves it out.
+- **Drag** a commit by its handle to move it, or **Alt+↑ / Alt+↓**. The summary shows what you'll end up with (`5 commits → 3`); commits already pushed are marked, since rewriting them needs a force push.
+- **Start rebase** runs it (changes you haven't committed are put aside and back). Messages you wrote are applied without an editor. If it stops, on conflicts or at an **Edit**, the [conflict editor](#resolving-conflicts) or the red **rebase in progress** badge takes you on: resolve, then **Continue** (or **Skip commit** / **Abort**).
+- Ranges with merge commits aren't offered (a rebase would flatten them).
+
 ## Resolving conflicts
 
 When a merge, pull, rebase, cherry-pick, revert or stash pop stops on conflicts, the conflict editor opens in place of the history (like review mode; **‹ History** or Esc goes back). Open it again any time from a conflicted file in the working directory, the red **merge in progress** badge, or **⌘P / Ctrl+P → Resolve conflicts…**.

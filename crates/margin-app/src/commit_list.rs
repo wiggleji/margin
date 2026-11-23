@@ -479,6 +479,12 @@ fn commit_menu(ui: &mut Ui, c: &Commit, actions: &mut Vec<Action>) {
     );
     item(ui, "Cherry-pick", Action::Confirm { msg: format!("Cherry-pick {short} onto the current branch?"), action: Box::new(Action::CherryPick(id.clone())) });
     item(ui, "Revert", Action::Confirm { msg: format!("Create a commit reverting {short}?"), action: Box::new(Action::Revert(id.clone())) });
+    if let Some(parent) = c.parents.first() {
+        if ui.button("Interactive rebase from here…").on_hover_text("Reorder, reword, squash or drop this commit and the ones after it on the current branch").clicked() {
+            actions.push(Action::OpenRebase(Some(parent.clone())));
+            ui.close();
+        }
+    }
     ui.menu_button("Reset current branch to here", |ui| {
         for (label, mode) in [("Soft (keep index)", ResetMode::Soft), ("Mixed (keep worktree)", ResetMode::Mixed), ("Hard (discard all)", ResetMode::Hard)] {
             if ui.button(label).clicked() {
