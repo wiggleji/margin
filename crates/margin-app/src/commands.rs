@@ -157,7 +157,10 @@ fn operation(rv: &RepoView, v: &mut Vec<Command>) {
         let hint = if conflicts == 1 { "1 file".to_string() } else { format!("{conflicts} files") };
         v.push(c(Group::Operation, "Resolve conflicts…", &hint, "conflict merge resolve editor ours theirs", vec![], act(|_| vec![Action::OpenConflicts(None)])));
     }
-    let Some(op) = rv.snap.as_ref().and_then(|s| s.pending_op) else { return };
+    let Some(op) = rv.snap.as_ref().and_then(|s| s.pending_op) else {
+        v.push(c(Group::Branch, "Interactive rebase…", "since the default branch", "rebase squash fixup reword reorder drop edit commits", vec![], act(|_| vec![Action::OpenRebase(None)])));
+        return;
+    };
     let verbs: &[&str] = if op == "merge" { &["continue", "abort"] } else { &["continue", "skip", "abort"] };
     for &verb in verbs {
         let title = format!("{} {op}", capitalize(verb));
