@@ -119,7 +119,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             DiffEvent::ToggleFocus => Action::ToggleFocusDiff,
             DiffEvent::OpenUrl(u) => Action::OpenUrl(u),
             // (no review threads in the working directory)
-            DiffEvent::ThreadReply { .. } | DiffEvent::ThreadResolve { .. } | DiffEvent::ThreadNew { .. } => continue,
+            DiffEvent::ThreadReply { .. } | DiffEvent::ThreadResolve { .. } | DiffEvent::ThreadNew { .. } | DiffEvent::PendingRemove { .. } => continue,
         });
     }
 }

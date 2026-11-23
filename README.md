@@ -24,6 +24,7 @@ Write Markdown notes on commits, branches, and tasks, and let AI agents read and
 
 - **Git client:** history graph, diffs, staging, commit, branches, stash, worktrees, Git Flow, and a command palette (⌘P) for everything.
 - **Notes:** Markdown notes on commits, branches, tasks, and the repo. Plain files in `.git/margin/notes`, never committed.
+- **Code review:** compare any two branches like a pull request, or review a GitHub pull request in Margin: files changed with Viewed marks, commits, conversation, comments on any line, and Approve / Request changes.
 - **GitHub:** pull request status, CI checks, and review threads right in the diff, with reply and resolve.
 - **Tasks:** Jira, GitHub Issues, or any tracker by link.
 - **Agents (MCP):** an MCP server so AI agents share your notes and see git, PRs, and tasks.

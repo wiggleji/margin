@@ -279,6 +279,13 @@ impl Repo {
         self.resolve(&dst)
     }
 
+    /// Bring `remote`'s `branch` up to date in `refs/remotes/<remote>/<branch>`.
+    pub fn fetch_branch(&self, remote: &str, branch: &str) -> Result<()> {
+        check_rev(remote)?;
+        check_rev(branch)?;
+        self.run(&["fetch", "--no-tags", "--quiet", remote, &format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}")]).map(drop)
+    }
+
     /// The branch comparisons start from: the remote's default branch
     /// (`origin/HEAD` → `main`), else main / master / develop if they exist.
     pub fn default_base(&self) -> Option<String> {

@@ -102,6 +102,21 @@ Everything Margin does, in detail. For a quick start see the [README](../README.
 
 **MCP (for agents)**: 18 tools. `get_context`, `git_status`, `git_log`, `git_show`, and `list_branches` read git. `read_note`, `write_note`, `append_note`, `list_notes`, `search_notes`, and `link_task` work on notes. `get_task`, `search_tasks`, and `my_tasks` read Jira. `get_pr` gives agents the PR's readiness, failing checks, and review comments, so they can address feedback. `list_detached_notes`, `move_note`, and `undo_reattach` let agents tidy notes after a rebase. Git access is **read-only** for agents.
 
+## Review mode
+
+Compare two branches the way a pull request shows them, or review a GitHub pull request without leaving Margin. Review mode takes over the history and details (the sidebar stays); **‹ History** or Esc goes back.
+
+**Open it:**
+- **⌘P / Ctrl+P → Compare branches…** (pick the branch with the changes, then the base), or right-click a branch → **Compare with…** / **Compare with the default branch**.
+- A pull request: click it under **PULL REQUESTS** in the sidebar (open PRs, the ones waiting for your review first, marked ●), **⌘P → Review pull request…**, a branch's right-click menu → **Review pull request #n**, or **Review** on the PR card in the notes panel.
+
+**What it shows**, like GitHub:
+- **Files changed:** what the branch brings in since it split off from the base (`git diff base...head`, so later work on the base isn't mixed in). A file list on the left with +/− and **Viewed** checkboxes (a viewed file folds; it comes back if it changes again; kept per comparison in `.git/margin/review.json`); click a file to jump to it. The diff has syntax highlighting, inline / side-by-side, and the PR's open review threads under their lines, with **Reply** and **Resolve**.
+- **Commits:** the branch's commits (`base..head`); click one for its own diff.
+- **Conversation** (pull requests): the description, checks, reviews and comments.
+
+**Reviewing a pull request:** hover a line and click **+** to comment; the comment waits as **Pending** (Remove takes it out). **Review changes** (top right) writes a summary and submits it with the pending comments as **Comment**, **Approve**, or **Request changes**, on the commit you reviewed. A pull request from someone else's fork works too: its head is fetched into `refs/margin/pr/<n>` (no branch of yours is created), and its base is fetched fresh from the remote.
+
 ## Updates
 
 Margin updates itself from GitHub Releases on macOS (from 0.2 on), Windows and Linux (from 0.4 on). **Settings → Updates**, **Margin → Check for Updates…** (macOS), or ⌘P / Ctrl+P → *Check for updates…*:

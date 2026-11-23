@@ -256,6 +256,14 @@ fn branch(
     v.push(c(Group::Branch, "Merge branch into current…", "", "combine", vec![pick("Merge which branch", all.to_vec())], act(|x| vec![Action::Merge(x[0].clone())])));
     v.push(c(
         Group::Branch,
+        "Compare branches…",
+        "review mode",
+        "diff review compare changes pull request files changed",
+        vec![pick("Compare (the branch with the changes)", all.to_vec()), pick("With base (where the changes would go)", all.to_vec())],
+        act(|x| vec![Action::OpenReview { base: Some(x[1].clone()), head: x[0].clone(), pr: None }]),
+    ));
+    v.push(c(
+        Group::Branch,
         "Rebase current branch onto…",
         "",
         "replay",
@@ -492,6 +500,35 @@ fn github(rv: &RepoView, current: Option<&str>, v: &mut Vec<Command>) {
             let u = format!("{repo_url}/compare/{cur}?expand=1");
             v.push(c(Group::GitHub, "Create pull request", cur, "pr new browser", vec![], act(move |_| vec![Action::OpenUrl(u.clone())])));
         }
+    }
+    // Review mode for any open pull request
+    let prs: Vec<Item> = match &rv.open_prs {
+        Some(Ok(list)) => list
+            .iter()
+            .map(|p| {
+                let mark = if p.review_requested { "review requested · " } else if p.mine { "yours · " } else { "" };
+                Item::new(format!("#{} {}", p.number, p.title), format!("{mark}{} · {} → {}", p.author, p.head, p.base), p.number.to_string())
+            })
+            .collect(),
+        _ => vec![],
+    };
+    if prs.is_empty() {
+        v.push(c(Group::GitHub, "Review pull request…", "load open pull requests", "pr review code review", vec![], act(|_| vec![Action::FetchOpenPrs])));
+    } else {
+        v.push(c(
+            Group::GitHub,
+            "Review pull request…",
+            &format!("{} open", prs.len()),
+            "pr review code review files changed approve",
+            vec![pick("Pull request", prs)],
+            act(|x| x[0].parse::<u64>().map(|n| vec![Action::OpenReview { base: None, head: String::new(), pr: Some(n) }]).unwrap_or_default()),
+        ));
+    }
+    if let Some(cur) = current
+        && let Some(pr) = rv.prs.get(cur).filter(|p| p.state == "OPEN")
+    {
+        let n = pr.number;
+        v.push(c(Group::GitHub, "Review this branch's pull request", &format!("#{n}"), "pr review code review", vec![], act(move |_| vec![Action::OpenReview { base: None, head: String::new(), pr: Some(n) }])));
     }
     v.push(c(Group::GitHub, "Refresh pull request status", "", "pr ci reload", vec![], act(|_| vec![Action::FetchPrs { force: true }])));
     v.push(c(Group::GitHub, "Open repository on GitHub", "", "browser web", vec![], act(move |_| vec![Action::OpenUrl(repo_url.clone())])));

@@ -76,6 +76,9 @@ pub fn card(ui: &mut Ui, rv: &mut RepoView, branch: &str, actions: &mut Vec<Acti
                 badge(ui, label, tone_color(tone));
             }
         }
+        if pr.state == "OPEN" && ui.small_button("Review").on_hover_text("Open it in review mode: files changed, commits and conversation").clicked() {
+            actions.push(Action::OpenReview { base: None, head: String::new(), pr: Some(pr.number) });
+        }
         if ui.small_button("⟳").on_hover_text("Reload PR status").clicked() {
             actions.push(Action::FetchPrs { force: true });
         }

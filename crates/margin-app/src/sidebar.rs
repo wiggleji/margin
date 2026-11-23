@@ -93,6 +93,32 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
             }
         });
 
+        // ------------------------------------------------------- pull requests
+        // Open PRs (review requested from you first); one click opens review mode.
+        if !filtering && let Some(Ok(list)) = &rv.open_prs {
+            let mut list: Vec<_> = list.iter().collect();
+            list.sort_by_key(|p| (!p.review_requested, !p.mine));
+            let reviewing = rv.review.as_ref().and_then(|r| r.pr);
+            list_section(ui, &format!("PULL REQUESTS ({})", list.len()), "pulls", true, |ui| {
+                if list.is_empty() {
+                    ui.weak("No open pull requests");
+                }
+                for p in list {
+                    // ● waiting for your review
+                    let mut text = RichText::new(format!("{}#{} {}", if p.review_requested { "● " } else { "" }, p.number, p.title));
+                    if p.draft {
+                        text = text.color(theme::TEXT_DIM());
+                    }
+                    let resp = ui.add(egui::Button::selectable(reviewing == Some(p.number), text).truncate().min_size(egui::vec2(ui.available_width(), 0.0)));
+                    let who = if p.review_requested { format!("{} · review requested", p.author) } else { p.author.clone() };
+                    let tip = format!("{} → {}\n{who} · +{} −{}{}\nClick to review", p.head, p.base, p.additions, p.deletions, if p.draft { " · draft" } else { "" });
+                    if resp.on_hover_text(tip).clicked() {
+                        actions.push(Action::OpenReview { base: None, head: String::new(), pr: Some(p.number) });
+                    }
+                }
+            });
+        }
+
         // ------------------------------------------------------------ worktrees
         // Listed like branches (by the branch they have checked out); only
         // when the repository has more than one.
@@ -817,6 +843,12 @@ fn local_row(ui: &mut Ui, rv: &RepoView, r: &RefInfo, label: &str, depth: usize,
         }
         if !is_head {
             item(ui, "Merge into current branch", Action::Confirm { msg: format!("Merge {name} into the current branch?"), action: Box::new(Action::Merge(name.clone())) });
+        }
+        item(ui, "Compare with…", Action::OpenPaletteWith("compare branches".into()));
+        if let Some(pr) = rv.prs.get(&name).filter(|p| p.state == "OPEN") {
+            item(ui, &format!("Review pull request #{}", pr.number), Action::OpenReview { base: None, head: String::new(), pr: Some(pr.number) });
+        } else {
+            item(ui, "Compare with the default branch", Action::OpenReview { base: None, head: name.clone(), pr: None });
         }
         item(ui, "New branch from here…", Action::NewBranchDialog { start: Some(name.clone()), name: String::new() });
         item(ui, "Branch notes", Action::FocusBranch(name.clone()));
