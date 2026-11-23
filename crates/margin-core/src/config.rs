@@ -88,6 +88,11 @@ pub struct State {
     /// Command palette: recently run commands (`Group/Title`), newest first.
     #[serde(default)]
     pub recent_commands: Vec<String>,
+    /// Parts of the window hidden with View (see the app's `view` module):
+    /// panels ("sidebar", "history", "details", "notes") and sidebar
+    /// sections ("section:tags"…).
+    #[serde(default)]
+    pub hidden_views: Vec<String>,
     /// Last update check (unix time).
     #[serde(default)]
     pub update_checked_at: Option<i64>,

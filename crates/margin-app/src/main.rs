@@ -24,6 +24,7 @@ mod review;
 mod sidebar;
 mod syntax;
 mod tab_strip;
+mod view;
 mod theme;
 mod widgets;
 
