@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/margin-core", "crates/margin-mcp", "crates/margin-app"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 license = "MIT"
 # Never upload to crates.io by accident (distributed as an app, not a library).
