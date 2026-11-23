@@ -195,10 +195,10 @@ jobs:
           path: |
             dist/*.deb
             dist/*-linux-x64.tar.gz
-            dist/*-x86_64.AppImage
+            dist/Margin-*-x86_64.AppImage
             dist/*.deb.sha256
             dist/*-linux-x64.tar.gz.sha256
-            dist/*-x86_64.AppImage.sha256
+            dist/Margin-*-x86_64.AppImage.sha256
           if-no-files-found: error
 
   publish:

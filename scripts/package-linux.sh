@@ -112,8 +112,11 @@ if [ "${NO_APPIMAGE:-0}" != 1 ]; then
     if [ ! -f "$2" ]; then curl -fsSL -o "$2.part" "$1" && mv "$2.part" "$2"; fi
     echo "$3  $2" | sha256sum -c --quiet - || { echo "error: $(basename "$2") doesn't match its pinned checksum (see the comment at the top)" >&2; rm -f "$2"; exit 1; }
   }
-  TOOL="$DIST/appimagetool-$TOOL_VERSION-x86_64.AppImage"
-  RUNTIME="$DIST/appimage-runtime-x86_64"
+  # (build tools live outside dist/, which holds only what gets released)
+  TOOLS="$ROOT/target/appimage-tools"
+  mkdir -p "$TOOLS"
+  TOOL="$TOOLS/appimagetool-$TOOL_VERSION-x86_64.AppImage"
+  RUNTIME="$TOOLS/runtime-x86_64"
   fetch "https://github.com/AppImage/appimagetool/releases/download/$TOOL_VERSION/appimagetool-x86_64.AppImage" "$TOOL" "$TOOL_SHA256"
   fetch "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64" "$RUNTIME" "$RUNTIME_SHA256"
   chmod +x "$TOOL"
