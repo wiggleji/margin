@@ -111,6 +111,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             }
             DiffEvent::Stage(p) => Action::Stage(p),
             DiffEvent::Unstage(p) => Action::Unstage(p),
+            DiffEvent::Resolve(p) => Action::OpenConflicts(Some(p)),
             DiffEvent::Discard(p) => {
                 let what = if p.len() == 1 { p[0].clone() } else { format!("{} files", p.len()) };
                 Action::Confirm { msg: format!("Discard changes to {what}? Untracked files are deleted. This cannot be undone."), action: Box::new(Action::Discard(p)) }

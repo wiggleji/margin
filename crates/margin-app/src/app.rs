@@ -116,6 +116,9 @@ pub enum Action {
     /// Review mode: compare `head` with `base` (None: the default branch), or review pull request `pr`.
     OpenReview { base: Option<String>, head: String, pr: Option<u64> },
     CloseReview,
+    /// The conflict editor, on this file (None: the first conflicted one).
+    OpenConflicts(Option<String>),
+    CloseConflicts,
     /// Review mode: reply to a thread, or resolve / reopen it.
     ReviewThread { id: String, reply: Option<String>, resolve: Option<bool> },
     /// Review mode: submit the review with its pending comments.
@@ -375,6 +378,10 @@ pub struct RepoView {
     pub pr_detail: HashMap<String, Result<PrDetail, String>>,
     /// Review mode, when it's open (it takes over the history and details).
     pub review: Option<crate::review::Review>,
+    /// The conflict editor, when open (in place of the history, like review mode).
+    pub conflicts: Option<crate::conflicts::Conflicts>,
+    /// A git step failed: open the conflict editor if it left conflicts.
+    conflict_check: bool,
     review_gen: u64,
     /// Open pull requests of this repository, once loaded.
     pub open_prs: Option<Result<Vec<margin_core::github::PrListItem>, String>>,
@@ -477,6 +484,8 @@ impl RepoView {
             prs: HashMap::new(),
             pr_detail: HashMap::new(),
             review: None,
+            conflicts: None,
+            conflict_check: false,
             review_gen: 0,
             open_prs: None,
             pr_requested: Default::default(),
@@ -1408,6 +1417,21 @@ impl MarginApp {
                     rv.review = None;
                 }
             }
+            OpenConflicts(path) => {
+                if let Some(rv) = &mut self.rv {
+                    rv.review = None;
+                    match &mut rv.conflicts {
+                        Some(c) if path.is_some() => c.path = path,
+                        Some(_) => {}
+                        None => rv.conflicts = Some(crate::conflicts::Conflicts::new(path)),
+                    }
+                }
+            }
+            CloseConflicts => {
+                if let Some(rv) = &mut self.rv {
+                    rv.conflicts = None;
+                }
+            }
             ReviewOpenCommit(sha) => {
                 let ws = self.state.diff_ignore_ws;
                 let Some(rv) = &mut self.rv else { return };
@@ -2055,6 +2079,19 @@ impl MarginApp {
                         rv.row_tasks = crate::commit_list::task_rows(snap.commits.iter(), &rv.tips, &rv.notes, rv.task_style);
                         rv.filtered = None;
                         rv.snap = Some(snap);
+                        // the conflict editor: reload after its git steps, close when
+                        // the operation is finished; open it when a step left conflicts
+                        let conflicted = rv.snap.as_ref().map_or(0, |s| s.status.files.iter().filter(|f| f.conflicted).count());
+                        let op = rv.snap.as_ref().and_then(|s| s.pending_op);
+                        if let Some(c) = &mut rv.conflicts {
+                            c.on_refresh();
+                            if c.done(op, conflicted) {
+                                rv.conflicts = None;
+                            }
+                        }
+                        if std::mem::take(&mut rv.conflict_check) && conflicted > 0 && rv.conflicts.is_none() && rv.review.is_none() {
+                            rv.conflicts = Some(crate::conflicts::Conflicts::new(None));
+                        }
                         if rv.amend && rv.commit_msg.is_empty() {
                             rv.commit_msg = rv.repo.last_commit_message().unwrap_or_default();
                         }
@@ -2108,7 +2145,12 @@ impl MarginApp {
                         let first = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("").to_string();
                         self.info(if first.is_empty() { format!("{label}: done") } else { format!("{label}: {first}") });
                     }
-                    Err(e) => self.err(format!("{label} failed: {e}")),
+                    Err(e) => {
+                        self.err(format!("{label} failed: {e}"));
+                        if let Some(rv) = &mut self.rv {
+                            rv.conflict_check = true;
+                        }
+                    }
                 }
                 if refresh {
                     self.refresh();
@@ -2508,7 +2550,12 @@ impl MarginApp {
                 .on_hover_text(format!("{branch}\nSwitch branch"));
                 if let Some(op) = snap.pending_op {
                     let r = left.add(egui::Button::new(egui::RichText::new(format!("{op} in progress")).color(theme::ERROR())).small());
-                    if r.on_hover_text("Continue / skip / abort").clicked() {
+                    let conflicted = snap.status.files.iter().any(|f| f.conflicted);
+                    if conflicted {
+                        if r.on_hover_text("Resolve the conflicts, then continue or abort").clicked() {
+                            actions.push(Action::OpenConflicts(None));
+                        }
+                    } else if r.on_hover_text("Continue / skip / abort").clicked() {
                         actions.push(Action::OpenPaletteWith(op.to_string()));
                     }
                 }
@@ -2881,7 +2928,8 @@ impl eframe::App for MarginApp {
                     crate::details::show(ui, rv, diff_prefs, &task_url, &self.task_cache, actions);
                 });
             };
-            let reviewing = rv.review.is_some();
+            let resolving = rv.conflicts.is_some();
+            let reviewing = rv.review.is_some() || resolving;
             if reviewing {
                 // Review mode: the sidebar, then the comparison in place of the
                 // history, details and notes.
@@ -2892,7 +2940,13 @@ impl eframe::App for MarginApp {
                         crate::sidebar::show(ui, rv, tasks_enabled, self.my_tasks.as_ref(), &task_side, &hidden_sections, &mut actions);
                     });
                 }
-                egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG())).show(ui, |ui| crate::review::show(ui, rv, &mut diff_prefs, &mut actions));
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG())).show(ui, |ui| {
+                    if resolving {
+                        crate::conflicts::show(ui, rv, &mut actions)
+                    } else {
+                        crate::review::show(ui, rv, &mut diff_prefs, &mut actions)
+                    }
+                });
             } else if focus {
                 // Focus mode: the diff column gets the whole window.
                 egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| details(ui, rv, state, &mut diff_prefs, &mut actions));
