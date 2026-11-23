@@ -328,7 +328,9 @@ mod tests {
         std::fs::write(d.join("f.txt"), "one\nTWO (main)\n").unwrap();
         git(&["rm", "-q", "g.txt"]);
         git(&["commit", "-qam", "main"]);
-        let _ = std::process::Command::new("git").current_dir(&d).args(["merge", "other"]).output();
+        // stops on the conflicts (exit 1); the same identity as above (CI has none)
+        let o = std::process::Command::new("git").current_dir(&d).args(["-c", "user.name=t", "-c", "user.email=t@t", "merge", "other"]).output().unwrap();
+        assert!(String::from_utf8_lossy(&o.stdout).contains("CONFLICT"), "{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
         let repo = Repo::open(&d).unwrap();
         let st = repo.status().unwrap();
         let k: Vec<_> = st.files.iter().filter(|f| f.conflicted).map(|f| (f.path.as_str(), kind(f.index, f.worktree))).collect();
