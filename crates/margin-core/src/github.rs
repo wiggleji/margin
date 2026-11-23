@@ -197,6 +197,63 @@ pub struct PrDetail {
     pub resolved_threads: usize,
     /// All review threads with every comment (for showing them in the diff).
     pub threads: Vec<ReviewThread>,
+    /// The description, its author, and the branch it comes from.
+    pub body: String,
+    pub author: String,
+    pub head: String,
+    /// Size of the change.
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+}
+
+/// An open pull request, for choosing one to review.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PrListItem {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub author: String,
+    pub head: String,
+    pub base: String,
+    pub draft: bool,
+    /// APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED
+    pub review_decision: Option<String>,
+    pub updated_at: String,
+    pub additions: u64,
+    pub deletions: u64,
+    /// A review is requested from the signed-in user.
+    pub review_requested: bool,
+    /// The signed-in user opened it.
+    pub mine: bool,
+}
+
+/// How a review is submitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewEvent {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+impl ReviewEvent {
+    fn api(self) -> &'static str {
+        match self {
+            ReviewEvent::Comment => "COMMENT",
+            ReviewEvent::Approve => "APPROVE",
+            ReviewEvent::RequestChanges => "REQUEST_CHANGES",
+        }
+    }
+}
+
+/// A line comment written during a review, sent with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftComment {
+    pub path: String,
+    pub line: u64,
+    /// On the removed (left) side of the diff.
+    pub old_side: bool,
+    pub body: String,
 }
 
 const SUMMARY: &str = "fragment S on PullRequest {
@@ -206,7 +263,7 @@ const SUMMARY: &str = "fragment S on PullRequest {
 }";
 
 const DETAIL: &str = "
-  id baseRefName
+  id baseRefName headRefName body additions deletions changedFiles author { login }
   comments(last: 30) { nodes { author { login } body createdAt url } }
   reviews(last: 30) { nodes { author { login } state body submittedAt url } }
   reviewThreads(last: 80) { nodes { id isResolved isOutdated path line originalLine diffSide
@@ -387,6 +444,42 @@ impl GitHub {
             .collect())
     }
 
+    /// Pull request `number` with everything shown in review mode.
+    pub fn pr_by_number(&self, number: u64) -> Result<Option<PrDetail>> {
+        let q = format!(
+            "query($owner: String!, $name: String!, $n: Int!) {{ repository(owner: $owner, name: $name) {{
+               pullRequest(number: $n) {{ ...S {DETAIL} }} }} }}\n{SUMMARY}"
+        );
+        let data = self.graphql(&q, json!({ "owner": self.repo.owner, "name": self.repo.name, "n": number }))?;
+        let pr = &data["repository"]["pullRequest"];
+        Ok((!pr.is_null()).then(|| parse_detail(pr)))
+    }
+
+    /// Open pull requests, most recently updated first.
+    pub fn open_prs(&self, limit: usize) -> Result<Vec<PrListItem>> {
+        let q = "query($owner: String!, $name: String!, $n: Int!) { viewer { login }
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: OPEN, first: $n, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes {
+      number title url isDraft headRefName baseRefName updatedAt reviewDecision additions deletions author { login }
+      reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } } } } } }";
+        let data = self.graphql(q, json!({ "owner": self.repo.owner, "name": self.repo.name, "n": limit.min(100) }))?;
+        Ok(parse_pr_list(&data))
+    }
+
+    /// Submit a review of `commit` (the PR's head as reviewed): approve,
+    /// request changes, or comment, with `comments` on lines. Returns its URL.
+    pub fn submit_review(&self, pr_id: &str, commit: &str, event: ReviewEvent, body: &str, comments: &[DraftComment]) -> Result<String> {
+        let q = "mutation($pr: ID!, $commit: GitObjectID!, $event: PullRequestReviewEvent!, $body: String, $threads: [DraftPullRequestReviewThread]) {
+  addPullRequestReview(input: {pullRequestId: $pr, commitOID: $commit, event: $event, body: $body, threads: $threads}) { pullRequestReview { url } } }";
+        let threads: Vec<Value> = comments
+            .iter()
+            .map(|c| json!({ "path": c.path, "line": c.line, "side": if c.old_side { "LEFT" } else { "RIGHT" }, "body": c.body }))
+            .collect();
+        let body = (!body.trim().is_empty()).then(|| body.trim().to_string());
+        let data = self.graphql(q, json!({ "pr": pr_id, "commit": commit, "event": event.api(), "body": body, "threads": threads }))?;
+        Ok(s(&data["addPullRequestReview"]["pullRequestReview"]["url"]))
+    }
+
     pub fn pr_detail(&self, head: &str) -> Result<Option<PrDetail>> {
         let q = format!(
             "query($owner: String!, $name: String!, $head: String!) {{ repository(owner: $owner, name: $name) {{
@@ -396,6 +489,34 @@ impl GitHub {
         let data = self.graphql(&q, json!({ "owner": self.repo.owner, "name": self.repo.name, "head": head }))?;
         Ok(data["repository"]["pullRequests"]["nodes"].get(0).map(parse_detail))
     }
+}
+
+fn parse_pr_list(data: &Value) -> Vec<PrListItem> {
+    let me = data["viewer"]["login"].as_str().unwrap_or("");
+    data["repository"]["pullRequests"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|p| {
+            let author = author(p);
+            PrListItem {
+                number: p["number"].as_u64().unwrap_or(0),
+                title: s(&p["title"]),
+                url: s(&p["url"]),
+                head: s(&p["headRefName"]),
+                base: s(&p["baseRefName"]),
+                draft: p["isDraft"].as_bool().unwrap_or(false),
+                review_decision: p["reviewDecision"].as_str().map(String::from),
+                updated_at: s(&p["updatedAt"]),
+                additions: p["additions"].as_u64().unwrap_or(0),
+                deletions: p["deletions"].as_u64().unwrap_or(0),
+                review_requested: !me.is_empty()
+                    && p["reviewRequests"]["nodes"].as_array().into_iter().flatten().any(|r| r["requestedReviewer"]["login"].as_str() == Some(me)),
+                mine: !me.is_empty() && author == me,
+                author,
+            }
+        })
+        .collect()
 }
 
 fn s(v: &Value) -> String {
@@ -530,6 +651,12 @@ fn parse_detail(pr: &Value) -> PrDetail {
         unresolved_threads: unresolved,
         threads,
         resolved_threads: resolved,
+        body: s(&pr["body"]),
+        author: author(pr),
+        head: s(&pr["headRefName"]),
+        additions: pr["additions"].as_u64().unwrap_or(0),
+        deletions: pr["deletions"].as_u64().unwrap_or(0),
+        changed_files: pr["changedFiles"].as_u64().unwrap_or(0),
     }
 }
 
@@ -615,6 +742,26 @@ pub(crate) mod tests {
         assert_eq!((t.original_commit.as_str(), t.id.as_str()), ("c1", "T1"));
         assert_eq!(t.comments.iter().map(|c| c.author.as_str()).collect::<Vec<_>>(), ["lee", "kim", "lee"]);
         assert!(d.threads[1].resolved);
+    }
+
+    #[test]
+    fn open_pr_list() {
+        let data = json!({
+            "viewer": {"login": "me"},
+            "repository": {"pullRequests": {"nodes": [
+                {"number": 12, "title": "Add reminders", "url": "u12", "isDraft": false, "headRefName": "feat/x", "baseRefName": "main",
+                 "updatedAt": "2026-11-20T10:00:00Z", "reviewDecision": "REVIEW_REQUIRED", "additions": 40, "deletions": 3,
+                 "author": {"login": "jo"}, "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "me"}}, {"requestedReviewer": {}}]}},
+                {"number": 9, "title": "Mine", "url": "u9", "isDraft": true, "headRefName": "fix/y", "baseRefName": "main",
+                 "updatedAt": "2026-11-19T10:00:00Z", "reviewDecision": null, "additions": 1, "deletions": 1,
+                 "author": {"login": "me"}, "reviewRequests": {"nodes": []}}
+            ]}}
+        });
+        let l = parse_pr_list(&data);
+        assert_eq!(l.len(), 2);
+        assert!(l[0].review_requested && !l[0].mine && l[0].head == "feat/x" && l[0].additions == 40);
+        assert!(!l[1].review_requested && l[1].mine && l[1].draft);
+        assert_eq!(ReviewEvent::RequestChanges.api(), "REQUEST_CHANGES");
     }
 
     #[test]
