@@ -33,7 +33,15 @@ Write Markdown notes on commits, branches, and tasks, and let AI agents read and
 
 ## Install
 
-Get the latest from [Releases](https://github.com/wiggleji/margin/releases/latest):
+**macOS with Homebrew:**
+
+```bash
+brew install --cask wiggleji/tap/margin
+```
+
+This also puts `margin` (open a repository: `margin .`) and `margin-mcp` on your PATH. Margin keeps itself up to date after that.
+
+Or get the latest from [Releases](https://github.com/wiggleji/margin/releases/latest):
 
 - **macOS** (Apple Silicon and Intel): **Margin-&lt;version&gt;.dmg**. Open it and drag Margin into Applications. After that, Margin updates itself (**Margin → Check for Updates…**; automatic by default). If macOS says the app can't be opened, run this once:
 
@@ -46,7 +54,7 @@ Get the latest from [Releases](https://github.com/wiggleji/margin/releases/lates
 
 ### Open from the terminal
 
-In Margin, choose **Margin → Install 'margin' Command…** (or ⌘P → *Install 'margin' command*). Then:
+Installed with Homebrew? It's there already. Otherwise, in Margin, choose **Margin → Install 'margin' Command…** (or ⌘P → *Install 'margin' command*). Then:
 
 ```bash
 margin .

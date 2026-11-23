@@ -106,6 +106,9 @@ run cp "$DIST/Info.plist" "$APP/Contents/Info.plist"
 run plutil -lint "$APP/Contents/Info.plist"
 run iconutil -c icns "$PKG/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 run cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/"
+# the `margin` command Homebrew links onto PATH (finds the app through the link)
+run mkdir -p "$APP/Contents/Resources/bin"
+run install -m 755 "$PKG/margin-launcher.sh" "$APP/Contents/Resources/bin/margin"
 
 # -------------------------------------------------------------------- sign
 step "Signing ($([ "$DEV" = 1 ] && echo ad-hoc || echo "$SIGN_ID"))"

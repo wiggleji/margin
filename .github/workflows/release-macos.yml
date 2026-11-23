@@ -206,7 +206,14 @@ jobs:
     needs: [prepare, macos, windows, linux]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    env:
+      # a token that can push to wiggleji/homebrew-tap (docs/RELEASING.md); without it the tap isn't updated
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          path: src
+          sparse-checkout: packaging/homebrew
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -225,7 +232,7 @@ jobs:
             echo
             echo "| | |"
             echo "|---|---|"
-            echo "| **macOS** (Apple Silicon and Intel) | **Margin-$v.dmg** |"
+            echo "| **macOS** (Apple Silicon and Intel) | **Margin-$v.dmg**, or \`brew install --cask wiggleji/tap/margin\` |"
             echo "| **Windows** (64-bit) | **Margin-$v-windows-x64-setup.exe** (installer), or the portable **Margin-$v-windows-x64.zip** |"
             echo "| **Linux** (x64) | **Margin-$v-x86_64.AppImage** (any distribution), **margin_${v}_amd64.deb** (Debian, Ubuntu), or **margin-$v-linux-x64.tar.gz** |"
             echo
@@ -259,3 +266,22 @@ jobs:
           # creates the tag on this commit when it doesn't exist yet (manual runs)
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --latest --title "Margin $v" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
+
+      - name: Update the Homebrew tap
+        if: env.TAP_TOKEN != ''
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          sha="$(cut -d' ' -f1 "dist/Margin-$v.dmg.sha256")"
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/wiggleji/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          sed -e "s/@VERSION@/$v/g" -e "s/@SHA256@/$sha/g" src/packaging/homebrew/margin.rb.in > tap/Casks/margin.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/margin.rb
+          git diff --cached --quiet && { echo "cask already at $v"; exit 0; }
+          git commit -m "margin $v"
+          git push origin HEAD
