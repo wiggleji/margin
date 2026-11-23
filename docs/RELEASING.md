@@ -76,6 +76,18 @@ Configure these in *Settings → Secrets and variables → Actions*:
 | `NOTARY_API_KEY_ID` | secret | the API key's Key ID |
 | `NOTARY_API_ISSUER_ID` | secret | the Issuer ID |
 
+| `HOMEBREW_TAP_TOKEN` | secret | optional: a token that can push to `wiggleji/homebrew-tap` (see below) |
+
+### Homebrew
+
+`brew install --cask wiggleji/tap/margin` installs from the cask in the **wiggleji/homebrew-tap** repository (`Casks/margin.rb`). The Release workflow writes it for each release from `packaging/homebrew/margin.rb.in` (the version and the DMG's SHA-256) and pushes it there, when `HOMEBREW_TAP_TOKEN` is set. One-time setup:
+
+1. Create the public repository **wiggleji/homebrew-tap** (the `homebrew-` prefix is what lets `brew` find it as `wiggleji/tap`), with a README.
+2. Create a fine-grained personal access token with access to only that repository, **Contents: Read and write**, and add it as the `HOMEBREW_TAP_TOKEN` secret here.
+3. The next release publishes the cask. To publish the current one by hand, fill in the template with its version and the `sha256` from its `Margin-<version>.dmg.sha256`, and commit it as `Casks/margin.rb` in the tap.
+
+The cask installs `Margin.app`, links `margin` (the launcher in `Margin.app/Contents/Resources/bin`) and `margin-mcp` onto PATH, and, until the app is notarized, clears the quarantine flag so the first open isn't blocked. It's marked `auto_updates`: Margin updates itself, and `brew upgrade` leaves it alone unless run with `--greedy`.
+
 macOS runners use about 10× the minutes of Linux runners against a private repo's Actions quota. One release run takes roughly 15–25 minutes.
 
 ## Verify a DMG
