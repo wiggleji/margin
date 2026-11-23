@@ -1452,6 +1452,7 @@ mod stash_tests {
         g(&["config", "user.name", "t"]);
         g(&["config", "user.email", "t@t"]);
         g(&["config", "commit.gpgsign", "false"]);
+        g(&["config", "core.autocrlf", "false"]); // (Windows runners may convert line endings)
         put("a.txt", "a\n");
         put("b.txt", "b\n");
         g(&["add", "."]);
