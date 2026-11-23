@@ -1841,7 +1841,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "margin-app"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "arboard",
  "eframe",
@@ -1859,7 +1859,7 @@ dependencies = [
 
 [[package]]
 name = "margin-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64",
  "libc",
@@ -1873,7 +1873,7 @@ dependencies = [
 
 [[package]]
 name = "margin-mcp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "margin-core",
  "serde_json",
