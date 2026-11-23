@@ -389,33 +389,26 @@ fn files_tab(ui: &mut Ui, r: &mut Review, prefs: &mut DiffPrefs, actions: &mut V
             for (fi, f) in r.diff.files.iter().enumerate() {
                 let path = f.display_path();
                 let (dir, name) = path.rsplit_once('/').map_or(("", path), |(d, n)| (d, n));
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    let mut v = viewed[fi];
-                    if ui.checkbox(&mut v, "").on_hover_text("Viewed: fold this file; it comes back if it changes").changed() {
-                        toggle = Some((fi, v));
-                    }
-                    let w = ui.available_width() - 70.0;
-                    let label = if dir.is_empty() { RichText::new(name) } else { RichText::new(name).strong() };
-                    let resp = ui
-                        .allocate_ui_with_layout(egui::vec2(w.max(40.0), ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.add(egui::Button::selectable(top == Some(fi), label).truncate())
-                        })
-                        .inner
-                        .on_hover_text(path);
-                    if resp.clicked() {
-                        goto = Some(fi);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(format!("−{}", f.removed)).small().color(theme::REMOVED()));
-                        ui.label(RichText::new(format!("+{}", f.added)).small().color(theme::ADDED()));
-                    });
-                });
-                if !dir.is_empty() {
+                let (block, checked) = entry_block(ui, egui::Id::unique(("review-file", fi)), top == Some(fi), Some(viewed[fi]), |ui| {
                     ui.horizontal(|ui| {
-                        ui.add_space(28.0);
-                        ui.add(egui::Label::new(RichText::new(dir).small().color(theme::TEXT_DIM())).truncate());
+                        let w = (ui.available_width() - 64.0).max(40.0);
+                        let name = if dir.is_empty() { RichText::new(name) } else { RichText::new(name).strong() };
+                        ui.allocate_ui_with_layout(egui::vec2(w, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(egui::Label::new(name).truncate());
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(format!("−{}", f.removed)).small().color(theme::REMOVED()));
+                            ui.label(RichText::new(format!("+{}", f.added)).small().color(theme::ADDED()));
+                        });
                     });
+                    if !dir.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(dir).small().color(theme::TEXT_DIM())).truncate());
+                    }
+                });
+                if let Some(v) = checked {
+                    toggle = Some((fi, v));
+                } else if block.on_hover_text(path).clicked() {
+                    goto = Some(fi);
                 }
             }
         });
@@ -436,6 +429,66 @@ fn files_tab(ui: &mut Ui, r: &mut Review, prefs: &mut DiffPrefs, actions: &mut V
     });
 }
 
+/// One entry of a list (a file, a commit) as a single block: the whole
+/// width and height takes the click and shows hover / selection, like the
+/// rows of the history. `checkbox`: a Viewed box at the left, which keeps its
+/// own clicks. Returns the block's response and the box's new value when it
+/// was clicked.
+fn entry_block(ui: &mut Ui, id: egui::Id, selected: bool, checkbox: Option<bool>, content: impl FnOnce(&mut Ui)) -> (egui::Response, Option<bool>) {
+    let pad = egui::vec2(6.0, 4.0);
+    let w = ui.available_width();
+    let left = if checkbox.is_some() { ui.spacing().interact_size.y + 2.0 } else { 0.0 };
+    let top = ui.cursor().min;
+    // The block is registered before its content (a widget added later wins
+    // the click, and the checkbox must keep its own), with last frame's height.
+    let h_id = id.with("h");
+    let h = ui.data(|d| d.get_temp::<f32>(h_id)).unwrap_or(ui.spacing().interact_size.y + pad.y * 2.0);
+    let block = ui.interact(egui::Rect::from_min_size(top, egui::vec2(w, h)), id, egui::Sense::click());
+    // a slot behind the content for the hover / selection fill
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let mut checked = None;
+    let inner = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(top + pad, egui::vec2(w - pad.x * 2.0, f32::INFINITY))), |ui| {
+            ui.style_mut().interaction.selectable_labels = false;
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if let Some(mut v) = checkbox
+                    && ui.checkbox(&mut v, "").on_hover_text("Viewed: fold this file; it comes back if it changes").changed()
+                {
+                    checked = Some(v);
+                }
+                ui.vertical(|ui| {
+                    ui.set_width((w - pad.x * 2.0 - left).max(40.0));
+                    content(ui);
+                });
+            });
+        })
+        .response;
+    let h_now = inner.rect.height() + pad.y * 2.0;
+    if (h_now - h).abs() > 0.5 {
+        ui.data_mut(|d| d.insert_temp(h_id, h_now));
+        ui.ctx().request_repaint();
+    }
+    let rect = egui::Rect::from_min_size(top, egui::vec2(w, h_now));
+    ui.advance_cursor_after_rect(rect);
+    let fill = if selected {
+        Some(theme::SELECTED())
+    } else if block.hovered() {
+        Some(theme::HOVER())
+    } else {
+        None
+    };
+    if let Some(c) = fill {
+        ui.painter().set(bg, egui::Shape::rect_filled(rect, 4.0, c));
+    }
+    if block.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.add_space(2.0);
+    (block, checked)
+}
+
 fn commits_tab(ui: &mut Ui, r: &mut Review, prefs: &mut DiffPrefs, actions: &mut Vec<Action>) {
     egui::Panel::left("review_commits").resizable(true).default_size(360.0).min_size(220.0).max_size(700.0).show(ui, |ui| {
         let now = margin_core::time_now();
@@ -444,17 +497,14 @@ fn commits_tab(ui: &mut Ui, r: &mut Review, prefs: &mut DiffPrefs, actions: &mut
                 ui.weak("No commits.");
             }
             for c in &r.commits {
-                // the title and the line under it are one click target
                 let sel = r.commit_sel.as_deref() == Some(c.id.as_str());
-                let title = ui.add(egui::Button::selectable(sel, RichText::new(&c.subject)).truncate().min_size(egui::vec2(ui.available_width(), 0.0)));
-                let meta = ui.add(
-                    egui::Label::new(RichText::new(format!("{} · {} · {}", c.short_id(), c.author, crate::commit_list::rel_time(now, c.time))).small().color(theme::TEXT_DIM()))
-                        .sense(egui::Sense::click()),
-                );
-                if title.clicked() || meta.clicked() {
+                let (block, _) = entry_block(ui, egui::Id::unique(("review-commit", c.id.as_str())), sel, None, |ui| {
+                    ui.add(egui::Label::new(RichText::new(&c.subject)).truncate());
+                    ui.add(egui::Label::new(RichText::new(format!("{} · {} · {}", c.short_id(), c.author, crate::commit_list::rel_time(now, c.time))).small().color(theme::TEXT_DIM())).truncate());
+                });
+                if block.clicked() {
                     actions.push(Action::ReviewOpenCommit(c.id.clone()));
                 }
-                ui.add_space(4.0);
             }
         });
     });
