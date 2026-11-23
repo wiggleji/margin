@@ -18,7 +18,11 @@ fn pick(prompt: &str, items: Vec<Item>) -> Step {
     Step::Pick { prompt: prompt.into(), items }
 }
 fn input(prompt: &str, initial: &str) -> Step {
-    Step::Input { prompt: prompt.into(), initial: initial.into() }
+    Step::Input { prompt: prompt.into(), initial: initial.into(), optional: false }
+}
+/// Text that may be left empty (↵ goes on without it).
+fn input_optional(prompt: &str) -> Step {
+    Step::Input { prompt: prompt.into(), initial: String::new(), optional: true }
 }
 fn confirm(msg: impl Into<String>) -> Step {
     Step::Confirm(msg.into())
@@ -69,7 +73,7 @@ pub fn build(app: &MarginApp) -> Vec<Command> {
     let remote_items: Vec<Item> =
         remotes.iter().map(|r| Item::new(r.clone(), rv.repo.remote_url(r).unwrap_or_default(), r.clone())).collect();
     let default_remote = if remotes.iter().any(|r| r == "origin") { "origin".to_string() } else { remotes.first().cloned().unwrap_or_default() };
-    let stash_items: Vec<Item> = snap.stashes.iter().map(|s| Item::new(s.message.clone(), s.name.clone(), s.name.clone())).collect();
+    let stash_items: Vec<Item> = snap.stashes.iter().map(|s| Item::new(s.title.clone(), s.name.clone(), s.name.clone())).collect();
 
     operation(rv, &mut v);
     remote(&remote_items, &remote_branch_items, &mut v);
@@ -360,10 +364,16 @@ fn tag(tags: &[Item], remotes: &[Item], default_remote: &str, v: &mut Vec<Comman
 }
 
 fn stash(stashes: &[Item], v: &mut Vec<Command>) {
-    v.push(c(Group::Stash, "Stash changes", "incl. untracked", "save shelve", vec![], act(|_| vec![Action::StashPush])));
-    v.push(c(Group::Stash, "Stash with message…", "", "save shelve", vec![input("Message", "")], git("Stash", |r, x| ok(r.stash_push(Some(&x[0]))))));
+    // a name typed right here (↵ with none: git's default), then stashed
+    let named = |staged_only: bool| {
+        move |x: &[String]| vec![Action::StashWith(margin_core::git::StashOptions { message: x[0].clone(), untracked: !staged_only, staged_only, ..Default::default() })]
+    };
+    v.push(c(Group::Stash, "Stash changes…", "all, incl. untracked · type a name", "save shelve message note", vec![input_optional("Name for the stash (optional) — ↵ to stash")], act(named(false))));
+    v.push(c(Group::Stash, "Stash staged changes…", "only what's staged · type a name", "save shelve message partial hunks index", vec![input_optional("Name for the stash (optional) — ↵ to stash only the staged changes")], act(named(true))));
+    v.push(c(Group::Stash, "Stash some files…", "pick the files", "save shelve partial files", vec![], act(|_| vec![Action::StashDialog { paths: vec![] }])));
     if !stashes.is_empty() {
         v.push(c(Group::Stash, "Pop latest stash", &stashes[0].label, "unshelve", vec![], act(|_| vec![Action::StashPop("stash@{0}".into())])));
+        v.push(c(Group::Stash, "Branch from stash…", "", "unshelve new branch", vec![pick("Stash", stashes.to_vec())], act(|x| vec![Action::StashBranchDialog(x[0].clone())])));
         v.push(c(Group::Stash, "Apply stash…", "keep it", "unshelve", vec![pick("Stash", stashes.to_vec())], act(|x| vec![Action::StashApply(x[0].clone())])));
         v.push(c(Group::Stash, "Pop stash…", "", "unshelve", vec![pick("Stash", stashes.to_vec())], act(|x| vec![Action::StashPop(x[0].clone())])));
         v.push(c(Group::Stash, "Drop stash…", "", "delete", vec![pick("Stash", stashes.to_vec()), confirm("Drop this stash? It cannot be recovered easily.")], act(|x| vec![Action::StashDrop(x[0].clone())])));

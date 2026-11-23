@@ -84,7 +84,8 @@ impl Item {
 
 pub enum Step {
     Pick { prompt: String, items: Vec<Item> },
-    Input { prompt: String, initial: String },
+    /// Text to type; `optional`: Enter with nothing typed goes on too.
+    Input { prompt: String, initial: String, optional: bool },
     Confirm(String),
 }
 
@@ -286,7 +287,8 @@ impl Palette {
                         self.sel = 0;
                     }
                     if let View::Input(_) = view {
-                        if enter && !self.query.trim().is_empty() {
+                        let optional = matches!(self.active.and_then(|a| self.cmds[a].steps.get(self.step)), Some(Step::Input { optional: true, .. }));
+                        if enter && (optional || !self.query.trim().is_empty()) {
                             clicked = Some(0);
                         }
                         return;

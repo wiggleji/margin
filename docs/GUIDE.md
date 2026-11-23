@@ -49,7 +49,7 @@ Everything Margin does, in detail. For a quick start see the [README](../README.
 - Commit graph across all branches, remotes, and tags, virtualised for large histories, with a filter box.
 - Working directory: stage or unstage files, **per-hunk** stage, unstage, and discard, and commit or amend (⌘↵).
 - Commit details: message, parents, and a full diff (large diffs are virtualised and capped at 8 MB).
-- Branches: checkout, create, delete, merge. Remotes: tracking checkout. Tags, stashes (apply, pop, drop).
+- Branches: checkout, create, delete, merge. Remotes: tracking checkout. Tags, stashes (see below).
 - **Ahead/behind badges:** each branch with an upstream shows a right-aligned pill, `2↓ │ 1↑` (behind, then ahead, like Sublime Merge). A dimmed `gone` pill means the upstream was deleted on the remote. Hover for details. Counts are as of the last fetch, so auto-fetch keeps them current. Long names truncate before the task key, note, PR, and badge, so those stay visible.
 - **Branch groups:** branches that share a prefix (`feature/`, `hotfix/`, `release/`, or any custom one like `projectA/`) are grouped once 2 or more share it. A prefix with a single branch stays flat (`projectA/login-page`). This applies at every level, and single-child chains are compacted (`projectB/feature/`). The top level is alphabetical; **inside a group, branches are most-recently-committed first**. Groups show a count and start open only if they contain the current or focused branch. Indentation is one shallow 12pt step per level, and the ● current-branch marker sits in the triangle column so names stay aligned. The same grouping applies under each remote and in the toolbar's branch switcher (as submenus).
 - **Filter the sidebar:** the box at the top of the sidebar (it stays put while the list scrolls) narrows branches, remote branches, and tags to the names containing what you type, as flat lists with full names (headings say e.g. "BRANCHES (3 of 324)"); other sections step aside meanwhile. Esc or × clears it.
@@ -124,6 +124,16 @@ Compare two branches the way a pull request shows them, or review a GitHub pull 
 - **Conversation** (pull requests): the description, checks, reviews and comments.
 
 **Reviewing a pull request:** hover a line and click **+** to comment; the comment waits as **Pending** (Remove takes it out). **Review changes** (top right) writes a summary and submits it with the pending comments as **Comment**, **Approve**, or **Request changes**, on the commit you reviewed. A pull request from someone else's fork works too: its head is fetched into `refs/margin/pr/<n>` (no branch of yours is created), and its base is fetched fresh from the remote.
+
+## Stashes
+
+Put changes aside to get back to later.
+
+- **From the command palette**, name it as you go: **⌘P / Ctrl+P → Stash changes…** (or **Stash staged changes…**), type the name, ↵ (or ↵ straight away for git's default name). **Stash some files…** opens the dialog below.
+- **Stash…** (next to Commit in the working directory, or the stash command in the menu bar) asks for a name and what to stash: **all changes** (optionally keeping what's staged in place too), **only staged changes** (stage the hunks or files to put aside, then stash just those), or **only some files** (picked from a list). New, untracked files are included unless you untick it. A file's right-click menu in the working directory has **Stash this file…**.
+- **STASHES** in the sidebar lists them by name, newest first (hover for where and when each was made). Click one to see what it holds, untracked files included, with **Pop** (apply and remove), **Apply** (keep it), **More ▾** (apply restoring what was staged, **New branch from stash…**, copy the message) and **Drop…**.
+- **New branch from stash…** makes a branch at the commit the stash was made on, checks it out and applies the stash there (removing it if it applies cleanly): the way out when a stash no longer applies where you are.
+- Stashing some files while other files are staged keeps those others out of the stash, and staged (plain `git stash` would record them in the stash too).
 
 ## Interactive rebase
 

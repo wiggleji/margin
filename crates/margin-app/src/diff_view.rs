@@ -88,6 +88,8 @@ pub enum DiffEvent {
     Unstage(Vec<String>),
     /// Open the conflict editor on this file.
     Resolve(String),
+    /// The stash dialog with these files picked.
+    Stash(Vec<String>),
     /// Asks for confirmation first.
     Discard(Vec<String>),
     CopyPath(String),
@@ -1056,6 +1058,10 @@ impl DiffView {
                                             events.push(DiffEvent::Stage(vec![path.clone()]));
                                             ui.close();
                                         }
+                                        if ui.button("Stash this file…").clicked() {
+                                            events.push(DiffEvent::Stash(vec![path.clone()]));
+                                            ui.close();
+                                        }
                                         if sec == Section::Unstaged && ui.button("Discard changes…").clicked() {
                                             events.push(DiffEvent::Discard(vec![path.clone()]));
                                             ui.close();
@@ -1064,6 +1070,10 @@ impl DiffView {
                                     Section::Staged => {
                                         if ui.button("Unstage").clicked() {
                                             events.push(DiffEvent::Unstage(vec![path.clone()]));
+                                            ui.close();
+                                        }
+                                        if ui.button("Stash this file…").clicked() {
+                                            events.push(DiffEvent::Stash(vec![path.clone()]));
                                             ui.close();
                                         }
                                     }

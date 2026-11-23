@@ -309,16 +309,24 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, tasks_enabled: bool, my_tasks: Optio
             return;
         }
         list_section(ui, &format!("STASHES ({})", snap.stashes.len()), "stashes", false, |ui| {
+                let now = margin_core::time_now();
                 for s in &snap.stashes {
-                    let resp = ui.selectable_label(false, &s.message);
+                    let selected = matches!(&rv.sel, crate::app::Sel::Commit(id) if *id == s.id);
+                    let resp = ui.selectable_label(selected, &s.title).on_hover_text(format!(
+                        "{}\n{}{}",
+                        s.name,
+                        if s.branch.is_empty() { String::new() } else { format!("made on {} · ", s.branch) },
+                        crate::commit_list::rel_time(now, s.time)
+                    ));
                     if resp.clicked() {
-                        actions.push(Action::JumpTo(s.id.clone()));
+                        actions.push(Action::Select(crate::app::Sel::Commit(s.id.clone())));
                     }
                     let name = s.name.clone();
                     resp.context_menu(|ui| {
                         for (label, a) in [
-                            ("Apply", Action::StashApply(name.clone())),
                             ("Pop", Action::StashPop(name.clone())),
+                            ("Apply", Action::StashApply(name.clone())),
+                            ("New branch from stash…", Action::StashBranchDialog(name.clone())),
                         ] {
                             if ui.button(label).clicked() {
                                 actions.push(a);
