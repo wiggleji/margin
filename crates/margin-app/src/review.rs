@@ -209,6 +209,7 @@ impl Review {
             match e {
                 DiffEvent::OpenUrl(u) => actions.push(Action::OpenUrl(u)),
                 DiffEvent::CopyPath(p) => actions.push(Action::Copy(p)),
+                DiffEvent::FileHistory { path, blame } => actions.push(Action::OpenFileView { path, blame }),
                 DiffEvent::Mention(q) => actions.push(Action::FetchMentions(q)),
                 DiffEvent::ThreadReply { id, body, .. } => actions.push(Action::ReviewThread { id, reply: Some(body), resolve: None }),
                 DiffEvent::ThreadResolve { id, resolve, .. } => actions.push(Action::ReviewThread { id, reply: None, resolve: Some(resolve) }),
@@ -537,6 +538,7 @@ fn commits_tab(ui: &mut Ui, r: &mut Review, prefs: &mut DiffPrefs, actions: &mut
             match e {
                 DiffEvent::OpenUrl(u) => actions.push(Action::OpenUrl(u)),
                 DiffEvent::CopyPath(p) => actions.push(Action::Copy(p)),
+                DiffEvent::FileHistory { path, blame } => actions.push(Action::OpenFileView { path, blame }),
                 _ => {}
             }
         }

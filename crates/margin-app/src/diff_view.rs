@@ -95,6 +95,8 @@ pub enum DiffEvent {
     /// Asks for confirmation first.
     Discard(Vec<String>),
     CopyPath(String),
+    /// Open this file's history, or its blame.
+    FileHistory { path: String, blame: bool },
     OpenUrl(String),
     /// Reply to a review thread / resolve or reopen it.
     ThreadReply { id: String, branch: String, body: String },
@@ -1296,6 +1298,15 @@ impl DiffView {
                                 }
                                 if ui.button("Copy path").clicked() {
                                     events.push(DiffEvent::CopyPath(path.clone()));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui.button("File history").on_hover_text("Every commit that changed this file").clicked() {
+                                    events.push(DiffEvent::FileHistory { path: path.clone(), blame: false });
+                                    ui.close();
+                                }
+                                if ui.button("Blame").on_hover_text("Who last changed each line").clicked() {
+                                    events.push(DiffEvent::FileHistory { path: path.clone(), blame: true });
                                     ui.close();
                                 }
                             });

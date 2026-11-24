@@ -220,6 +220,8 @@ mod mac {
                     &b.repo("Git Flow…", None, Cmd::Palette("git flow")),
                     &sep(),
                     &b.repo("Insights", None, Cmd::Palette("Repository/Insights")),
+                    &b.repo("File History…", None, Cmd::Palette("Repository/File history…")),
+                    &b.repo("Blame File…", None, Cmd::Palette("Repository/Blame file…")),
                     &sep(),
                     &b.repo("Refresh", Some("cmd+KeyR"), Cmd::Refresh),
                 ],

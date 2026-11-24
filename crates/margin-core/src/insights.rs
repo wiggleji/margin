@@ -51,7 +51,7 @@ pub fn load(repo: &Repo, since: Option<i64>, all_branches: bool) -> Result<Vec<C
 }
 
 /// `src/{old => new}/x.rs` or `old.rs => new.rs` → the new path.
-fn renamed(p: &str) -> String {
+pub(crate) fn renamed(p: &str) -> String {
     if let (Some(a), Some(b)) = (p.find('{'), p.find('}'))
         && a < b
         && let Some((_, new)) = p[a + 1..b].split_once(" => ")

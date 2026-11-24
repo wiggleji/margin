@@ -153,6 +153,14 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
     let p = path.display().to_string();
     v.push(c(Group::Repository, "Copy repository path", "", "clipboard", vec![], act(move |_| vec![Action::Copy(p.clone())])));
     v.push(c(Group::Repository, "Insights", "who changed what, where and when", "analytics statistics stats contributors activity hotspots folders directories ownership", vec![], act(|_| vec![Action::OpenInsights])));
+    if let Some(rv) = &app.rv {
+        let files: Vec<Item> = rv.repo.tracked_files().unwrap_or_default().into_iter().map(Item::simple).collect();
+        if !files.is_empty() {
+            let f2 = files.clone();
+            v.push(c(Group::Repository, "File history…", "every commit that changed a file", "log file follow renames changes path", vec![pick("File", files)], act(|x| vec![Action::OpenFileView { path: x[0].clone(), blame: false }])));
+            v.push(c(Group::Repository, "Blame file…", "who last changed each line", "blame annotate praise author line", vec![pick("File", f2)], act(|x| vec![Action::OpenFileView { path: x[0].clone(), blame: true }])));
+        }
+    }
     v.push(c(Group::Repository, "Close tab", "", "close repository directory", vec![], act(|_| vec![Action::CloseRepo])));
 }
 

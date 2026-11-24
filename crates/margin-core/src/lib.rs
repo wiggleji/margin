@@ -16,11 +16,13 @@
 //! * `conflict` – merge conflicts: parse markers, choose sides, mark resolved.
 //! * `rebase`   – interactive rebase from a plan (no editor).
 //! * `insights` – who changed what, where and when (git log --numstat).
+//! * `file_history` – one file through time: its commits (following renames) and blame.
 
 pub mod config;
 pub mod conflict;
 pub mod detached;
 pub mod diff;
+pub mod file_history;
 pub mod git;
 pub mod github;
 pub mod gitflow;

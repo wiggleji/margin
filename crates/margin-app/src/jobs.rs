@@ -71,6 +71,9 @@ pub enum Msg {
     /// The commits whose changes add or remove `text` (a `code:` search).
     CodeSearch { workdir: PathBuf, text: String, result: Result<std::collections::HashSet<String>, String> },
     /// Insights: the commits of a range, with what they changed.
+    FileHistoryLoaded { workdir: PathBuf, generation: u64, result: Result<Vec<margin_core::file_history::FileCommit>, String> },
+    FileCommitDiff { workdir: PathBuf, generation: u64, index: usize, result: Result<(Vec<FileDiff>, bool), String> },
+    BlameLoaded { workdir: PathBuf, generation: u64, rev: String, result: Result<margin_core::file_history::Blame, String> },
     InsightsLoaded { workdir: PathBuf, generation: u64, result: Result<Vec<margin_core::insights::CommitStat>, String> },
     /// GitHub answered an @mention lookup (the answers go into the mention directory).
     Mentions { workdir: PathBuf, result: Result<(), String> },
@@ -101,6 +104,9 @@ impl Msg {
             | Msg::CodeSearch { workdir, .. }
             | Msg::Mentions { workdir, .. }
             | Msg::InsightsLoaded { workdir, .. }
+            | Msg::FileHistoryLoaded { workdir, .. }
+            | Msg::FileCommitDiff { workdir, .. }
+            | Msg::BlameLoaded { workdir, .. }
             | Msg::GithubReady { workdir, .. }
             | Msg::Prs { workdir, .. }
             | Msg::PrDetail { workdir, .. }
