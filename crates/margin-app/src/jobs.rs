@@ -70,6 +70,8 @@ pub enum Msg {
     AutoFetched { workdir: PathBuf, result: Result<String, String> },
     /// The commits whose changes add or remove `text` (a `code:` search).
     CodeSearch { workdir: PathBuf, text: String, result: Result<std::collections::HashSet<String>, String> },
+    /// Insights: the commits of a range, with what they changed.
+    InsightsLoaded { workdir: PathBuf, generation: u64, result: Result<Vec<margin_core::insights::CommitStat>, String> },
     /// GitHub answered an @mention lookup (the answers go into the mention directory).
     Mentions { workdir: PathBuf, result: Result<(), String> },
     // GitHub messages carry the repo path so late replies for a closed repo are dropped.
@@ -98,6 +100,7 @@ impl Msg {
             | Msg::AutoFetched { workdir, .. }
             | Msg::CodeSearch { workdir, .. }
             | Msg::Mentions { workdir, .. }
+            | Msg::InsightsLoaded { workdir, .. }
             | Msg::GithubReady { workdir, .. }
             | Msg::Prs { workdir, .. }
             | Msg::PrDetail { workdir, .. }

@@ -219,6 +219,8 @@ mod mac {
                     &b.repo("Add Worktree…", None, Cmd::Palette("Worktree/Add worktree for branch…")),
                     &b.repo("Git Flow…", None, Cmd::Palette("git flow")),
                     &sep(),
+                    &b.repo("Insights", None, Cmd::Palette("Repository/Insights")),
+                    &sep(),
                     &b.repo("Refresh", Some("cmd+KeyR"), Cmd::Refresh),
                 ],
             )

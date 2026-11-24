@@ -127,6 +127,11 @@ pub enum Action {
     /// the branch split off from the default branch).
     OpenRebase(Option<String>),
     CloseRebase,
+    /// Insights: who changed what, where and when (in place of the history).
+    OpenInsights,
+    CloseInsights,
+    /// Read the history again for the Insights range / branches.
+    LoadInsights,
     /// Search the history's changes for this text (`code:` filter).
     SearchCode(String),
     /// Look up people to @mention on GitHub.
@@ -406,6 +411,9 @@ pub struct RepoView {
     pub conflicts: Option<crate::conflicts::Conflicts>,
     /// An interactive rebase being planned (in place of the history).
     pub rebase: Option<crate::rebase::Plan>,
+    /// Insights, when open (in place of the history, like review mode).
+    pub insights: Option<crate::insights::Insights>,
+    insights_gen: u64,
     /// A git step failed: open the conflict editor if it left conflicts.
     conflict_check: bool,
     review_gen: u64,
@@ -514,6 +522,8 @@ impl RepoView {
             review: None,
             conflicts: None,
             rebase: None,
+            insights: None,
+            insights_gen: 0,
             // a repository opened in the middle of a conflicted merge: show the editor
             conflict_check: true,
             review_gen: 0,
@@ -1508,6 +1518,32 @@ impl MarginApp {
                     rv.rebase = None;
                 }
             }
+            OpenInsights => {
+                let Some(rv) = &mut self.rv else { return };
+                rv.review = None;
+                rv.rebase = None;
+                if rv.insights.is_none() {
+                    rv.insights_gen += 1;
+                    rv.insights = Some(crate::insights::Insights::new(rv.insights_gen));
+                    self.handle(LoadInsights);
+                }
+            }
+            CloseInsights => {
+                if let Some(rv) = &mut self.rv {
+                    rv.insights = None;
+                }
+            }
+            LoadInsights => {
+                let Some(rv) = &mut self.rv else { return };
+                let Some(ins) = rv.insights.as_mut() else { return };
+                rv.insights_gen += 1;
+                ins.generation = rv.insights_gen;
+                ins.data = None;
+                let (generation, all, days) = (ins.generation, ins.all_branches, ins.range.days());
+                let since = days.map(|d| margin_core::time_now() - d * 86_400);
+                let repo = rv.repo.clone();
+                self.jobs.spawn(move || Msg::InsightsLoaded { workdir: repo.workdir.clone(), generation, result: margin_core::insights::load(&repo, since, all).map_err(|e| e.0) });
+            }
             ReviewOpenCommit(sha) => {
                 let ws = self.state.diff_ignore_ws;
                 let Some(rv) = &mut self.rv else { return };
@@ -2356,6 +2392,11 @@ impl MarginApp {
                     eprintln!("mention lookup: {e}");
                 }
             }
+            Msg::InsightsLoaded { workdir, generation, result } => {
+                if let Some(ins) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir).and_then(|rv| rv.insights.as_mut()).filter(|i| i.generation == generation) {
+                    ins.set_data(result);
+                }
+            }
             Msg::OpenPrs { workdir, result } => {
                 if let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) {
                     rv.open_prs = Some(result);
@@ -3169,7 +3210,8 @@ impl eframe::App for MarginApp {
             };
             let resolving = rv.conflicts.is_some();
             let rebasing = rv.rebase.is_some();
-            let reviewing = rv.review.is_some() || resolving || rebasing;
+            let insighting = rv.insights.is_some();
+            let reviewing = rv.review.is_some() || resolving || rebasing || insighting;
             if reviewing {
                 // Review mode: the sidebar, then the comparison in place of the
                 // history, details and notes.
@@ -3183,6 +3225,8 @@ impl eframe::App for MarginApp {
                 egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG())).show(ui, |ui| {
                     if rebasing {
                         crate::rebase::show(ui, rv, &mut actions)
+                    } else if insighting && !resolving {
+                        crate::insights::show(ui, rv, &mut actions)
                     } else if resolving {
                         crate::conflicts::show(ui, rv, &mut actions)
                     } else {

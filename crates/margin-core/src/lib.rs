@@ -15,6 +15,7 @@
 //! * `config`   – config + secret lookup (env var / macOS Keychain).
 //! * `conflict` – merge conflicts: parse markers, choose sides, mark resolved.
 //! * `rebase`   – interactive rebase from a plan (no editor).
+//! * `insights` – who changed what, where and when (git log --numstat).
 
 pub mod config;
 pub mod conflict;
@@ -23,6 +24,7 @@ pub mod diff;
 pub mod git;
 pub mod github;
 pub mod gitflow;
+pub mod insights;
 pub mod history;
 pub mod journal;
 mod http;

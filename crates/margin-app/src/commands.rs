@@ -152,6 +152,7 @@ fn repository(app: &MarginApp, v: &mut Vec<Command>) {
     v.push(c(Group::Repository, "Open in Terminal", "", "shell console", vec![], act(move |_| vec![Action::OpenPath { path: p.clone(), terminal: true }])));
     let p = path.display().to_string();
     v.push(c(Group::Repository, "Copy repository path", "", "clipboard", vec![], act(move |_| vec![Action::Copy(p.clone())])));
+    v.push(c(Group::Repository, "Insights", "who changed what, where and when", "analytics statistics stats contributors activity hotspots folders directories ownership", vec![], act(|_| vec![Action::OpenInsights])));
     v.push(c(Group::Repository, "Close tab", "", "close repository directory", vec![], act(|_| vec![Action::CloseRepo])));
 }
 
