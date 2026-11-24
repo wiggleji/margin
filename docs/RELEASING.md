@@ -118,4 +118,5 @@ codesign -dv --verbose=4 /Applications/Margin.app
 
 - **`errSecInternalComponent` while signing (CI):** the keychain is locked or the partition list isn't set. The workflow handles both; check that the .p12 includes the private key.
 - **Notarization "Invalid":** fetch the log with `xcrun notarytool log <submission-id> --keychain-profile margin-notary`. Usual causes are a missing `--options runtime` or `--timestamp` (both set by the script) or an unsigned nested binary.
+- **Windows: Margin doesn't open (no window, no error) on a virtual machine or over Remote Desktop:** it draws with OpenGL, and without a graphics driver Windows offers only OpenGL 1.1. Margin then starts again on Direct3D 12, which falls back to Windows' software renderer (WARP), and shows a message if that fails too. `MARGIN_RENDERER=wgpu` (Direct3D) or `glow` (OpenGL) picks one. (This is also what winget's validation machines need: they have no GPU.)
 - **The app opens but doesn't find Homebrew git:** Finder-launched apps get a minimal `PATH`; Margin prepends `/opt/homebrew/bin` and `/usr/local/bin` at startup. Set `MARGIN_GIT` to pin a specific git.
