@@ -127,6 +127,8 @@ pub enum Action {
     /// the branch split off from the default branch).
     OpenRebase(Option<String>),
     CloseRebase,
+    /// Search the history's changes for this text (`code:` filter).
+    SearchCode(String),
     /// Review mode: reply to a thread, or resolve / reopen it.
     ReviewThread { id: String, reply: Option<String>, resolve: Option<bool> },
     /// Review mode: submit the review with its pending comments.
@@ -379,6 +381,9 @@ pub struct RepoView {
     pub search_sel: usize,
     pub search_hidden: bool,
     pub filtered: Option<(String, Vec<usize>)>,
+    /// `code:` searches: text → the commits changing it (git log -G); asked ones.
+    pub code_hits: HashMap<String, Result<std::collections::HashSet<String>, String>>,
+    pub code_asked: std::collections::HashSet<String>,
     /// Existing notes → first line (title).
     pub note_index: HashMap<NoteTarget, String>,
     /// Commit id → local branches pointing at it (current branch first).
@@ -494,6 +499,8 @@ impl RepoView {
             search_sel: 0,
             search_hidden: false,
             filtered: None,
+            code_hits: HashMap::new(),
+            code_asked: Default::default(),
             note_index: HashMap::new(),
             tips: HashMap::new(),
             row_tasks: HashMap::new(),
@@ -632,6 +639,8 @@ pub struct MarginApp {
     pub palette: Option<crate::palette::Palette>,
     /// Focus the commit search box on the next frame (Edit → Find Commits).
     pub focus_search: bool,
+    /// The pointer was over a diff last frame (⌘F finds in it).
+    diff_hovered: bool,
     /// Diff focus mode: the details/diff column takes the whole window.
     pub focus_diff: bool,
     menu: crate::menu_bar::MenuBar,
@@ -686,6 +695,7 @@ impl MarginApp {
             status_undo: vec![],
             palette: None,
             focus_search: false,
+            diff_hovered: false,
             focus_diff: false,
             menu: crate::menu_bar::MenuBar::new(ctx),
             cli_rx: crate::cli::listen(ctx),
@@ -823,6 +833,16 @@ impl MarginApp {
         });
     }
 
+    /// ⌘F: find in the diff under the pointer, else focus the commit search.
+    fn find(&mut self, ctx: &egui::Context) {
+        if self.diff_hovered {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique(crate::diff_view::FIND_REQUEST), true));
+            ctx.request_repaint();
+        } else {
+            self.focus_search = true;
+        }
+    }
+
     fn op(&mut self, label: &str, f: impl FnOnce(&Repo) -> margin_core::Result<String> + Send + 'static) {
         let Some(rv) = &self.rv else { return };
         if let Some(b) = &self.busy {
@@ -954,7 +974,7 @@ impl MarginApp {
                 return;
             }
             Cmd::FindCommits => {
-                self.focus_search = true;
+                self.find(ctx);
                 return;
             }
             Cmd::Fetch => Action::Fetch,
@@ -1530,6 +1550,11 @@ impl MarginApp {
             ToggleView(id) => {
                 crate::view::toggle(&mut self.state, &id);
                 let _ = config::save_state(&self.state);
+            }
+            SearchCode(text) => {
+                let Some(rv) = &self.rv else { return };
+                let repo = rv.repo.clone();
+                self.jobs.spawn(move || Msg::CodeSearch { workdir: repo.workdir.clone(), result: repo.commits_changing(&text).map(|v| v.into_iter().collect()).map_err(|e| e.0), text });
             }
             FetchOpenPrs => {
                 let Some(rv) = &mut self.rv else { return };
@@ -2141,6 +2166,12 @@ impl MarginApp {
                         // task linked to a branch whose tip this is).
                         rv.row_tasks = crate::commit_list::task_rows(snap.commits.iter(), &rv.tips, &rv.notes, rv.task_style);
                         rv.filtered = None;
+                        // (other commits may change what a code: search finds)
+                        let same = rv.snap.as_ref().is_some_and(|o| o.commits.len() == snap.commits.len() && o.commits.iter().zip(&snap.commits).all(|(a, b)| a.id == b.id));
+                        if !same {
+                            rv.code_hits.clear();
+                            rv.code_asked.clear();
+                        }
                         rv.snap = Some(snap);
                         // the conflict editor: reload after its git steps, close when
                         // the operation is finished; open it when a step left conflicts
@@ -2294,6 +2325,12 @@ impl MarginApp {
                         self.reload_review_pr();
                     }
                     Err(e) => self.err(format!("Review not submitted: {e}")),
+                }
+            }
+            Msg::CodeSearch { workdir, text, result } => {
+                if let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) {
+                    rv.code_hits.insert(text, result);
+                    rv.filtered = None;
                 }
             }
             Msg::OpenPrs { workdir, result } => {
@@ -2899,6 +2936,8 @@ impl MarginApp {
 impl eframe::App for MarginApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // a diff the pointer was over last frame takes ⌘F (find in the diff)
+        self.diff_hovered = ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique(crate::diff_view::DIFF_HOVERED))).unwrap_or(false);
         for m in self.jobs.poll() {
             self.on_msg(m);
         }
@@ -2963,6 +3002,10 @@ impl eframe::App for MarginApp {
             if n > 0 {
                 self.handle(Action::SwitchTab(if k == 8 { n - 1 } else { k.min(n - 1) }));
             }
+        }
+        // ⌘F (Ctrl+F) that no diff took: the commit search
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+            self.find(&ctx);
         }
         // Ctrl+, opens Settings where there's no menu bar to do it (macOS: Margin → Settings…)
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {

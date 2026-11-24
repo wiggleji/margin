@@ -3,6 +3,7 @@
 //!   commit:3c7d469   author:sungmin   title:"merge pull"   branch:develop
 //!   tag:26.47        task:SER-6114    note:"rollout plan"
 //!   after:2026-11-01 before:2026-11-15  after:7d  before:yesterday
+//!   code:"fn login"   (commits that added or removed a line containing it; git log -G)
 //!
 //! Terms are combined with AND; quotes allow spaces. Matching is
 //! case-insensitive; `commit:` matches the start of the SHA. Dates are the
@@ -24,11 +25,13 @@ enum Field {
 }
 
 /// Filters for the search box's hint / tooltip.
-pub const HELP: &str = "Filters (combine freely):\n  commit:<sha>    author:<name or email>\n  title:<words>   branch:<name>   tag:<name>\n  task:<KEY-123>   note:<note title>\n  after:<date>    before:<date>   (2026-11-01, 2026-11, 7d, 2w, 3m, today, yesterday)\nUse quotes for spaces: title:\"merge pull\"";
+pub const HELP: &str = "Filters (combine freely):\n  commit:<sha>    author:<name or email>\n  title:<words>   branch:<name>   tag:<name>\n  task:<KEY-123>   note:<note title>\n  code:<text>     commits that added or removed a line with it (exact case)\n  after:<date>    before:<date>   (2026-11-01, 2026-11, 7d, 2w, 3m, today, yesterday)\nUse quotes for spaces: title:\"merge pull\"";
 
 #[derive(Debug, PartialEq)]
 pub struct Query {
     terms: Vec<(Field, String)>,
+    /// `code:` texts (as typed: case matters), answered by git (`git log -G`).
+    pub code: Vec<String>,
     /// Unix-time bounds: `after <= time < before`.
     after: Option<i64>,
     before: Option<i64>,
@@ -44,8 +47,18 @@ impl Query {
     /// `tz`: the time zone's offset from UTC at a given time (seconds).
     pub fn parse_at(q: &str, now: i64, tz: &dyn Fn(i64) -> i64) -> Query {
         let mut terms = vec![];
+        let mut code = vec![];
         let (mut after, mut before): (Option<i64>, Option<i64>) = (None, None);
         for tok in tokens(q) {
+            if let Some((k, v)) = tok.split_once(':')
+                && matches!(k.to_lowercase().as_str(), "code" | "change" | "diff")
+            {
+                let v = v.trim_matches('"');
+                if !v.is_empty() {
+                    code.push(v.to_string());
+                }
+                continue;
+            }
             // after: / before: (an unreadable date becomes a plain word, so it matches nothing)
             if let Some((k, v)) = tok.split_once(':') {
                 let k = k.to_lowercase();
@@ -79,11 +92,11 @@ impl Query {
                 terms.push((field, value));
             }
         }
-        Query { terms, after, before }
+        Query { terms, code, after, before }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.terms.is_empty() && self.after.is_none() && self.before.is_none()
+        self.terms.is_empty() && self.code.is_empty() && self.after.is_none() && self.before.is_none()
     }
 
     /// `notes`: titles of the notes on this commit (its own, and branch notes
@@ -140,6 +153,7 @@ const KEYS: &[(&str, &str)] = &[
     ("tag:", "tag name"),
     ("task:", "task key, e.g. PROJ-123"),
     ("note:", "note title"),
+    ("code:", "text in added or removed lines"),
     ("after:", "date: 2026-11-01, 7d, today"),
     ("before:", "date: 2026-11-15, yesterday"),
 ];
@@ -411,6 +425,16 @@ fn tokens(q: &str) -> Vec<String> {
 mod tests {
     use super::Query;
     use margin_core::git::Commit;
+
+    #[test]
+    fn code_terms_keep_their_case() {
+        let q = Query::parse(r#"code:"fn Login(" author:jo"#);
+        assert_eq!(q.code, ["fn Login("]);
+        assert!(!q.is_empty());
+        // only code: still counts as a search
+        assert!(!Query::parse("change:x").is_empty());
+        assert!(Query::parse("code:").is_empty());
+    }
 
     fn commit(id: &str, author: &str, subject: &str, refs: &[&str]) -> Commit {
         Commit {
