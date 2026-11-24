@@ -1,0 +1,45 @@
+# Homebrew formula for Margin on Linux, published to the wiggleji/homebrew-tap
+# repository (Formula/margin.rb) by the Release workflow, with the version and
+# the tar.gz's SHA-256 filled in.
+#   brew install wiggleji/tap/margin
+# (On macOS, Margin is a cask: brew install --cask wiggleji/tap/margin)
+class Margin < Formula
+  desc "Git client with notes on branches, commits and tasks"
+  homepage "https://github.com/wiggleji/margin"
+  url "https://github.com/wiggleji/margin/releases/download/v@VERSION@/margin-@VERSION@-linux-x64.tar.gz"
+  version "@VERSION@"
+  sha256 "@SHA256@"
+  license "MIT"
+
+  livecheck do
+    url :stable
+    strategy :github_latest
+  end
+
+  depends_on arch: :x86_64
+  depends_on :linux
+
+  def install
+    # the menu entry runs Margin by its full path (a desktop session may not
+    # have Homebrew's bin on PATH)
+    inreplace "share/applications/margin.desktop", "Exec=margin", "Exec=#{opt_bin}/margin"
+    bin.install "bin/margin", "bin/margin-mcp"
+    share.install "share/applications", "share/icons"
+    doc.install Dir["share/doc/margin/*"]
+  end
+
+  def caveats
+    <<~EOS
+      Open a repository from the terminal: margin /path/to/repo (or margin . inside one).
+      For Margin in your applications menu, link its entry and icon where the desktop looks:
+        ln -sf #{opt_share}/applications/margin.desktop ~/.local/share/applications/
+        mkdir -p ~/.local/share/icons/hicolor/256x256/apps
+        ln -sf #{opt_share}/icons/hicolor/256x256/apps/margin.png ~/.local/share/icons/hicolor/256x256/apps/
+      Update with: brew upgrade margin
+    EOS
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/margin --version")
+  end
+end

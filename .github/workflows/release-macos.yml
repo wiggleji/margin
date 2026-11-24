@@ -233,8 +233,8 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| **macOS** (Apple Silicon and Intel) | **Margin-$v.dmg**, or \`brew install --cask wiggleji/tap/margin\` |"
-            echo "| **Windows** (64-bit) | **Margin-$v-windows-x64-setup.exe** (installer), or the portable **Margin-$v-windows-x64.zip** |"
-            echo "| **Linux** (x64) | **Margin-$v-x86_64.AppImage** (any distribution), **margin_${v}_amd64.deb** (Debian, Ubuntu), or **margin-$v-linux-x64.tar.gz** |"
+            echo "| **Windows** (64-bit) | **Margin-$v-windows-x64-setup.exe** (installer), the portable **Margin-$v-windows-x64.zip**, or \`winget install wiggleji.Margin\` |"
+            echo "| **Linux** (x64) | **Margin-$v-x86_64.AppImage** (any distribution), **margin_${v}_amd64.deb** (Debian, Ubuntu), **margin-$v-linux-x64.tar.gz**, or \`brew install wiggleji/tap/margin\` |"
             echo
             echo "### macOS"
             echo "Open the DMG and drag **Margin** into **Applications**."
@@ -275,13 +275,48 @@ jobs:
           set -euo pipefail
           v="${TAG#v}"
           sha="$(cut -d' ' -f1 "dist/Margin-$v.dmg.sha256")"
+          linux_sha="$(cut -d' ' -f1 "dist/margin-$v-linux-x64.tar.gz.sha256")"
           git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/wiggleji/homebrew-tap.git" tap
-          mkdir -p tap/Casks
+          mkdir -p tap/Casks tap/Formula
+          # macOS: the cask (the DMG); Linux: the formula (the tar.gz)
           sed -e "s/@VERSION@/$v/g" -e "s/@SHA256@/$sha/g" src/packaging/homebrew/margin.rb.in > tap/Casks/margin.rb
+          sed -e "s/@VERSION@/$v/g" -e "s/@SHA256@/$linux_sha/g" src/packaging/homebrew/margin-linux.rb.in > tap/Formula/margin.rb
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Casks/margin.rb
+          git add Casks/margin.rb Formula/margin.rb
           git diff --cached --quiet && { echo "cask already at $v"; exit 0; }
           git commit -m "margin $v"
           git push origin HEAD
+
+  winget:
+    name: Submit to winget
+    needs: [prepare, publish]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: windows-latest
+    # a winget-pkgs pull request failing to open doesn't undo the release
+    continue-on-error: true
+    env:
+      # a classic token with public_repo (docs/RELEASING.md); without it nothing is submitted
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        if: env.WINGET_TOKEN != ''
+        with:
+          sparse-checkout: |
+            packaging/winget
+            scripts
+      - name: Open a pull request on microsoft/winget-pkgs
+        if: env.WINGET_TOKEN != ''
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG"
+          sha="$(curl -fsSL "$base/Margin-$v-windows-x64-setup.exe.sha256" | cut -d' ' -f1)"
+          dir="$(scripts/winget-manifests.sh "$v" "$sha" "$RUNNER_TEMP/winget")"
+          cat "$dir"/*.yaml
+          curl -fsSL -o "$RUNNER_TEMP/wingetcreate.exe" https://aka.ms/wingetcreate/latest
+          "$RUNNER_TEMP/wingetcreate.exe" submit --token "$WINGET_TOKEN" --prtitle "New version: wiggleji.Margin version $v" "$dir"
