@@ -209,6 +209,7 @@ impl Review {
             match e {
                 DiffEvent::OpenUrl(u) => actions.push(Action::OpenUrl(u)),
                 DiffEvent::CopyPath(p) => actions.push(Action::Copy(p)),
+                DiffEvent::Mention(q) => actions.push(Action::FetchMentions(q)),
                 DiffEvent::ThreadReply { id, body, .. } => actions.push(Action::ReviewThread { id, reply: Some(body), resolve: None }),
                 DiffEvent::ThreadResolve { id, resolve, .. } => actions.push(Action::ReviewThread { id, reply: None, resolve: Some(resolve) }),
                 DiffEvent::ThreadNew { path, line, old_side, body, .. } => {
@@ -274,78 +275,92 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, prefs: &mut DiffPrefs, actions: &mut
 }
 
 fn header(ui: &mut Ui, r: &mut Review, branches: &[String], actions: &mut Vec<Action>) {
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("‹ History").on_hover_text("Back to the history (Esc)").clicked() || (r.submit.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) && ui.memory(|m| m.focused().is_none())) {
-            actions.push(Action::CloseReview);
-        }
-        ui.add_space(6.0);
-        match (&r.detail, r.pr) {
-            (Some(d), _) => {
-                let sz = ui.text_style_height(&egui::TextStyle::Body);
-                ui.add(crate::icons::image(ui.ctx(), crate::icons::Icon::Github, sz, theme::TEXT()));
-                let title = RichText::new(format!("#{} {}", d.summary.number, d.summary.title)).strong();
-                if ui.add(egui::Label::new(title).sense(egui::Sense::click())).on_hover_text("Open on GitHub").clicked() {
-                    actions.push(Action::OpenUrl(d.summary.url.clone()));
+    // Two fixed rows, so nothing runs under anything at any width:
+    //   ‹ History  #12 title…  Open                      [Review changes]
+    //   [Files changed | Commits | Conversation]  +31 −0  jo wants to merge a into b
+    let open = r.detail.as_ref().is_some_and(|d| d.summary.state == "OPEN");
+    let label = if r.pending.is_empty() { "Review changes".to_string() } else { format!("Review changes · {} pending", r.pending.len()) };
+    // room the button takes on the right
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let right_w = if open { ui.fonts_mut(|f| f.layout_no_wrap(label.clone(), font, egui::Color32::WHITE).size().x) + ui.spacing().button_padding.x * 2.0 + 16.0 } else { 0.0 };
+    ui.horizontal(|ui| {
+        let left_w = (ui.available_width() - right_w).max(120.0);
+        ui.allocate_ui_with_layout(egui::vec2(left_w, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            if ui.button("‹ History").on_hover_text("Back to the history (Esc)").clicked() || (r.submit.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) && ui.memory(|m| m.focused().is_none())) {
+                actions.push(Action::CloseReview);
+            }
+            ui.add_space(6.0);
+            match (&r.detail, r.pr) {
+                (Some(d), _) => {
+                    let sz = ui.text_style_height(&egui::TextStyle::Body);
+                    ui.add(crate::icons::image(ui.ctx(), crate::icons::Icon::Github, sz, theme::TEXT()));
+                    let (state, color) = match (d.summary.state.as_str(), d.summary.draft) {
+                        ("MERGED", _) => ("Merged", theme::lane(3)),
+                        ("CLOSED", _) => ("Closed", theme::ERROR()),
+                        (_, true) => ("Draft", theme::TEXT_DIM()),
+                        _ => ("Open", theme::ADDED()),
+                    };
+                    // the title shortens (full on hover); the state stays visible
+                    let state_w = ui.fonts_mut(|f| f.layout_no_wrap(state.to_string(), egui::TextStyle::Small.resolve(ui.style()), egui::Color32::WHITE).size().x) + 16.0;
+                    let title_w = (ui.available_width() - state_w - if r.loading { 24.0 } else { 0.0 }).max(60.0);
+                    let full = format!("#{} {}", d.summary.number, d.summary.title);
+                    ui.allocate_ui_with_layout(egui::vec2(title_w, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let t = ui.add(egui::Label::new(RichText::new(&full).strong()).truncate().sense(egui::Sense::click()));
+                        if t.on_hover_text(format!("{full}\nOpen on GitHub")).clicked() {
+                            actions.push(Action::OpenUrl(d.summary.url.clone()));
+                        }
+                    });
+                    ui.label(RichText::new(state).small().strong().color(color));
                 }
-                let (state, color) = match (d.summary.state.as_str(), d.summary.draft) {
-                    ("MERGED", _) => ("Merged", theme::lane(3)),
-                    ("CLOSED", _) => ("Closed", theme::ERROR()),
-                    (_, true) => ("Draft", theme::TEXT_DIM()),
-                    _ => ("Open", theme::ADDED()),
-                };
-                ui.label(RichText::new(state).small().strong().color(color));
-                ui.label(RichText::new(format!("{} wants to merge {} into {}", d.author, d.head, d.base)).color(theme::TEXT_DIM()));
-            }
-            (None, Some(n)) => {
-                ui.label(RichText::new(format!("Pull request #{n}")).strong());
-            }
-            (None, None) => {
-                ui.label(RichText::new("Compare").strong());
-                let base = r.base.clone().unwrap_or_else(|| r.base_ref.clone());
-                ui.menu_button(format!("{} ▾", if base.is_empty() { "base" } else { &base }), |ui| {
-                    ui.set_max_height(360.0);
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for b in branches {
-                            if ui.selectable_label(*b == base, b).clicked() {
-                                actions.push(Action::OpenReview { base: Some(b.clone()), head: r.head.clone(), pr: None });
-                                ui.close();
+                (None, Some(n)) => {
+                    ui.label(RichText::new(format!("Pull request #{n}")).strong());
+                }
+                (None, None) => {
+                    ui.label(RichText::new("Compare").strong());
+                    let base = r.base.clone().unwrap_or_else(|| r.base_ref.clone());
+                    ui.menu_button(format!("{} ▾", if base.is_empty() { "base" } else { &base }), |ui| {
+                        ui.set_max_height(360.0);
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for b in branches {
+                                if ui.selectable_label(*b == base, b).clicked() {
+                                    actions.push(Action::OpenReview { base: Some(b.clone()), head: r.head.clone(), pr: None });
+                                    ui.close();
+                                }
                             }
-                        }
-                    });
-                })
-                .response
-                .on_hover_text("Base: the branch the changes go into");
-                ui.label(RichText::new("←").color(theme::TEXT_DIM()));
-                ui.menu_button(format!("{} ▾", r.head), |ui| {
-                    ui.set_max_height(360.0);
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for b in branches {
-                            if ui.selectable_label(*b == r.head, b).clicked() {
-                                actions.push(Action::OpenReview { base: Some(base.clone()), head: b.clone(), pr: None });
-                                ui.close();
+                        });
+                    })
+                    .response
+                    .on_hover_text("Base: the branch the changes go into");
+                    ui.label(RichText::new("←").color(theme::TEXT_DIM()));
+                    ui.menu_button(format!("{} ▾", r.head), |ui| {
+                        ui.set_max_height(360.0);
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for b in branches {
+                                if ui.selectable_label(*b == r.head, b).clicked() {
+                                    actions.push(Action::OpenReview { base: Some(base.clone()), head: b.clone(), pr: None });
+                                    ui.close();
+                                }
                             }
-                        }
-                    });
-                })
-                .response
-                .on_hover_text("Compare: the branch with the changes");
+                        });
+                    })
+                    .response
+                    .on_hover_text("Compare: the branch with the changes");
+                }
             }
-        }
-        if r.loading {
-            ui.spinner();
-        }
-        // right: Review changes
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let open = r.detail.as_ref().is_some_and(|d| d.summary.state == "OPEN");
-            if open {
-                let label = if r.pending.is_empty() { "Review changes".to_string() } else { format!("Review changes · {} pending", r.pending.len()) };
+            if r.loading {
+                ui.spinner();
+            }
+        });
+        // right: Review changes (always in the same place)
+        if open {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if crate::widgets::primary_button(ui, &label).on_hover_text("Comment, approve, or request changes").clicked() {
                     r.submit.get_or_insert(Submit { event: ReviewEvent::Comment, body: String::new(), focus: true });
                 }
-            }
-        });
+            });
+        }
     });
-    // counts and tabs
+    // tabs, counts, then who wants to merge what (shortened to fit)
     ui.horizontal(|ui| {
         use crate::widgets::Seg;
         let mut segs = vec![
@@ -367,6 +382,10 @@ fn header(ui: &mut Ui, r: &mut Review, branches: &[String], actions: &mut Vec<Ac
         ui.label(RichText::new(format!("−{d}")).color(theme::REMOVED()));
         if let Some(e) = &r.error {
             ui.colored_label(theme::ERROR(), e);
+        } else if let Some(d) = &r.detail {
+            ui.add_space(10.0);
+            let who = format!("{} wants to merge {} into {}", d.author, d.head, d.base);
+            ui.add(egui::Label::new(RichText::new(&who).color(theme::TEXT_DIM())).truncate()).on_hover_text(who);
         }
     });
 }
@@ -608,7 +627,12 @@ fn submit_form(ctx: &egui::Context, r: &mut Review, actions: &mut Vec<Action>) {
         ui.set_width(460.0);
         ui.label(RichText::new("Review changes").strong());
         ui.add_space(6.0);
-        let summary = ui.add(egui::TextEdit::multiline(&mut s.body).hint_text("Leave a comment (Markdown)").desired_rows(5).desired_width(f32::INFINITY));
+        let te = egui::TextEdit::multiline(&mut s.body).hint_text("Leave a comment (Markdown, @ to mention)").desired_rows(5).desired_width(f32::INFINITY);
+        let (out, lookup) = crate::mention::show(ui, egui::Id::unique("review_submit_body"), te);
+        if let Some(q) = lookup {
+            actions.push(Action::FetchMentions(q));
+        }
+        let summary = out.response.response;
         if std::mem::take(&mut s.focus) {
             summary.request_focus();
         }

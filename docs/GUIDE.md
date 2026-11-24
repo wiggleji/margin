@@ -124,7 +124,7 @@ Compare two branches the way a pull request shows them, or review a GitHub pull 
 - **Commits:** the branch's commits (`base..head`); click one for its own diff.
 - **Conversation** (pull requests): the description, checks, reviews and comments.
 
-**Reviewing a pull request:** hover a line and click **+** to comment; the comment waits as **Pending** (Remove takes it out). **Review changes** (top right) writes a summary and submits it with the pending comments as **Comment**, **Approve**, or **Request changes**, on the commit you reviewed. A pull request from someone else's fork works too: its head is fetched into `refs/margin/pr/<n>` (no branch of yours is created), and its base is fetched fresh from the remote.
+**Reviewing a pull request:** hover a line and click **+** to comment (type **@** to mention someone: the pull request's author, reviewers and commenters come first, then anyone GitHub lets you mention in the repository as you type more; ↑↓ and ↵ or Tab to pick); the comment waits as **Pending** (Remove takes it out). **Review changes** (top right) writes a summary and submits it with the pending comments as **Comment**, **Approve**, or **Request changes**, on the commit you reviewed. A pull request from someone else's fork works too: its head is fetched into `refs/margin/pr/<n>` (no branch of yours is created), and its base is fetched fresh from the remote.
 
 ## Stashes
 

@@ -13,6 +13,7 @@ mod emoji;
 mod fonts;
 mod jobs;
 mod markdown_view;
+mod mention;
 mod menu_bar;
 mod note_format;
 mod notes_panel;

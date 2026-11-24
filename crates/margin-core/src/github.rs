@@ -456,6 +456,19 @@ impl GitHub {
     }
 
     /// Open pull requests, most recently updated first.
+    /// People who can be @mentioned in this repository whose login or name
+    /// matches `query` (collaborators, contributors, people in its issues and
+    /// pull requests): (login, name), at most 20.
+    pub fn mentionable_users(&self, query: &str) -> Result<Vec<(String, String)>> {
+        let q = "query($owner: String!, $name: String!, $q: String) { repository(owner: $owner, name: $name) {
+    mentionableUsers(first: 20, query: $q) { nodes { login name } } } }";
+        let data = self.graphql(q, json!({ "owner": self.repo.owner, "name": self.repo.name, "q": query }))?;
+        Ok(data["repository"]["mentionableUsers"]["nodes"]
+            .as_array()
+            .map(|a| a.iter().map(|u| (s(&u["login"]), s(&u["name"]))).filter(|(l, _)| !l.is_empty()).collect())
+            .unwrap_or_default())
+    }
+
     pub fn open_prs(&self, limit: usize) -> Result<Vec<PrListItem>> {
         let q = "query($owner: String!, $name: String!, $n: Int!) { viewer { login }
   repository(owner: $owner, name: $name) {

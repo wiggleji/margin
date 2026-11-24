@@ -129,6 +129,8 @@ pub enum Action {
     CloseRebase,
     /// Search the history's changes for this text (`code:` filter).
     SearchCode(String),
+    /// Look up people to @mention on GitHub.
+    FetchMentions(String),
     /// Review mode: reply to a thread, or resolve / reopen it.
     ReviewThread { id: String, reply: Option<String>, resolve: Option<bool> },
     /// Review mode: submit the review with its pending comments.
@@ -641,6 +643,8 @@ pub struct MarginApp {
     pub focus_search: bool,
     /// The pointer was over a diff last frame (⌘F finds in it).
     diff_hovered: bool,
+    /// People to suggest for @mentions in comment boxes.
+    mentions: crate::mention::Shared,
     /// Diff focus mode: the details/diff column takes the whole window.
     pub focus_diff: bool,
     menu: crate::menu_bar::MenuBar,
@@ -696,6 +700,7 @@ impl MarginApp {
             palette: None,
             focus_search: false,
             diff_hovered: false,
+            mentions: Default::default(),
             focus_diff: false,
             menu: crate::menu_bar::MenuBar::new(ctx),
             cli_rx: crate::cli::listen(ctx),
@@ -1556,6 +1561,18 @@ impl MarginApp {
                 let repo = rv.repo.clone();
                 self.jobs.spawn(move || Msg::CodeSearch { workdir: repo.workdir.clone(), result: repo.commits_changing(&text).map(|v| v.into_iter().collect()).map_err(|e| e.0), text });
             }
+            FetchMentions(q) => {
+                let Some(rv) = &self.rv else { return };
+                let Some(gh) = rv.github.clone() else { return };
+                let (workdir, dir) = (rv.repo.workdir.clone(), self.mentions.clone());
+                self.jobs.spawn(move || {
+                    let r = gh.mentionable_users(&q);
+                    if let (Ok(users), Ok(mut d)) = (&r, dir.lock()) {
+                        d.remote.insert(q.clone(), users.clone());
+                    }
+                    Msg::Mentions { workdir, result: r.map(drop).map_err(|e| e.0) }
+                });
+            }
             FetchOpenPrs => {
                 let Some(rv) = &mut self.rv else { return };
                 let Some(gh) = rv.github.clone() else { return };
@@ -2333,6 +2350,12 @@ impl MarginApp {
                     rv.filtered = None;
                 }
             }
+            Msg::Mentions { result, .. } => {
+                // (the answers are in the directory already; a failure only means no GitHub suggestions)
+                if let Err(e) = result {
+                    eprintln!("mention lookup: {e}");
+                }
+            }
             Msg::OpenPrs { workdir, result } => {
                 if let Some(rv) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir) {
                     rv.open_prs = Some(result);
@@ -2938,6 +2961,27 @@ impl eframe::App for MarginApp {
         let ctx = ui.ctx().clone();
         // a diff the pointer was over last frame takes ⌘F (find in the diff)
         self.diff_hovered = ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique(crate::diff_view::DIFF_HOVERED))).unwrap_or(false);
+        // @mention suggestions: this repository's GitHub, and the reviewed pull request's people
+        if let Ok(mut d) = self.mentions.lock() {
+            let repo = self.rv.as_ref().map(|rv| rv.repo.workdir.display().to_string()).unwrap_or_default();
+            let pr = self.rv.as_ref().and_then(|rv| rv.review.as_ref()).and_then(|r| r.pr).unwrap_or(0);
+            let scope = format!("{repo}#{pr}");
+            if d.scope != scope {
+                if d.scope.rsplit_once('#').map(|x| x.0) != Some(repo.as_str()) {
+                    // another repository: GitHub's answers were for the old one
+                    *d = crate::mention::Directory::default();
+                }
+                d.scope = scope;
+                d.local.clear();
+            }
+            d.online = self.rv.as_ref().is_some_and(|rv| rv.github.is_some());
+            if d.local.is_empty()
+                && let Some(det) = self.rv.as_ref().and_then(|rv| rv.review.as_ref()).and_then(|r| r.detail.as_ref())
+            {
+                d.local = crate::mention::people(det);
+            }
+        }
+        crate::mention::install(&ctx, &self.mentions);
         for m in self.jobs.poll() {
             self.on_msg(m);
         }
