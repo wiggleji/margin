@@ -50,8 +50,14 @@ fn main() {
     let repo = match Repo::open(&repo_path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("margin-mcp: {}: {e}", repo_path.display());
-            std::process::exit(2);
+            // Not a repository here (or no git at all): still speak MCP, so the
+            // agent connects and each tool call says what's wrong, instead of
+            // the server vanishing. (Also what winget's validation runs: the
+            // program with no arguments, in a folder that isn't a repository.)
+            let why = format!("margin-mcp can't open a git repository at {}: {}. Start it with --repo <path to a repository>, or from inside one.", repo_path.display(), e.0.trim_end_matches('.'));
+            eprintln!("margin-mcp: {why}");
+            serve_without_repo(&why);
+            return;
         }
     };
     let notes = NoteStore::for_repo(&repo).expect("create notes dir");
@@ -84,6 +90,51 @@ fn main() {
             let _ = stdout.flush();
         }
     }
+}
+
+/// MCP without a repository: the handshake and the tool list as usual, and
+/// every tool call answered with `why` (an error result the agent shows).
+fn serve_without_repo(why: &str) {
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout().lock();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let resp = match serde_json::from_str::<Value>(&line) {
+            Ok(msg) => without_repo(&msg, why),
+            Err(e) => Some(rpc_error(Value::Null, -32700, &format!("parse error: {e}"))),
+        };
+        if let Some(r) = resp {
+            let _ = writeln!(stdout, "{r}");
+            let _ = stdout.flush();
+        }
+    }
+}
+
+fn without_repo(msg: &Value, why: &str) -> Option<Value> {
+    let id = msg.get("id").cloned()?;
+    let method = msg["method"].as_str().unwrap_or("");
+    Some(match method {
+        "initialize" => {
+            let asked = msg["params"]["protocolVersion"].as_str().unwrap_or("");
+            let ver = if SUPPORTED_PROTOCOLS.contains(&asked) { asked } else { SUPPORTED_PROTOCOLS[0] };
+            rpc_ok(
+                id,
+                json!({
+                    "protocolVersion": ver,
+                    "capabilities": {"tools": {"listChanged": false}},
+                    "serverInfo": {"name": "margin", "version": env!("CARGO_PKG_VERSION")},
+                    "instructions": format!("{INSTRUCTIONS}\n\nNot available right now: {why}"),
+                }),
+            )
+        }
+        "ping" => rpc_ok(id, json!({})),
+        "tools/list" => rpc_ok(id, json!({"tools": tool_defs()})),
+        "tools/call" => rpc_ok(id, json!({"content": [{"type": "text", "text": why}], "isError": true})),
+        _ => rpc_error(id, -32601, &format!("method not found: {method}")),
+    })
 }
 
 fn rpc_ok(id: Value, result: Value) -> Value {
@@ -470,4 +521,25 @@ fn tool_defs() -> Value {
          "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}},
          "annotations": {"readOnlyHint": true, "openWorldHint": true}}
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn without_a_repository_it_still_speaks_mcp() {
+        let why = "no repository here";
+        let init = without_repo(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": SUPPORTED_PROTOCOLS[0]}}), why).unwrap();
+        assert_eq!(init["result"]["serverInfo"]["name"], "margin");
+        assert!(init["result"]["instructions"].as_str().unwrap().contains(why));
+        let list = without_repo(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), why).unwrap();
+        assert!(!list["result"]["tools"].as_array().unwrap().is_empty());
+        let call = without_repo(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "list_notes"}}), why).unwrap();
+        assert_eq!(call["result"]["isError"], true);
+        assert_eq!(call["result"]["content"][0]["text"], why);
+        // notifications get no answer; unknown methods an error
+        assert!(without_repo(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}), why).is_none());
+        assert_eq!(without_repo(&json!({"jsonrpc": "2.0", "id": 4, "method": "nope"}), why).unwrap()["error"]["code"], -32601);
+    }
 }
