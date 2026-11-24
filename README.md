@@ -33,13 +33,25 @@ Write Markdown notes on commits, branches, and tasks, and let AI agents read and
 
 ## Install
 
-**macOS with Homebrew:**
+**macOS** (Homebrew):
 
 ```bash
 brew install --cask wiggleji/tap/margin
 ```
 
-This also puts `margin` (open a repository: `margin .`) and `margin-mcp` on your PATH. Margin keeps itself up to date after that.
+**Windows** (winget; it installs Git for Windows too if you don't have it):
+
+```bash
+winget install wiggleji.Margin
+```
+
+**Linux** (Homebrew):
+
+```bash
+brew install wiggleji/tap/margin
+```
+
+These put `margin` (open a repository: `margin .`) and `margin-mcp` on your PATH. On macOS and Windows Margin keeps itself up to date after that; on Linux, `brew upgrade margin`.
 
 Or get the latest from [Releases](https://github.com/wiggleji/margin/releases/latest):
 

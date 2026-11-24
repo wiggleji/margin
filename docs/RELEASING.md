@@ -77,16 +77,26 @@ Configure these in *Settings → Secrets and variables → Actions*:
 | `NOTARY_API_ISSUER_ID` | secret | the Issuer ID |
 
 | `HOMEBREW_TAP_TOKEN` | secret | optional: a token that can push to `wiggleji/homebrew-tap` (see below) |
+| `WINGET_TOKEN` | secret | optional: a classic token with `public_repo`, to open winget pull requests (see below) |
 
 ### Homebrew
 
-`brew install --cask wiggleji/tap/margin` installs from the cask in the **wiggleji/homebrew-tap** repository (`Casks/margin.rb`). The Release workflow writes it for each release from `packaging/homebrew/margin.rb.in` (the version and the DMG's SHA-256) and pushes it there, when `HOMEBREW_TAP_TOKEN` is set. One-time setup:
+`brew install --cask wiggleji/tap/margin` (macOS) and `brew install wiggleji/tap/margin` (Linux) install from the **wiggleji/homebrew-tap** repository: the cask `Casks/margin.rb` (the DMG) and the formula `Formula/margin.rb` (the Linux tar.gz). The Release workflow writes both for each release from `packaging/homebrew/margin.rb.in` and `margin-linux.rb.in` (the version and each download's SHA-256) and pushes them there, when `HOMEBREW_TAP_TOKEN` is set. On Linux the formula puts `margin` and `margin-mcp` in Homebrew's bin and the menu entry under its `share` (its caveats say how to link it); Margin's own updater leaves a Homebrew install to `brew upgrade margin`. One-time setup:
 
 1. Create the public repository **wiggleji/homebrew-tap** (the `homebrew-` prefix is what lets `brew` find it as `wiggleji/tap`), with a README.
 2. Create a fine-grained personal access token with access to only that repository, **Contents: Read and write**, and add it as the `HOMEBREW_TAP_TOKEN` secret here.
 3. The next release publishes the cask. To publish the current one by hand, fill in the template with its version and the `sha256` from its `Margin-<version>.dmg.sha256`, and commit it as `Casks/margin.rb` in the tap.
 
 The cask installs `Margin.app`, links `margin` (the launcher in `Margin.app/Contents/Resources/bin`) and `margin-mcp` onto PATH, and, until the app is notarized, clears the quarantine flag so the first open isn't blocked. It's marked `auto_updates`: Margin updates itself, and `brew upgrade` leaves it alone unless run with `--greedy`.
+
+### winget
+
+`winget install wiggleji.Margin` installs the Windows installer (per user, adds `margin` to PATH, and installs Git for Windows first if it's missing). Packages live in **microsoft/winget-pkgs**: each version is a pull request there with three manifests, which Microsoft's bots validate (they run the installer silently) and moderators merge, usually within a few days. The Release workflow's **Submit to winget** job opens that pull request for each release, from `packaging/winget/*.yaml.in` (rendered by `scripts/winget-manifests.sh`, with the installer's SHA-256), when `WINGET_TOKEN` is set; the first one adds the package. If it fails, the release itself is unaffected.
+
+1. Create a **classic** personal access token with the **public_repo** scope (wingetcreate forks microsoft/winget-pkgs to your account and opens the pull request from there), and add it as the `WINGET_TOKEN` secret here.
+2. The next release submits. Watch the pull request on microsoft/winget-pkgs for the bots' checks; once merged, `winget install wiggleji.Margin` works (and `winget upgrade` picks up later versions, though Margin updates itself anyway).
+
+To try a version's manifests before submitting: `scripts/winget-manifests.sh <version> <installer sha256> out`, then on Windows `winget install --manifest out\manifests\w\wiggleji\Margin\<version>` (after `winget settings --enable LocalManifestFiles`, as administrator).
 
 macOS runners use about 10× the minutes of Linux runners against a private repo's Actions quota. One release run takes roughly 15–25 minutes.
 

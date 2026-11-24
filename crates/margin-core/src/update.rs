@@ -24,8 +24,8 @@
 //! In place means: macOS — Margin.app in a folder you can write to; Windows —
 //! installed with the installer, for this user; Linux — the AppImage, or the
 //! tar.gz installed in a folder you own (e.g. ~/.local). Elsewhere (a .deb owned by
-//! apt, the portable Windows zip, a development build) Margin opens the
-//! release page instead.
+//! apt, Homebrew on Linux, the portable Windows zip, a development build)
+//! Margin says how to update instead (the release page, or `brew upgrade`).
 //!
 //! Files downloaded this way get no quarantine flag (macOS) or
 //! Mark-of-the-Web (Windows), so an update opens without the first-launch
@@ -241,12 +241,22 @@ pub fn can_install() -> std::result::Result<PathBuf, String> {
         let dir = image.parent().ok_or("no folder above the AppImage")?;
         return if writable(dir) { Ok(image) } else { Err(format!("Margin can't write to {}; {page}", dir.display())) };
     }
+    // Linux: installed with Homebrew (its Cellar): brew updates it
+    if is_homebrew(&exe) {
+        return Err("Margin was installed with Homebrew; update it with `brew upgrade margin`".into());
+    }
     // Linux: <prefix>/bin/margin from the tar.gz (in ~/.local, or unpacked)
     if exe.starts_with("/usr") {
         return Err("Margin was installed with a package manager; update it there, or install the new .deb from the release page".into());
     }
     let prefix = dir.parent().filter(|_| dir.file_name().is_some_and(|n| n == "bin")).ok_or_else(|| format!("This is a development build; {page}"))?.to_path_buf();
     if writable(&dir) { Ok(prefix) } else { Err(format!("Margin can't write to {}; {page}", dir.display())) }
+}
+
+/// Is `exe` inside a Homebrew Cellar (`…/Cellar/margin/<version>/bin/margin`)?
+fn is_homebrew(exe: &Path) -> bool {
+    let parts: Vec<_> = exe.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    parts.windows(2).any(|w| w[0] == "Cellar" && w[1] == "margin")
 }
 
 /// The Developer ID team that signed `app` (None: ad-hoc or unsigned).
@@ -449,6 +459,13 @@ fn windows_helper(pid: u32, setup: &Path, dir: &Path, relaunch: bool) -> Command
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn homebrew_installs_are_recognised() {
+        assert!(is_homebrew(Path::new("/home/linuxbrew/.linuxbrew/Cellar/margin/0.8.1/bin/margin")));
+        assert!(!is_homebrew(Path::new("/home/me/.local/bin/margin")));
+        assert!(!is_homebrew(Path::new("/home/me/Cellar/other/bin/margin")));
+    }
     use serde_json::json;
 
     /// Linux: files are replaced in place, missing ones skipped, extra
