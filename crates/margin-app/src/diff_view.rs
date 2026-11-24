@@ -229,6 +229,8 @@ pub struct DiffView {
     files_gen: u64,
     /// Scroll to the current match next frame.
     find_jump: bool,
+    /// Text rows of the reply box (it grows with the comment).
+    reply_rows: usize,
 }
 
 /// Content scrolled above the diff (commit details), and the short title
@@ -970,6 +972,8 @@ impl DiffView {
         let mut thread_act: Option<(usize, CardAct)> = None;
         let mut new_comment: Option<(String, u64, bool)> = None;
         let mut reply_text = std::mem::take(&mut self.reply_text);
+        // rows the reply box needs now (measured while drawing it)
+        let mut reply_rows: Option<usize> = None;
         let reply_focus = std::mem::take(&mut self.reply_focus);
 
         // Row positions: file rows a bit taller (room around the name), the
@@ -1611,6 +1615,8 @@ impl DiffView {
                             .hint_text(if t.id == DRAFT { "Leave a comment…  (⌘↩ sends, @ to mention, : for emoji)" } else { "Reply…  (⌘↩ sends, @ to mention, : for emoji)" })
                             .font(egui::TextStyle::Body)
                             .desired_width(ew)
+                            // the height the card made room for (it grows with the text)
+                            .desired_rows(self.reply_rows.clamp(3, MAX_REPLY_ROWS))
                             .margin(vec2(8.0, 6.0))
                             .background_color(page.visuals().panel_fill)
                             .interactive(!busy);
@@ -1621,6 +1627,10 @@ impl DiffView {
                             events.push(DiffEvent::Mention(q));
                         }
                         let r = out.response.response;
+                        let need = page.fonts_mut(|f| f.layout(reply_text.clone(), egui::TextStyle::Body.resolve(page.style()), Color32::WHITE, ew - 16.0)).rows.len().clamp(3, MAX_REPLY_ROWS);
+                        if need != self.reply_rows {
+                            reply_rows = Some(need);
+                        }
                         crate::emoji::dropdown(page, te_id, er, &mut reply_text, emoji_open);
                         if reply_focus {
                             r.request_focus();
@@ -1628,10 +1638,14 @@ impl DiffView {
                         let send = r.has_focus() && page.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
                         // (Esc takes the focus away before we look, so check both)
                         let cancel = (r.has_focus() || r.lost_focus()) && page.input(|i| i.key_pressed(egui::Key::Escape));
-                        let br = Rect::from_min_size(pos2(er.left(), er.bottom() + 8.0), vec2(ew, 26.0));
-                        let mut bui = page.new_child(egui::UiBuilder::new().max_rect(br).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                        // buttons under the box (where it really ends), on the right like GitHub's:
+                        // Cancel, then Comment at the edge
+                        let below = er.bottom().max(r.rect.bottom()) + 8.0;
+                        let br = Rect::from_min_size(pos2(er.left(), below), vec2(ew, 26.0));
+                        let mut bui = page.new_child(egui::UiBuilder::new().max_rect(br).layout(egui::Layout::right_to_left(egui::Align::Center)));
                         let can = !busy && !reply_text.trim().is_empty();
                         let comment = bui.add_enabled_ui(can, |ui| crate::widgets::primary_button(ui, if busy { "Sending…" } else { "Comment" })).inner.clicked();
+                        bui.add_space(4.0);
                         let cancel_b = bui.add_enabled(!busy, egui::Button::new("Cancel")).clicked();
                         if (comment || send) && can {
                             thread_act = Some((ti, CardAct::Send));
@@ -1724,6 +1738,11 @@ impl DiffView {
             }
         }
         self.reply_text = reply_text;
+        if let Some(n) = reply_rows {
+            self.reply_rows = n;
+            self.thread_w = 0.0; // re-measure the cards with the taller (or shorter) box
+            ui.ctx().request_repaint();
+        }
         if let Some((path, line, old)) = new_comment {
             self.open_draft(path, line, old);
             ui.ctx().request_repaint();
@@ -1843,7 +1862,12 @@ enum CardAct {
 struct ThreadState {
     replying: bool,
     busy: bool,
+    /// Text rows the reply box is tall.
+    rows: usize,
 }
+
+/// The reply box grows with its text up to this many rows.
+const MAX_REPLY_ROWS: usize = 14;
 
 /// File rows are this much taller than code rows (room around the name;
 /// 1.3× was chosen from samples of 1.0, 1.3 and 1.6).
@@ -1917,7 +1941,7 @@ struct ThreadCard {
 
 impl DiffView {
     fn thread_state(&self, t: &InlineThread) -> ThreadState {
-        ThreadState { replying: self.reply.as_ref() == Some(&t.id), busy: self.thread_busy.contains(&t.id) }
+        ThreadState { replying: self.reply.as_ref() == Some(&t.id), busy: self.thread_busy.contains(&t.id), rows: self.reply_rows.clamp(3, MAX_REPLY_ROWS) }
     }
 }
 
@@ -1979,7 +2003,7 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool, state: ThreadSta
         y += 8.0;
     }
     // footer: Reply · Resolve / Unresolve · Open on GitHub ↗
-    let ThreadState { replying, busy } = state;
+    let ThreadState { replying, busy, rows } = state;
     let mut acts = vec![];
     let mut x = pad;
     let mut fh: f32 = 0.0;
@@ -2013,7 +2037,7 @@ fn layout_thread(ui: &Ui, t: &InlineThread, w: f32, open: bool, state: ThreadSta
     let mut editor = None;
     if replying {
         let row = ui.fonts_mut(|f| f.row_height(&body_font));
-        let eh = row * 3.0 + 12.0;
+        let eh = row * rows as f32 + 12.0;
         editor = Some((pad, y, w - pad * 2.0, eh));
         y += eh + 8.0 + 26.0 + 10.0;
     }
