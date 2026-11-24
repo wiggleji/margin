@@ -117,6 +117,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
             DiffEvent::Unstage(p) => Action::Unstage(p),
             DiffEvent::Resolve(p) => Action::OpenConflicts(Some(p)),
             DiffEvent::Stash(p) => Action::StashDialog { paths: p },
+            DiffEvent::Mention(q) => Action::FetchMentions(q),
             DiffEvent::Discard(p) => {
                 let what = if p.len() == 1 { p[0].clone() } else { format!("{} files", p.len()) };
                 Action::Confirm { msg: format!("Discard changes to {what}? Untracked files are deleted. This cannot be undone."), action: Box::new(Action::Discard(p)) }
@@ -338,6 +339,7 @@ fn commit(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPref
             DiffEvent::ThreadReply { id, branch, body } => actions.push(Action::ReplyThread { id, branch, body }),
             DiffEvent::ThreadResolve { id, branch, resolve } => actions.push(Action::ResolveThread { id, branch, resolve }),
             DiffEvent::ThreadNew { branch, path, line, old_side, body } => actions.push(Action::NewThread { branch, path, line, old_side, body }),
+            DiffEvent::Mention(q) => actions.push(Action::FetchMentions(q)),
             _ => {}
         }
     }

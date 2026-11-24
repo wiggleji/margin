@@ -90,6 +90,8 @@ pub enum DiffEvent {
     Resolve(String),
     /// The stash dialog with these files picked.
     Stash(Vec<String>),
+    /// Look up people to @mention matching this (a comment box asks).
+    Mention(String),
     /// Asks for confirmation first.
     Discard(Vec<String>),
     CopyPath(String),
@@ -1606,13 +1608,19 @@ impl DiffView {
                         let emoji_open = crate::emoji::keys(page, te_id, &reply_text);
                         let te = egui::TextEdit::multiline(&mut reply_text)
                             .id(te_id)
-                            .hint_text(if t.id == DRAFT { "Leave a comment…  (⌘↩ sends, : for emoji)" } else { "Reply…  (⌘↩ sends, : for emoji)" })
+                            .hint_text(if t.id == DRAFT { "Leave a comment…  (⌘↩ sends, @ to mention, : for emoji)" } else { "Reply…  (⌘↩ sends, @ to mention, : for emoji)" })
                             .font(egui::TextStyle::Body)
                             .desired_width(ew)
                             .margin(vec2(8.0, 6.0))
                             .background_color(page.visuals().panel_fill)
                             .interactive(!busy);
-                        let r = page.put(er, te);
+                        // (@mentions: a completion popup over the box)
+                        let mut te_ui = page.new_child(egui::UiBuilder::new().max_rect(er));
+                        let (out, lookup) = crate::mention::show(&mut te_ui, te_id, te);
+                        if let Some(q) = lookup {
+                            events.push(DiffEvent::Mention(q));
+                        }
+                        let r = out.response.response;
                         crate::emoji::dropdown(page, te_id, er, &mut reply_text, emoji_open);
                         if reply_focus {
                             r.request_focus();
