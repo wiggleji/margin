@@ -647,6 +647,18 @@ impl Repo {
         Ok(self.run(&["log", "-1", "--format=%B"])?.trim_end().to_string())
     }
 
+    /// Commits (on any branch, remote branch or tag) with an added or removed
+    /// line containing `text` (exact, case-sensitive): `git log -G` with the
+    /// text escaped. Newest first.
+    pub fn commits_changing(&self, text: &str) -> Result<Vec<String>> {
+        if text.is_empty() {
+            return Ok(vec![]);
+        }
+        let g = format!("-G{}", ere_escape(text));
+        let out = self.run(&["log", "--format=%H", "--no-ext-diff", "--extended-regexp", &g, "--branches", "--remotes", "--tags", "HEAD", "--"])?;
+        Ok(out.lines().map(String::from).collect())
+    }
+
     /// In-progress operation, if any (merge / rebase / cherry-pick / revert).
     pub fn pending_operation(&self) -> Option<&'static str> {
         let gd = self.run(&["rev-parse", "--absolute-git-dir"]).ok()?;
@@ -1156,6 +1168,18 @@ fn base_cmd(dir: &Path) -> Command {
 
 /// `MARGIN_GIT` lets enterprises pin a specific git (e.g. a vendored build).
 /// A revision given to git as an argument: refuse ones git would read as an option.
+/// `s` as an extended regular expression matching it literally.
+fn ere_escape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() {
+        if "\\.^$|?*+()[]{}".contains(c) {
+            o.push('\\');
+        }
+        o.push(c);
+    }
+    o
+}
+
 pub(crate) fn check_rev(rev: &str) -> Result<()> {
     if rev.is_empty() || rev.starts_with('-') || rev.contains(char::is_whitespace) {
         bail!("not a branch or commit: {rev:?}");
@@ -1513,6 +1537,44 @@ mod stash_tests {
         assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "a changed\n");
         assert!(d.join("new.txt").exists());
         assert_eq!(repo.stashes().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod code_search_tests {
+    use super::*;
+
+    #[test]
+    fn commits_changing_a_text() {
+        assert_eq!(ere_escape("a.b(c)*"), r"a\.b\(c\)\*");
+        let d = std::env::temp_dir().join(format!("margin-codesearch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let g = |args: &[&str]| {
+            let o = std::process::Command::new("git").arg("-C").arg(&d).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let put = |t: &str| std::fs::write(d.join("a.txt"), t).unwrap();
+        g(&["init", "-q"]);
+        put("LEAD = 30\n");
+        g(&["add", "."]);
+        g(&["commit", "-qm", "add"]);
+        let add = g(&["rev-parse", "HEAD"]);
+        put("LEAD = 45\n");
+        g(&["commit", "-qam", "change the value"]);
+        let change = g(&["rev-parse", "HEAD"]);
+        put("LEAD = 45\nother(x)\n");
+        g(&["commit", "-qam", "unrelated"]);
+        let other = g(&["rev-parse", "HEAD"]);
+        let repo = Repo::open(&d).unwrap();
+        // a line containing it was added or removed: the edit counts too
+        assert_eq!(repo.commits_changing("LEAD =").unwrap(), [change.clone(), add.clone()]);
+        // regex characters are plain text; case matters
+        assert_eq!(repo.commits_changing("other(x)").unwrap(), [other]);
+        assert!(repo.commits_changing("lead =").unwrap().is_empty());
+        assert!(repo.commits_changing("").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -128,6 +128,10 @@ pub enum Glyph {
     ArrowDown,
     /// Fold (chevrons pointing together) / unfold (pointing apart).
     Fold { fold: bool },
+    /// A magnifying glass.
+    Search,
+    /// ×
+    Close,
 }
 
 /// A square icon button (full button height, centred), with a hover background.
@@ -158,6 +162,16 @@ pub fn paint_glyph(p: &egui::Painter, glyph: Glyph, rect: Rect, c: Color32) {
     let st = Stroke::new(1.5, c);
     let m = rect.center();
     match glyph {
+        Glyph::Search => {
+            let c0 = m + vec2(-1.5, -1.5);
+            p.circle_stroke(c0, 4.0, st);
+            p.line_segment([c0 + vec2(2.9, 2.9), m + vec2(5.0, 5.0)], st);
+        }
+        Glyph::Close => {
+            let s = 4.0;
+            p.line_segment([m - vec2(s, s), m + vec2(s, s)], st);
+            p.line_segment([m + vec2(-s, s), m + vec2(s, -s)], st);
+        }
         Glyph::Chevron { open } => {
             let pts = if open {
                 vec![m + vec2(-4.5, -2.0), m + vec2(0.0, 2.5), m + vec2(4.5, -2.0)]

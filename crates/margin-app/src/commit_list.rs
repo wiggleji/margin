@@ -50,7 +50,18 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
     let filter = rv.filter.trim().to_string();
     let query = crate::search::Query::parse(&filter);
     let filter = if query.is_empty() { String::new() } else { filter };
-    if !filter.is_empty() && rv.filtered.as_ref().is_none_or(|(f, _)| *f != filter) {
+    // code: terms are answered by git in the background; until then nothing shows
+    let missing: Vec<String> = query.code.iter().filter(|t| !rv.code_hits.contains_key(*t)).cloned().collect();
+    for t in &missing {
+        if rv.code_asked.insert(t.clone()) {
+            actions.push(Action::SearchCode(t.clone()));
+        }
+    }
+    let code_sets: Vec<Option<&Result<std::collections::HashSet<String>, String>>> = query.code.iter().map(|t| rv.code_hits.get(t)).collect();
+    let code_wait = code_sets.iter().any(Option::is_none);
+    let code_err = code_sets.iter().flatten().find_map(|r| r.as_ref().err()).cloned();
+    if !filter.is_empty() && !code_wait && rv.filtered.as_ref().is_none_or(|(f, _)| *f != filter) {
+        let sets: Vec<&std::collections::HashSet<String>> = code_sets.iter().flatten().filter_map(|r| r.as_ref().ok()).collect();
         let idx: Vec<usize> = snap
             .commits
             .iter()
@@ -61,7 +72,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
                 for b in rv.tips.get(&c.id).into_iter().flatten() {
                     notes.extend(rv.note_title(&NoteTarget::Branch(b.clone())));
                 }
-                query.matches(c, &notes)
+                query.matches(c, &notes) && sets.iter().all(|s| s.contains(&c.id))
             })
             .map(|(i, _)| i)
             .collect();
@@ -69,7 +80,38 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
         rv.filtered_tasks = task_rows(idx.iter().map(|&i| &snap.commits[i]), &rv.tips, &rv.notes, rv.task_style);
         rv.filtered = Some((filter.clone(), idx));
     }
-    let visible: Option<&Vec<usize>> = if filter.is_empty() { None } else { rv.filtered.as_ref().map(|(_, v)| v) };
+    // code: a line saying it's searching, failed, or found commits further back
+    if !query.code.is_empty() {
+        ui.horizontal(|ui| {
+            if code_wait {
+                ui.add(egui::Spinner::new().size(11.0));
+                ui.label(egui::RichText::new("Searching code changes…").small().color(theme::TEXT_DIM()));
+            } else if let Some(e) = &code_err {
+                ui.label(egui::RichText::new(format!("Code search failed: {e}")).small().color(theme::ERROR()));
+            } else {
+                // matches older than the loaded history aren't in the list yet
+                let loaded: std::collections::HashSet<&str> = snap.commits.iter().map(|c| c.id.as_str()).collect();
+                let sets: Vec<&std::collections::HashSet<String>> = code_sets.iter().flatten().filter_map(|r| r.as_ref().ok()).collect();
+                let older = sets.first().map_or(0, |first| first.iter().filter(|id| !loaded.contains(id.as_str()) && sets.iter().all(|s| s.contains(*id))).count());
+                if older > 0 {
+                    let more = snap.commits.len() >= snap.limit;
+                    let why = if more { "older than the loaded history, or on hidden branches" } else { "on hidden branches" };
+                    ui.label(egui::RichText::new(format!("{older} more commit{} changing it, not shown ({why})", if older == 1 { "" } else { "s" })).small().color(theme::TEXT_DIM()));
+                    if more && ui.small_button("Load more").clicked() {
+                        actions.push(Action::LoadMore);
+                    }
+                }
+            }
+        });
+    }
+    static NONE: Vec<usize> = Vec::new();
+    let visible: Option<&Vec<usize>> = if filter.is_empty() {
+        None
+    } else if code_wait {
+        Some(&NONE)
+    } else {
+        rv.filtered.as_ref().map(|(_, v)| v)
+    };
     let n_commits = visible.map_or(snap.commits.len(), Vec::len);
     let has_more = snap.commits.len() >= snap.limit && visible.is_none();
     let total = 1 + n_commits + has_more as usize;

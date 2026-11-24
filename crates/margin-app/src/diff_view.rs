@@ -129,6 +129,37 @@ pub struct DiffAction {
     pub op: HunkOp,
 }
 
+/// Find in the diff: the query, its matches, the current one.
+#[derive(Default)]
+pub struct Find {
+    pub open: bool,
+    pub query: String,
+    /// (file, hunk, line, byte start, byte end) in the line's text
+    hits: Vec<(usize, usize, usize, usize, usize)>,
+    pub cur: usize,
+    /// More matches than are kept.
+    capped: bool,
+    /// Give the box keyboard focus next frame.
+    focus: bool,
+    /// What `hits` were found for: (query, files generation).
+    built: (String, u64),
+}
+
+/// Set (temp data) by a diff the pointer is over, each frame; the app reads
+/// it to send ⌘F there instead of to the commit search.
+pub const DIFF_HOVERED: &str = "diff-hovered";
+/// Set by the app: the hovered diff opens its find box.
+pub const FIND_REQUEST: &str = "diff-find-request";
+
+/// Matches kept at most (enough to step through; the count says "+").
+const FIND_MAX: usize = 5000;
+
+impl Find {
+    pub fn count(&self) -> (usize, bool) {
+        (self.hits.len(), self.capped)
+    }
+}
+
 #[derive(Default)]
 pub struct DiffView {
     pub files: Vec<FileDiff>,
@@ -190,6 +221,12 @@ pub struct DiffView {
     /// Row of the change last jumped to, and the viewport height.
     nav_row: Option<usize>,
     view_h: f32,
+    /// Find in the diff (⌘F with the pointer over it, or the toolbar's 🔍).
+    pub find: Find,
+    /// Bumped whenever the files change (matches are found again).
+    files_gen: u64,
+    /// Scroll to the current match next frame.
+    find_jump: bool,
 }
 
 /// Content scrolled above the diff (commit details), and the short title
@@ -202,6 +239,10 @@ pub struct Header<'a> {
 /// What the toolbar was used for this frame.
 #[derive(Default)]
 struct BarOut {
+    /// Find: open it, step (±1), close it.
+    find_open: bool,
+    find_step: i32,
+    find_close: bool,
     all: Option<bool>,
     nav: i32,
     ws: Option<bool>,
@@ -212,15 +253,58 @@ struct BarOut {
 /// The toolbar above the rows: counts, collapse/expand all, ↑↓, whitespace,
 /// layout; `title` (faded in by `title_a`) once the header is out of view.
 #[allow(clippy::too_many_arguments)]
-fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: bool, prefs: &DiffPrefs, title: Option<&str>, title_a: f32, loading: bool, focused: bool) -> BarOut {
+fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: bool, prefs: &DiffPrefs, title: Option<&str>, title_a: f32, loading: bool, focused: bool, find: &mut Find) -> BarOut {
     let mut out = BarOut::default();
+    let find_key = if cfg!(target_os = "macos") { "⌘F" } else { "Ctrl+F" };
     // Stuck under a scrolled-away header: the commit title takes the place of
     // the counts (they're in the header); it fades in.
-    let stuck = title.is_some() && title_a > 0.01;
+    let stuck = title.is_some() && title_a > 0.01 && !find.open;
     // A narrow column gets shorter labels instead of pushing past its edge.
     let narrow = ui.available_width() < 420.0 * (ui.style().text_styles[&egui::TextStyle::Body].size / 13.0).max(1.0);
     ui.horizontal_centered(|ui| {
-        if !stuck {
+        // Find: the box takes the left of the toolbar while it's open
+        if find.open {
+            let mut done = false;
+                let w = (ui.available_width() * 0.35).clamp(110.0, 240.0);
+                let te = ui.add(egui::TextEdit::singleline(&mut find.query).hint_text("Find in diff").desired_width(w).id_salt("diff-find"));
+                if std::mem::take(&mut find.focus) {
+                    te.request_focus();
+                }
+                // ↵ next, ⇧↵ previous (the box keeps focus), Esc closes
+                if te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    out.find_step = if ui.input(|i| i.modifiers.shift) { -1 } else { 1 };
+                    te.request_focus();
+                }
+                if te.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) || te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = true;
+                }
+                let (n, capped) = find.count();
+                let label = match (n, find.query.is_empty()) {
+                    (_, true) => String::new(),
+                    (0, false) => "No matches".to_string(),
+                    (n, _) => format!("{} of {n}{}", find.cur + 1, if capped { "+" } else { "" }),
+                };
+                if !label.is_empty() {
+                    ui.label(egui::RichText::new(label).small().color(if n == 0 { theme::ERROR() } else { theme::TEXT_DIM() }));
+                }
+                use crate::widgets::{Glyph, icon_button};
+                if n > 0 {
+                    if icon_button(ui, Glyph::ArrowUp, "Previous match (⇧↵)").clicked() {
+                        out.find_step = -1;
+                    }
+                    if icon_button(ui, Glyph::ArrowDown, "Next match (↵)").clicked() {
+                        out.find_step = 1;
+                    }
+                }
+                if icon_button(ui, Glyph::Close, "Close (Esc)").clicked() {
+                    done = true;
+                }
+                ui.add_space(6.0);
+            if done {
+                out.find_close = true;
+            }
+        }
+        if !stuck && !find.open {
             let files = if narrow { format!("{n}") } else { format!("{n} file{}", if n == 1 { "" } else { "s" }) };
             ui.label(egui::RichText::new(files).small().color(theme::TEXT_DIM())).on_hover_text(format!("{n} changed file{}", if n == 1 { "" } else { "s" }));
             // only the sides that changed
@@ -232,7 +316,7 @@ fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: 
             }
         }
         let fold_tip = if collapsed_all { "Expand all files" } else { "Collapse all files" };
-        if n > 1 && !stuck && crate::widgets::icon_button(ui, crate::widgets::Glyph::Fold { fold: !collapsed_all }, fold_tip).clicked() {
+        if n > 1 && !stuck && !find.open && crate::widgets::icon_button(ui, crate::widgets::Glyph::Fold { fold: !collapsed_all }, fold_tip).clicked() {
             out.all = Some(!collapsed_all);
         }
         if loading {
@@ -254,19 +338,25 @@ fn diff_bar(ui: &mut Ui, n: usize, added: usize, removed: usize, collapsed_all: 
                 out.split = Some(i == 1);
             }
             ui.add_space(4.0);
-            if toggle_chip(ui, prefs.ignore_ws, if narrow { "Ignore ws" } else { "Ignore whitespace" })
-                .on_hover_text("Hide changes that only touch spaces, tabs or indentation (git diff -w)")
-                .clicked()
-            {
-                out.ws = Some(!prefs.ignore_ws);
+            // (while finding, the find box's own ↑↓ take the room)
+            if !find.open {
+                if toggle_chip(ui, prefs.ignore_ws, if narrow { "Ignore ws" } else { "Ignore whitespace" })
+                    .on_hover_text("Hide changes that only touch spaces, tabs or indentation (git diff -w)")
+                    .clicked()
+                {
+                    out.ws = Some(!prefs.ignore_ws);
+                }
+                ui.add_space(4.0);
+                let alt = if cfg!(target_os = "macos") { "⌥" } else { "Alt+" };
+                if icon_button(ui, Glyph::ArrowDown, &format!("Next change ({alt}↓)")).clicked() {
+                    out.nav = 1;
+                }
+                if icon_button(ui, Glyph::ArrowUp, &format!("Previous change ({alt}↑)")).clicked() {
+                    out.nav = -1;
+                }
             }
-            ui.add_space(4.0);
-            let alt = if cfg!(target_os = "macos") { "⌥" } else { "Alt+" };
-            if icon_button(ui, Glyph::ArrowDown, &format!("Next change ({alt}↓)")).clicked() {
-                out.nav = 1;
-            }
-            if icon_button(ui, Glyph::ArrowUp, &format!("Previous change ({alt}↑)")).clicked() {
-                out.nav = -1;
+            if !find.open && icon_button(ui, Glyph::Search, &format!("Find in diff ({find_key} with the pointer over the diff)")).clicked() {
+                out.find_open = true;
             }
             if let (Some(t), true) = (title, stuck) {
                 let w = (ui.available_width() - 8.0).max(0.0);
@@ -360,6 +450,7 @@ impl DiffView {
 
     fn set_files(&mut self, files: Vec<FileDiff>, truncated: bool) {
         self.files = files;
+        self.files_gen += 1;
         self.truncated = truncated;
         self.loading = false;
         self.error = None;
@@ -388,6 +479,83 @@ impl DiffView {
     pub fn set_error(&mut self, e: String) {
         self.clear();
         self.error = Some(e);
+    }
+
+    /// Find `self.find.query` in every line of every file (case-insensitive
+    /// unless the query has a capital letter). Keeps the current match
+    /// where it can; jumps to the first one for a new query.
+    fn find_matches(&mut self) {
+        let q = self.find.query.clone();
+        let key = (q.clone(), self.files_gen);
+        if self.find.built == key {
+            return;
+        }
+        let new_query = self.find.built.0 != q;
+        self.find.built = key;
+        self.find.hits.clear();
+        self.find.capped = false;
+        if q.is_empty() {
+            return;
+        }
+        let case = q.chars().any(char::is_uppercase);
+        let needle = if case { q.clone() } else { q.to_lowercase() };
+        'all: for (fi, f) in self.files.iter().enumerate() {
+            for (hi, h) in f.hunks.iter().enumerate() {
+                for (li, l) in h.lines.iter().enumerate() {
+                    if l.kind == LineKind::NoNewline {
+                        continue;
+                    }
+                    // lowercase char by char keeps byte offsets for ASCII; other
+                    // scripts are matched as they are
+                    let hay: std::borrow::Cow<str> = if case || !l.text.is_ascii() { std::borrow::Cow::Borrowed(&l.text) } else { std::borrow::Cow::Owned(l.text.to_ascii_lowercase()) };
+                    let n = if case || !l.text.is_ascii() { q.as_str() } else { needle.as_str() };
+                    let mut from = 0;
+                    while let Some(at) = hay[from..].find(n) {
+                        let s = from + at;
+                        self.find.hits.push((fi, hi, li, s, s + n.len()));
+                        if self.find.hits.len() >= FIND_MAX {
+                            self.find.capped = true;
+                            break 'all;
+                        }
+                        from = s + n.len().max(1);
+                    }
+                }
+            }
+        }
+        if new_query || self.find.cur >= self.find.hits.len() {
+            self.find.cur = 0;
+        }
+        if new_query && !self.find.hits.is_empty() {
+            self.find_jump = true;
+        }
+    }
+
+    /// Step to the next (+1) or previous (−1) match.
+    fn find_step(&mut self, d: i32) {
+        let n = self.find.hits.len();
+        if n == 0 {
+            return;
+        }
+        self.find.cur = (self.find.cur as i64 + d as i64).rem_euclid(n as i64) as usize;
+        self.find_jump = true;
+    }
+
+    /// The row showing match `k` (its file opened if it was folded).
+    fn find_row(&mut self, k: usize) -> Option<usize> {
+        let (fi, hi, li, s, _) = *self.find.hits.get(k)?;
+        if !self.is_open(fi) {
+            self.set_open(fi, true);
+            self.rebuild();
+        }
+        // the wrapped segment the match starts in
+        let text = &self.files[fi].hunks[hi].lines[li].text;
+        let col: usize = text[..s.min(text.len())].chars().map(|c| if c == '\t' { 4 } else { 1 }).sum();
+        let seg = wrap_ranges(text, self.cols).iter().position(|&(a, b)| col >= a && col < b.max(a + 1)).unwrap_or(0);
+        self.rows.iter().position(|r| match *r {
+            Row::Line(f, h, l, sg) => (f, h, l, sg) == (fi, hi, li, seg),
+            Row::Pair(f, h, o, n, sg) => (f, h, sg) == (fi, hi, seg) && (o == Some(li) || n == Some(li)),
+            _ => false,
+        })
     }
 
     /// The selectable text of `row` on `side`, positioned by `geo`.
@@ -720,6 +888,20 @@ impl DiffView {
             });
             return events;
         }
+        // ⌘F with the pointer over this diff: find in it (elsewhere ⌘F is the
+        // commit search). The app asks through `FIND_REQUEST` (macOS menu).
+        let over = ui.rect_contains_pointer(ui.max_rect());
+        if over {
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique(DIFF_HOVERED), true));
+            let asked = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) || ui.ctx().data_mut(|d| d.remove_temp::<bool>(egui::Id::unique(FIND_REQUEST))).unwrap_or(false);
+            if asked {
+                self.find.open = true;
+                self.find.focus = true;
+            }
+        }
+        if self.find.open {
+            self.find_matches();
+        }
         let defaults = (prefs.expand_commit, prefs.expand_staged, prefs.expand_unstaged);
         if defaults != self.defaults {
             self.defaults = defaults;
@@ -806,6 +988,20 @@ impl DiffView {
             self.glide_to = Some((rows_y + self.ry(i) - bar_h).max(0.0));
         }
 
+        // The current match: into view, a third of the way down.
+        if std::mem::take(&mut self.find_jump)
+            && let Some(i) = self.find_row(self.find.cur)
+        {
+            self.row_top.clear();
+            let mut y = 0.0;
+            for r in &self.rows {
+                self.row_top.push(y);
+                y += if matches!(r, Row::File(_)) { file_h } else { row_h };
+            }
+            self.row_top.push(y);
+            self.glide_to = Some((rows_y + self.ry(i) - bar_h - (self.view_h - bar_h) / 3.0).max(0.0));
+            ui.ctx().request_repaint();
+        }
         // Next / previous change = the next hunk header below / above the top of the view.
         // (a hunk lands just under the sticky toolbar)
         if nav != 0 {
@@ -839,6 +1035,13 @@ impl DiffView {
         let (n_unstaged, n_staged) = (counts(Section::Unstaged), counts(Section::Staged));
         let words = &self.words;
         let syntax = &self.syntax;
+        // find matches by line: (start, end, is the current one)
+        let mut marks: HashMap<(usize, usize, usize), Vec<(usize, usize, bool)>> = HashMap::new();
+        if self.find.open {
+            for (k, &(fi, hi, li, s, e)) in self.find.hits.iter().enumerate() {
+                marks.entry((fi, hi, li)).or_default().push((s, e, k == self.find.cur));
+            }
+        }
         let now = ui.input(|i| i.time);
         let flash = self.flash.filter(|&(_, t)| now - t < 0.8).map(|(r, t)| {
             ui.ctx().request_repaint();
@@ -862,6 +1065,8 @@ impl DiffView {
         let prefs_now = *prefs;
         let mut glide = self.glide_to.take();
         let mut sticky_jump: Option<f32> = None;
+        // (the toolbar edits the query while the rows borrow the view)
+        let mut find = std::mem::take(&mut self.find);
         let out = area.show_viewport(ui, |page, vp| {
                 let top = page.max_rect().top();
                 let x0 = page.max_rect().left();
@@ -1154,6 +1359,9 @@ impl DiffView {
                                 );
                             }
                             let seg_text = Seg { text: &l.text, seg, cols: self.cols };
+                            if let Some(m) = marks.get(&(fi, hi, li)) {
+                                seg_text.mark(&p, rect, rect.left() + gutter, m, char_w);
+                            }
                             seg_text.paint(&p, rect, rect.left() + gutter, words.get(&(fi, hi, li)), syntax.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
                         }
                         Row::Pair(fi, hi, old, new, seg) => {
@@ -1192,6 +1400,9 @@ impl DiffView {
                                     let n = if is_old { l.old_no } else { l.new_no };
                                     let num = n.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
                                     sp.text(pos2(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, num, font.clone(), theme::TEXT_DIM());
+                                }
+                                if let Some(m) = marks.get(&(fi, hi, li)) {
+                                    st.mark(&sp, r, r.left() + char_w * 6.0 + 8.0, m, char_w);
                                 }
                                 st.paint(&sp, r, r.left() + char_w * 6.0 + 8.0, words.get(&(fi, hi, li)), syntax.get(&(fi, hi, li)), l.kind, &font, fg, char_w);
                             }
@@ -1476,8 +1687,24 @@ impl DiffView {
                 }
                 let mut bar_ui = page.new_child(egui::UiBuilder::new().max_rect(bar_rect.shrink2(vec2(0.0, 2.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
                 let title = header.as_ref().map(|h| h.title.as_str());
-                bar_out = diff_bar(&mut bar_ui, n_files, added, removed, collapsed_all, &prefs_now, title, title_a, loading, prefs_now.focused);
+                bar_out = diff_bar(&mut bar_ui, n_files, added, removed, collapsed_all, &prefs_now, title, title_a, loading, prefs_now.focused, &mut find);
             });
+        self.find = find;
+        if bar_out.find_open {
+            self.find.open = true;
+            self.find.focus = true;
+        }
+        if bar_out.find_close {
+            self.find.open = false;
+            self.find.hits.clear();
+            self.find.built = Default::default();
+        }
+        if bar_out.find_step != 0 {
+            self.find_step(bar_out.find_step);
+        }
+        if self.find.open && self.find.query != self.find.built.0 {
+            ui.ctx().request_repaint();
+        }
         if let Some(y) = sticky_jump {
             self.glide_to = Some(y.max(0.0));
             ui.ctx().request_repaint();
@@ -1895,6 +2122,24 @@ fn wrap_ranges(text: &str, cols: usize) -> Vec<(usize, usize)> {
 }
 
 impl Seg<'_> {
+    /// Find matches in this segment: a soft box, the current one stronger.
+    fn mark(&self, p: &egui::Painter, rect: Rect, x: f32, ranges: &[(usize, usize, bool)], char_w: f32) {
+        let (from, to) = wrap_ranges(self.text, self.cols).get(self.seg).copied().unwrap_or((0, 0));
+        let col = |b: usize| self.text[..b.min(self.text.len())].chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>();
+        for &(s, e, cur) in ranges {
+            let (a, b) = (col(s).max(from), col(e).min(to));
+            if a < b {
+                let r = Rect::from_min_max(pos2(x + (a - from) as f32 * char_w - 1.0, rect.top() + 1.0), pos2(x + (b - from) as f32 * char_w + 1.0, rect.bottom() - 1.0));
+                if cur {
+                    p.rect_filled(r, 2.0, theme::ACCENT().gamma_multiply(0.55));
+                    p.rect_stroke(r, 2.0, Stroke::new(1.0, theme::ACCENT()), egui::StrokeKind::Outside);
+                } else {
+                    p.rect_filled(r, 2.0, theme::ACCENT().gamma_multiply(0.28));
+                }
+            }
+        }
+    }
+
     fn count(&self) -> usize {
         wrap_ranges(self.text, self.cols).len()
     }
