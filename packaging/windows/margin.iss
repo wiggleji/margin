@@ -12,6 +12,8 @@ AppId={{12A9CD6B-EE14-466A-8BD7-22863ACAF854}
 AppName=Margin
 AppVersion={#AppVersion}
 AppVerName=Margin {#AppVersion}
+; the name in Settings → Apps (and what winget matches): no version in it
+UninstallDisplayName=Margin
 AppPublisher=Margin contributors
 AppPublisherURL=https://github.com/wiggleji/margin
 AppSupportURL=https://github.com/wiggleji/margin/issues

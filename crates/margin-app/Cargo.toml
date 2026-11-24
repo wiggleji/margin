@@ -34,8 +34,14 @@ winresource = { version = "0.1", default-features = false }
 rfd = { version = "0.18", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-# named pipe for `margin <dir>` handing folders to the running window
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_IO", "Win32_Security"] }
+# named pipe for `margin <dir>` handing folders to the running window; a
+# message box when no renderer starts
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_IO", "Win32_Security", "Win32_UI_WindowsAndMessaging"] }
+# A second renderer for Windows without OpenGL 2+ (virtual machines, Remote
+# Desktop, no graphics driver): Direct3D 12, which has a software renderer
+# (WARP). Only Direct3D: no Vulkan, no GL through wgpu.
+eframe = { version = "0.37", default-features = false, features = ["wgpu_no_default_features"] }
+wgpu = { version = "30", default-features = false, features = ["dx12", "wgsl", "std"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Native menu bar (File, Edit, …) and clipboard for its Edit → Paste.
