@@ -7,6 +7,7 @@ mod commands;
 mod commit_list;
 mod conflicts;
 mod icons;
+mod insights;
 mod details;
 mod diff_view;
 mod emoji;

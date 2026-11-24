@@ -136,6 +136,17 @@ Put changes aside to get back to later.
 - **New branch from stash…** makes a branch at the commit the stash was made on, checks it out and applies the stash there (removing it if it applies cleanly): the way out when a stash no longer applies where you are.
 - Stashing some files while other files are staged keeps those others out of the stash, and staged (plain `git stash` would record them in the stash too).
 
+## Insights
+
+Who changed what, where and when, from the history: **⌘P / Ctrl+P → Insights** (macOS: **Repository → Insights**). It takes the place of the history, like review mode; **‹ History** or Esc goes back.
+
+- **Range and branches** (top right): the last **30 days** (the default), 90 days, a year, or all time; on the **current branch** (the default) or **all branches**. Merge commits aren't counted (a merged branch's work would count twice), and people are counted once each, as the repository's `.mailmap` names them.
+- **Overview:** commits, people, files changed and lines; commits per week; and when work happens (weekday × hour, in your time zone). The busiest folders and the most active people are clickable.
+- **Directories:** a folder tree with commits, lines, the main contributor and their share, and how many people work there. Click a folder to open it and narrow everything to it; click it again to see who works there. Folders where one person made 80% or more of the changes (8 commits or more) are marked **mostly one person**: code few others know.
+- **Contributors:** commits, lines, files, active days, where each person works most, and their last commit; sort by any column. Click a person to see where they work.
+- **Hotspots:** the files changed most often, and by how many people (**busy** at 4 or more): where bugs and merge conflicts tend to come from. Click one to see who changed it.
+- The folder and person you chose show as chips; × takes one off. **Ignore generated files** (on by default) leaves out lock files and vendored or generated code (`package-lock.json`, `Cargo.lock`, `vendor/`, `*.min.js`, `schema.rb`, …), whose line counts would drown the rest.
+
 ## Interactive rebase
 
 Reorder, reword, squash or drop commits before you push (or share a cleaner history). Right-click a commit in the history → **Interactive rebase from here…** (that commit and the ones after it on the current branch), or **⌘P / Ctrl+P → Interactive rebase…** (every commit since the branch split off from the default branch). The plan takes the place of the history; **‹ History** or Esc leaves without changing anything.
