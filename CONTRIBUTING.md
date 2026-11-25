@@ -26,7 +26,7 @@ sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev 
 
 To try a demo repository with branches, merges, tags and notes: `scripts/demo-repo.sh ~/margin-demo`, then open `~/margin-demo/lumen`.
 
-How the code is laid out: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What every feature does: [docs/GUIDE.md](docs/GUIDE.md).
+How the code works and how to add a feature: [docs/CODE_TOUR.md](docs/CODE_TOUR.md) (start here). How it's laid out and why: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What every feature does: [docs/GUIDE.md](docs/GUIDE.md).
 
 ## Branches and pull requests
 
@@ -45,7 +45,7 @@ How the code is laid out: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What eve
    - user-facing changes are described in `docs/GUIDE.md` (and the README if it's a headline feature)
 4. Open the pull request against `main` and fill in the template. For UI changes, add a screenshot.
 
-CI builds and tests on Linux and macOS. Pull requests are squash-merged, so the PR title becomes the commit on `main`: write it as a short summary of the change ("Syntax highlighting in diffs", "Fix wrapped branch chips overlapping").
+CI builds and tests on Linux, Windows and macOS. Pull requests are squash-merged, so the PR title becomes the commit on `main`: write it as a short summary of the change ("Syntax highlighting in diffs", "Fix wrapped branch chips overlapping").
 
 ## Style
 
