@@ -104,6 +104,8 @@ pub struct Command {
 
 /// How many recently run commands the palette remembers and shows first.
 pub const RECENT_MAX: usize = 5;
+/// Choices shown at most in a pick list.
+const PICK_MAX: usize = 300;
 
 impl Command {
     /// Stable identity for the recent list ("Branch/New branch…").
@@ -478,7 +480,8 @@ impl Palette {
                     .filter_map(|(i, it)| if q.is_empty() { Some((0, i)) } else { fuzzy(q, &format!("{} {}", it.label, it.detail)).map(|s| (s, i)) })
                     .collect();
                 scored.sort_by_key(|&(s, i)| (-s, i));
-                scored.into_iter().map(|(_, i)| Entry::Item(i)).collect()
+                // (a long list, like every file, narrows as you type)
+                scored.into_iter().take(PICK_MAX).map(|(_, i)| Entry::Item(i)).collect()
             }
             _ => vec![],
         }

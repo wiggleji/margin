@@ -147,6 +147,13 @@ Who changed what, where and when, from the history: **⌘P / Ctrl+P → Insights
 - **Hotspots:** the files changed most often, and by how many people (**busy** at 4 or more): where bugs and merge conflicts tend to come from. Click one to see who changed it.
 - The folder and person you chose show as chips; × takes one off. **Ignore generated files** (on by default) leaves out lock files and vendored or generated code (`package-lock.json`, `Cargo.lock`, `vendor/`, `*.min.js`, `schema.rb`, …), whose line counts would drown the rest.
 
+## File history and blame
+
+One file through time, in place of the history (like Insights; **‹ History** or Esc goes back). Open it by right-clicking a file in any diff → **File history** or **Blame**, or **⌘P / Ctrl+P → File history…** / **Blame file…** and pick the file (macOS: **Repository → File History… / Blame File…**).
+
+- **Commits:** every commit that changed the file, newest first, following renames (a commit that renamed it says *renamed from …*), with the lines it added and removed. The newest is shown first; click another to see what it changed in this file. The newest 2,000 commits are read.
+- **Blame:** the file with who last changed each line. Each change is a block with its commit, author and date; the bar on the left is stronger for newer changes, and hovering a block lights up every line from the same commit. Click a block to see what that commit changed; right-click for **Blame before this change** (the file just before that commit, to dig past a reformat or a move) or **Copy commit SHA**. **Back to the latest** returns to the current version.
+
 ## Interactive rebase
 
 Reorder, reword, squash or drop commits before you push (or share a cleaner history). Right-click a commit in the history → **Interactive rebase from here…** (that commit and the ones after it on the current branch), or **⌘P / Ctrl+P → Interactive rebase…** (every commit since the branch split off from the default branch). The plan takes the place of the history; **‹ History** or Esc leaves without changing anything.

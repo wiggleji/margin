@@ -132,6 +132,13 @@ pub enum Action {
     CloseInsights,
     /// Read the history again for the Insights range / branches.
     LoadInsights,
+    /// One file through time (in place of the history): its history, or its blame.
+    OpenFileView { path: String, blame: bool },
+    CloseFileView,
+    /// The file view: show what this commit (index into its history) changed in the file.
+    FileViewSelect(usize),
+    /// The file view: blame the file (named `path` there) as of `rev`.
+    FileViewBlameAt { rev: String, path: String },
     /// Search the history's changes for this text (`code:` filter).
     SearchCode(String),
     /// Look up people to @mention on GitHub.
@@ -414,6 +421,9 @@ pub struct RepoView {
     /// Insights, when open (in place of the history, like review mode).
     pub insights: Option<crate::insights::Insights>,
     insights_gen: u64,
+    /// The file view, when open (in place of the history, like Insights).
+    pub file_view: Option<crate::file_view::FileView>,
+    file_view_gen: u64,
     /// A git step failed: open the conflict editor if it left conflicts.
     conflict_check: bool,
     review_gen: u64,
@@ -524,6 +534,8 @@ impl RepoView {
             rebase: None,
             insights: None,
             insights_gen: 0,
+            file_view: None,
+            file_view_gen: 0,
             // a repository opened in the middle of a conflicted merge: show the editor
             conflict_check: true,
             review_gen: 0,
@@ -1522,6 +1534,7 @@ impl MarginApp {
                 let Some(rv) = &mut self.rv else { return };
                 rv.review = None;
                 rv.rebase = None;
+                rv.file_view = None;
                 if rv.insights.is_none() {
                     rv.insights_gen += 1;
                     rv.insights = Some(crate::insights::Insights::new(rv.insights_gen));
@@ -1543,6 +1556,50 @@ impl MarginApp {
                 let since = days.map(|d| margin_core::time_now() - d * 86_400);
                 let repo = rv.repo.clone();
                 self.jobs.spawn(move || Msg::InsightsLoaded { workdir: repo.workdir.clone(), generation, result: margin_core::insights::load(&repo, since, all).map_err(|e| e.0) });
+            }
+            OpenFileView { path, blame } => {
+                let Some(rv) = &mut self.rv else { return };
+                rv.review = None;
+                rv.rebase = None;
+                rv.insights = None;
+                rv.file_view_gen += 1;
+                let tab = if blame { crate::file_view::Tab::Blame } else { crate::file_view::Tab::History };
+                rv.file_view = Some(crate::file_view::FileView::new(path.clone(), tab, rv.file_view_gen));
+                let (repo, generation) = (rv.repo.clone(), rv.file_view_gen);
+                let r2 = repo.clone();
+                let p2 = path.clone();
+                self.jobs.spawn(move || Msg::FileHistoryLoaded { workdir: repo.workdir.clone(), generation, result: repo.file_history("HEAD", &path).map_err(|e| e.0) });
+                self.jobs.spawn(move || Msg::BlameLoaded { workdir: r2.workdir.clone(), generation, rev: "HEAD".into(), result: r2.blame("HEAD", &p2).map_err(|e| e.0) });
+            }
+            CloseFileView => {
+                if let Some(rv) = &mut self.rv {
+                    rv.file_view = None;
+                }
+            }
+            FileViewSelect(i) => {
+                let ws = self.state.diff_ignore_ws;
+                let Some(rv) = &mut self.rv else { return };
+                let Some(f) = &mut rv.file_view else { return };
+                let Some(Ok(commits)) = &f.commits else { return };
+                let Some(c) = commits.get(i).cloned() else { return };
+                f.sel = Some(i);
+                f.tab = crate::file_view::Tab::History;
+                f.diff.clear();
+                f.diff.loading = true;
+                let (repo, generation) = (rv.repo.clone(), f.generation);
+                self.jobs.spawn(move || {
+                    let result = repo.file_change_in(&c.id, &c.path, c.old_path.as_deref(), ws).map(|t| margin_core::diff::parse(&t)).map_err(|e| e.0);
+                    Msg::FileCommitDiff { workdir: repo.workdir.clone(), generation, index: i, result }
+                });
+            }
+            FileViewBlameAt { rev, path } => {
+                let Some(rv) = &mut self.rv else { return };
+                let Some(f) = &mut rv.file_view else { return };
+                f.tab = crate::file_view::Tab::Blame;
+                f.blame_rev = rev.clone();
+                f.blame = None;
+                let (repo, generation) = (rv.repo.clone(), f.generation);
+                self.jobs.spawn(move || Msg::BlameLoaded { workdir: repo.workdir.clone(), generation, rev: rev.clone(), result: repo.blame(&rev, &path).map_err(|e| e.0) });
             }
             ReviewOpenCommit(sha) => {
                 let ws = self.state.diff_ignore_ws;
@@ -2392,6 +2449,37 @@ impl MarginApp {
                     eprintln!("mention lookup: {e}");
                 }
             }
+            Msg::FileHistoryLoaded { workdir, generation, result } => {
+                let Some(f) = self.file_view_for(&workdir, generation) else { return };
+                let any = result.as_ref().is_ok_and(|c| !c.is_empty());
+                f.commits = Some(result);
+                // show the newest change right away (unless Blame was asked for)
+                if any && f.tab == crate::file_view::Tab::History && f.sel.is_none() {
+                    self.handle(Action::FileViewSelect(0));
+                }
+            }
+            Msg::FileCommitDiff { workdir, generation, index, result } => {
+                let Some(f) = self.file_view_for(&workdir, generation) else { return };
+                if f.sel != Some(index) {
+                    return;
+                }
+                f.diff.loading = false;
+                match result {
+                    Ok((files, truncated)) => f.diff.set(files, truncated),
+                    Err(e) => {
+                        f.sel = None;
+                        self.err(e)
+                    }
+                }
+            }
+            Msg::BlameLoaded { workdir, generation, rev, result } => {
+                let Some(f) = self.file_view_for(&workdir, generation) else { return };
+                if f.blame_rev != rev {
+                    return;
+                }
+                let path = f.path.clone();
+                f.blame = Some(result.map(|b| crate::file_view::ShownBlame::new(b, &path)));
+            }
             Msg::InsightsLoaded { workdir, generation, result } => {
                 if let Some(ins) = self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir).and_then(|rv| rv.insights.as_mut()).filter(|i| i.generation == generation) {
                     ins.set_data(result);
@@ -2410,6 +2498,10 @@ impl MarginApp {
     }
 
     /// The open review of the tab at `workdir`, if it's still the one `generation` was for.
+    fn file_view_for(&mut self, workdir: &std::path::Path, generation: u64) -> Option<&mut crate::file_view::FileView> {
+        self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir).and_then(|rv| rv.file_view.as_mut()).filter(|f| f.generation == generation)
+    }
+
     fn review_for(&mut self, workdir: &std::path::Path, generation: u64) -> Option<&mut crate::review::Review> {
         self.rv.as_mut().filter(|rv| rv.repo.workdir == workdir).and_then(|rv| rv.review.as_mut()).filter(|r| r.generation == generation)
     }
@@ -3211,7 +3303,8 @@ impl eframe::App for MarginApp {
             let resolving = rv.conflicts.is_some();
             let rebasing = rv.rebase.is_some();
             let insighting = rv.insights.is_some();
-            let reviewing = rv.review.is_some() || resolving || rebasing || insighting;
+            let filing = rv.file_view.is_some();
+            let reviewing = rv.review.is_some() || resolving || rebasing || insighting || filing;
             if reviewing {
                 // Review mode: the sidebar, then the comparison in place of the
                 // history, details and notes.
@@ -3225,6 +3318,8 @@ impl eframe::App for MarginApp {
                 egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG())).show(ui, |ui| {
                     if rebasing {
                         crate::rebase::show(ui, rv, &mut actions)
+                    } else if filing && !resolving {
+                        crate::file_view::show(ui, rv, &mut diff_prefs, &mut actions)
                     } else if insighting && !resolving {
                         crate::insights::show(ui, rv, &mut actions)
                     } else if resolving {

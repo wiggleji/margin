@@ -11,6 +11,7 @@ mod insights;
 mod details;
 mod diff_view;
 mod emoji;
+mod file_view;
 mod fonts;
 mod jobs;
 mod markdown_view;

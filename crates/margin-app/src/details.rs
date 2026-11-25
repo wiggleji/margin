@@ -123,6 +123,7 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
                 Action::Confirm { msg: format!("Discard changes to {what}? Untracked files are deleted. This cannot be undone."), action: Box::new(Action::Discard(p)) }
             }
             DiffEvent::CopyPath(p) => Action::Copy(p),
+            DiffEvent::FileHistory { path, blame } => Action::OpenFileView { path, blame },
             DiffEvent::ToggleFocus => Action::ToggleFocusDiff,
             DiffEvent::OpenUrl(u) => Action::OpenUrl(u),
             // (no review threads in the working directory)
@@ -418,6 +419,7 @@ fn stash_view(ui: &mut Ui, rv: &mut RepoView, st: &margin_core::git::Stash, pref
             DiffEvent::ToggleFocus => actions.push(Action::ToggleFocusDiff),
             DiffEvent::OpenUrl(u) => actions.push(Action::OpenUrl(u)),
             DiffEvent::CopyPath(p) => actions.push(Action::Copy(p)),
+            DiffEvent::FileHistory { path, blame } => actions.push(Action::OpenFileView { path, blame }),
             _ => {}
         }
     }

@@ -3,7 +3,8 @@
 ```
 crates/
   margin-core   no UI. git CLI wrapper, diff parser, graph layout, notes store,
-                conflicts, interactive rebase, insights, GitHub and Jira clients,
+                conflicts, interactive rebase, insights, file history and
+                blame, GitHub and Jira clients,
                 self-update, config/secrets, per-OS helpers
   margin-app    egui GUI (binary: margin)
   margin-mcp    MCP stdio server for coding agents (binary: margin-mcp). No GUI deps.
@@ -23,6 +24,7 @@ Most features come as a pair: the logic in a `margin-core` module (testable with
 | Interactive rebase | `rebase.rs` | `rebase.rs` |
 | Stashes | `git.rs` (`stash_*`) | `details.rs`, `sidebar.rs` |
 | Insights | `insights.rs` | `insights.rs` |
+| File history and blame | `file_history.rs` | `file_view.rs` |
 | Command palette | — | `commands.rs`, `palette.rs` |
 | Self-update | `update.rs` | `app.rs` |
 | Per-OS code | `platform/` | `platform.rs`, `menu_bar.rs`, `cli.rs` |
@@ -33,7 +35,7 @@ Most features come as a pair: the logic in a `margin-core` module (testable with
 
 **Background work.** Anything slow (git, HTTP) runs on a short-lived thread via `Jobs::spawn` (`jobs.rs`) and comes back as a `Msg` over a channel; the next frame's `poll()` hands it to `on_msg()`. Git operations go through `op()`, which runs one at a time (the "Busy" state) and refreshes afterwards. A refresh loads status, refs and the log in parallel into one `Snapshot`. Results carry the repository path, and many carry a generation counter, so an answer for a tab or commit you've moved away from is dropped.
 
-**State.** `MarginApp` holds the app-wide state; each open repository tab is a `RepoView` (its `Snapshot`, selection, diffs, notes editor, and whichever mode is open: review, conflicts, rebase plan, insights). Preferences and layout are saved as JSON in the config folder (`config.json`, `settings.json`, `state.json`).
+**State.** `MarginApp` holds the app-wide state; each open repository tab is a `RepoView` (its `Snapshot`, selection, diffs, notes editor, and whichever mode is open: review, conflicts, rebase plan, insights, file view). Preferences and layout are saved as JSON in the config folder (`config.json`, `settings.json`, `state.json`).
 
 ## Key decisions
 
@@ -56,6 +58,7 @@ Most features come as a pair: the logic in a `margin-core` module (testable with
 | **Interactive rebase** (`core::rebase`) | The plan (pick, reword, edit, squash, fixup, drop, and order) becomes a todo file passed through `GIT_SEQUENCE_EDITOR`; messages are applied by `exec git commit --amend -F` lines, so no editor opens. `--autostash` keeps uncommitted work. Ranges with merges are refused. |
 | **Stashes of some files** | `git stash push -- <paths>` records the whole staging area. When other files are staged, Margin builds the stash itself the way git does (index, worktree and untracked commits through temporary index files and `commit-tree`, stored with `git stash store`), so only the picked files go in. |
 | **Insights** (`core::insights`) | One `git log --no-merges --use-mailmap --numstat -M` over the range (HEAD or all branches, capped at 50,000 commits), then aggregation in Rust by folder, person, file, week and weekday × hour, narrowed by a folder or a person. Lock files and generated code are left out by default. `code:` in the history search uses `git log -G` with the text escaped. |
+| **File history and blame** (`core::file_history`) | History is `git log --follow -M --numstat` for one path (newest 2,000), parsed while tracking the file's name back through renames, so each commit's diff is `git show <id> -- <name there> [<old name>]`. Blame is `git blame --porcelain`, kept as lines plus an index into the distinct commits, so the view draws blocks and ages without per-line strings. "Blame before this change" blames `<id>^` under the name the file had there. |
 | **Notes sync** (`core::sync`) | A two-way mirror between `.git/margin/notes` and a cloud-synced folder, with no provider APIs. `.sync-state.json` stores each file's hash at the last sync, tied to the remote folder, so each side's changes are known. On a conflict, both versions are merged into the note. Safety: a new or empty folder (or a wiped local dir) means union with no deletes; deletions move to `.trash/<time>/`; a pass deleting more than 3 notes and more than half is refused before anything changes (plan, then apply). Each tab's watcher thread runs passes when either side's stamp changes. MCP syncs at startup and after writes. |
 | **Icons without an SVG crate** | GitHub and note icons are Octicons path data, rasterised by a ~150-line nonzero scanline filler (4×4 supersampling, cubic/quadratic/arc flattening) at the exact pixel size, then cached as tinted textures. resvg would add 1–2 MB. |
 | **Syntax highlighting without a grammar engine** | `app::syntax` is a small hand-written tokenizer per language family (keywords, strings, comments, numbers), enough for diffs and code blocks in notes without the weight of syntect or tree-sitter. |
