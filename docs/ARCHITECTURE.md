@@ -12,6 +12,8 @@ crates/
 
 Dependencies point one way: `margin-app` and `margin-mcp` use `margin-core`; the core never knows a window exists. The GUI and the MCP server never talk to each other directly. Both work on the same notes directory, and the GUI notices changes through a 1 Hz stat watcher on a background thread. This keeps the protocol surface at zero and lets several agents and windows work at once.
 
+For a guided walk through the code (one click from start to finish, and the steps to add a feature), see [CODE_TOUR.md](CODE_TOUR.md).
+
 Most features come as a pair: the logic in a `margin-core` module (testable without a window, often against a real temporary git repository) and the screen in a `margin-app` module of the same or a similar name.
 
 | Feature | Logic (`margin-core`) | Screen (`margin-app`) |
