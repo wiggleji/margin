@@ -91,10 +91,18 @@ The cask installs `Margin.app`, links `margin` (the launcher in `Margin.app/Cont
 
 ### winget
 
-`winget install wiggleji.Margin` installs the Windows installer (per user, adds `margin` to PATH, and installs Git for Windows first if it's missing). Packages live in **microsoft/winget-pkgs**: each version is a pull request there with three manifests, which Microsoft's bots validate (they run the installer silently) and moderators merge, usually within a few days. The Release workflow's **Submit to winget** job opens that pull request for each release, from `packaging/winget/*.yaml.in` (rendered by `scripts/winget-manifests.sh`, with the installer's SHA-256), when `WINGET_TOKEN` is set; the first one adds the package. If it fails, the release itself is unaffected.
+`winget install wiggleji.Margin` installs the Windows installer (per user, adds `margin` to PATH, and installs Git for Windows first if it's missing). Packages live in **microsoft/winget-pkgs**: each version is a pull request there with three manifests, which Microsoft's bots validate (they run the installer silently) and moderators merge. The first one, which adds the package, waits for a moderator's review; later versions usually go through much faster. The manifests come from `packaging/winget/*.yaml.in`, rendered by `scripts/winget-manifests.sh` with the installer's SHA-256.
+
+The **Submit to winget** workflow (`.github/workflows/winget.yml`) opens that pull request:
+
+- **After each release**, automatically, but only once `wiggleji.Margin` is in winget. Until the first pull request is merged, releases skip winget (the run shows a note), so they don't pile up first-listing pull requests.
+- **By hand:** *Actions → Submit to winget → Run workflow*, with a version (empty: the latest release). It submits whether or not the package is listed yet: for the first listing, for the release that came out while it waited, or to retry a failed submission.
+
+Either way it skips a version winget already has, and it syncs your winget-pkgs fork first. A failure never affects the release itself.
 
 1. Create a **classic** personal access token with the **public_repo** scope (wingetcreate forks microsoft/winget-pkgs to your account and opens the pull request from there), and add it as the `WINGET_TOKEN` secret here.
-2. The next release submits. Watch the pull request on microsoft/winget-pkgs for the bots' checks; once merged, `winget install wiggleji.Margin` works (and `winget upgrade` picks up later versions, though Margin updates itself anyway).
+2. Run *Submit to winget* for the first listing. Watch the pull request on microsoft/winget-pkgs for the bots' checks; once merged, `winget install wiggleji.Margin` works (and `winget upgrade` picks up later versions, though Margin updates itself anyway). From then on, releases submit by themselves.
+3. If a submission fails with *"The forked repository could not be synced"*, open your fork `<you>/winget-pkgs` on GitHub → **Sync fork** (→ Discard commits), then run *Submit to winget* again for that version.
 
 To try a version's manifests before submitting: `scripts/winget-manifests.sh <version> <installer sha256> out`, then on Windows `winget install --manifest out\manifests\w\wiggleji\Margin\<version>` (after `winget settings --enable LocalManifestFiles`, as administrator).
 

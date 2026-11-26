@@ -293,30 +293,11 @@ jobs:
     name: Submit to winget
     needs: [prepare, publish]
     if: needs.prepare.outputs.publish == 'true'
-    runs-on: windows-latest
-    # a winget-pkgs pull request failing to open doesn't undo the release
-    continue-on-error: true
-    env:
-      # a classic token with public_repo (docs/RELEASING.md); without it nothing is submitted
+    # (winget.yml: only once the package is listed; until then, run
+    # Actions → Submit to winget by hand)
+    uses: ./.github/workflows/winget.yml
+    with:
+      version: ${{ needs.prepare.outputs.tag }}
+      from_release: true
+    secrets:
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
-    steps:
-      - uses: actions/checkout@v7
-        if: env.WINGET_TOKEN != ''
-        with:
-          sparse-checkout: |
-            packaging/winget
-            scripts
-      - name: Open a pull request on microsoft/winget-pkgs
-        if: env.WINGET_TOKEN != ''
-        shell: bash
-        env:
-          TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          set -euo pipefail
-          v="${TAG#v}"
-          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG"
-          sha="$(curl -fsSL "$base/Margin-$v-windows-x64-setup.exe.sha256" | cut -d' ' -f1)"
-          dir="$(scripts/winget-manifests.sh "$v" "$sha" "$RUNNER_TEMP/winget")"
-          cat "$dir"/*.yaml
-          curl -fsSL -o "$RUNNER_TEMP/wingetcreate.exe" https://aka.ms/wingetcreate/latest
-          "$RUNNER_TEMP/wingetcreate.exe" submit --token "$WINGET_TOKEN" --prtitle "New version: wiggleji.Margin version $v" "$dir"

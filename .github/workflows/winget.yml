@@ -1,0 +1,110 @@
+# Open a pull request on microsoft/winget-pkgs for a released version.
+#
+#   Actions → "Submit to winget" → Run workflow, with a version (e.g. 0.11.0;
+#       empty: the latest release) → submits it, whether or not Margin is
+#       listed yet (use it for the first listing, or to retry)
+#   the Release workflow calls it after publishing, with from_release: it
+#       submits only once wiggleji.Margin is in winget, so releases don't
+#       pile up first-listing pull requests while one waits for a moderator
+#
+# Either way it skips a version winget already has. Needs the WINGET_TOKEN
+# secret (docs/RELEASING.md); without it nothing is submitted.
+name: Submit to winget
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to submit (e.g. 0.11.0). Empty: the latest release."
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      from_release:
+        description: "Called by the Release workflow: submit only if the package is already listed."
+        type: boolean
+        default: false
+    secrets:
+      WINGET_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    name: Submit to winget
+    runs-on: windows-latest
+    # (after a release, a pull request failing to open doesn't fail the release)
+    continue-on-error: ${{ inputs.from_release == true }}
+    env:
+      # a classic token with public_repo (docs/RELEASING.md)
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Which version, and is it needed
+        id: check
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          FROM_RELEASE: ${{ inputs.from_release == true }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WINGET_TOKEN:-}" ]; then
+            echo "::warning::WINGET_TOKEN isn't set, so nothing is submitted (docs/RELEASING.md)."
+            echo "submit=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          v="${VERSION#v}"
+          if [ -z "$v" ]; then
+            v="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+            v="${v#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          pkg="repos/microsoft/winget-pkgs/contents/manifests/w/wiggleji/Margin"
+          if ! gh api "$pkg" --silent 2>/dev/null; then
+            if [ "$FROM_RELEASE" = "true" ]; then
+              echo "::notice::wiggleji.Margin isn't in winget yet (its first pull request is waiting for review), so $v isn't submitted now. Once it's listed, run Actions → Submit to winget with $v."
+              echo "submit=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "wiggleji.Margin isn't listed yet: submitting $v as its first version."
+          elif gh api "$pkg/$v" --silent 2>/dev/null; then
+            echo "::notice::winget already has wiggleji.Margin $v; nothing to submit."
+            echo "submit=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "submit=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        if: steps.check.outputs.submit == 'true'
+        with:
+          sparse-checkout: |
+            packaging/winget
+            scripts
+
+      - name: Bring the winget-pkgs fork up to date
+        if: steps.check.outputs.submit == 'true'
+        shell: bash
+        run: |
+          # wingetcreate submits from the token owner's fork, and gives up if
+          # it can't sync it (e.g. the fork's master has commits of its own)
+          owner="$(GH_TOKEN="$WINGET_TOKEN" gh api user --jq .login)"
+          if GH_TOKEN="$WINGET_TOKEN" gh api "repos/$owner/winget-pkgs" --silent 2>/dev/null; then
+            GH_TOKEN="$WINGET_TOKEN" gh api -X POST "repos/$owner/winget-pkgs/merge-upstream" -f branch=master --jq .message \
+              || echo "::warning::Couldn't sync $owner/winget-pkgs with microsoft/winget-pkgs. If the submit fails, open the fork on GitHub → Sync fork (Discard commits), then run this again."
+          fi
+
+      - name: Open a pull request on microsoft/winget-pkgs
+        if: steps.check.outputs.submit == 'true'
+        shell: bash
+        env:
+          V: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/v$V"
+          sha="$(curl -fsSL "$base/Margin-$V-windows-x64-setup.exe.sha256" | cut -d' ' -f1)"
+          dir="$(scripts/winget-manifests.sh "$V" "$sha" "$RUNNER_TEMP/winget")"
+          cat "$dir"/*.yaml
+          curl -fsSL -o "$RUNNER_TEMP/wingetcreate.exe" https://aka.ms/wingetcreate/latest
+          "$RUNNER_TEMP/wingetcreate.exe" submit --token "$WINGET_TOKEN" --prtitle "New version: wiggleji.Margin version $V" "$dir"
