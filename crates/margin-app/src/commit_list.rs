@@ -7,7 +7,10 @@ use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, Ui, pos2,
 use margin_core::git::{Commit, ResetMode};
 use margin_core::notes::NoteTarget;
 
-const LANE_W: f32 = 12.0;
+/// A graph lane's width: full when there's room, narrower when the history
+/// column is narrow (the graph takes at most ~35% of it).
+const LANE_MAX: f32 = 12.0;
+const LANE_MIN: f32 = 5.0;
 const MAX_LANES: usize = 14;
 
 pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
@@ -132,6 +135,9 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             .map(|r| r.name.as_str())
             .collect()
     };
+    // (local branches may contain "/" too: tell them apart by git's own list)
+    let remotes: std::collections::HashSet<&str> =
+        snap.refs.iter().filter(|r| r.kind == margin_core::git::RefKind::Remote).map(|r| r.name.as_str()).collect();
     let font = FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
     let small = FontId::proportional(font.size - 1.5);
     // Two text lines per commit (subject / author); sized from the text size.
@@ -200,6 +206,10 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
     let out = scroll.show_rows(ui, row_h, total, |ui, range| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let width = ui.available_width();
+        // Lanes narrow so the graph keeps to ~35% of the column (as many
+        // lanes as the rows on screen use), and widen again when there's room.
+        let lanes = if visible.is_none() { range.clone().filter(|&r| r >= 1 && r <= n_commits).map(|r| row_lanes(rv, r - 1)).max().unwrap_or(1) } else { 1 };
+        let lane_w = ((width * 0.35 - 20.0) / lanes as f32).clamp(LANE_MIN, LANE_MAX);
         for row in range {
             let (rect, resp) = ui.allocate_exact_size(vec2(width, row_h), Sense::click());
             let p = ui.painter_at(rect);
@@ -237,7 +247,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
 
             // --- graph
             let graph_w = if visible.is_none() {
-                draw_graph(&p, rect, rv, ci, head.as_deref() == Some(c.id.as_str()))
+                draw_graph(&p, rect, rv, ci, head.as_deref() == Some(c.id.as_str()), lane_w)
             } else {
                 p.circle_filled(pos2(rect.left() + 10.0, rect.center().y), 3.5, theme::lane(1));
                 20.0
@@ -254,35 +264,51 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             let is_tip = |name: &str| tips.is_some_and(|t| t.iter().any(|x| x == name));
             let mut hover_extra = String::new();
 
-            // ---- line 1, right: ref labels, right-aligned (at most ~40% of the
-            // row, so the title stays readable); hidden branches get none
-            let refs: Vec<(String, Color32)> = c.refs.iter().map(|r| ref_chip(r)).filter(|(name, _)| !hidden_refs.contains(name.as_str())).collect();
-            if refs.len() < c.refs.len() {
-                hover_extra += &format!("\n\nRefs: {}", c.refs.iter().map(|r| ref_chip(r).0).collect::<Vec<_>>().join(", "));
-            }
-            let budget = ((right - left) * 0.4).max(60.0);
+            // ---- line 1, right: ref labels, right-aligned in at most ~40% of
+            // the text width, so the title stays readable. Local branches
+            // first, then remote ones, then tags; as the column narrows, tags
+            // go first, then remote branches ("+N" counts what's left out,
+            // and the tooltip lists every ref). Hidden branches get none.
+            let text_w = (right - left).max(0.0);
+            let mut refs: Vec<(String, Color32, u8)> = c.refs.iter().map(|r| ref_chip(r, &remotes)).filter(|(name, _, _)| !hidden_refs.contains(name.as_str())).collect();
+            refs.sort_by_key(|r| r.2);
+            let max_rank = if text_w < 150.0 { 0 } else if text_w < 200.0 { 1 } else { 2 };
+            let budget = text_w * 0.4;
             let mut shown: Vec<(std::sync::Arc<egui::Galley>, Color32)> = vec![];
             let mut used = 0.0;
-            for (k, (label, color)) in refs.iter().enumerate() {
-                let g = p.layout_no_wrap(label.clone(), small.clone(), Color32::BLACK);
-                let w = g.size().x + 10.0 + 4.0;
-                let rest = refs.len() - k - 1;
-                // keep room for a "+N" label when more follow
-                let reserve = if rest > 0 { 30.0 } else { 0.0 };
-                if used + w + reserve > budget && !shown.is_empty() {
+            for (k, (label, color, rank)) in refs.iter().enumerate() {
+                if *rank > max_rank {
                     break;
                 }
-                used += w;
+                // keep room for a "+N" label when more follow
+                let reserve = if k + 1 < refs.len() { 26.0 } else { 0.0 };
+                // (the first, most important label may take up to half the
+                // width, so a local branch outlasts a bare "+N")
+                let limit = if shown.is_empty() { budget.max((text_w * 0.5).min(110.0)) } else { budget };
+                let room = limit - used - reserve - 14.0;
+                let full = p.layout_no_wrap(label.clone(), small.clone(), Color32::BLACK);
+                let g = if full.size().x <= room {
+                    full
+                } else if shown.is_empty() && room >= 36.0 {
+                    // the first label shortens ("feat/SER-61…") rather than going
+                    let mut job = egui::text::LayoutJob::simple(label.clone(), small.clone(), Color32::BLACK, room);
+                    job.wrap.max_rows = 1;
+                    job.wrap.break_anywhere = true;
+                    p.layout_job(job)
+                } else {
+                    break;
+                };
+                used += g.size().x + 14.0;
                 shown.push((g, *color));
             }
             let hidden = refs.len() - shown.len();
-            if hidden > 0 && refs.len() == c.refs.len() {
-                hover_extra += &format!("\n\nRefs: {}", refs.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join(", "));
+            if hidden > 0 || refs.len() < c.refs.len() {
+                hover_extra += &format!("\n\nRefs: {}", c.refs.iter().map(|r| ref_chip(r, &remotes).0).collect::<Vec<_>>().join(", "));
             }
-            let more = (hidden > 0).then(|| p.layout_no_wrap(format!("+{hidden}"), small.clone(), theme::TEXT_DIM()));
+            let more = (hidden > 0 && text_w >= 60.0).then(|| p.layout_no_wrap(format!("+{hidden}"), small.clone(), theme::TEXT_DIM()));
             let total = used + more.as_ref().map_or(0.0, |g| g.size().x + 4.0);
             let mut x = right - total + 4.0;
-            let refs_left = if refs.is_empty() { right } else { x - 4.0 };
+            let refs_left = if total == 0.0 { right } else { x - 4.0 };
             let rp = ui.painter_at(Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.center().y)));
             for (g, color) in shown {
                 let chip = Rect::from_min_size(pos2(x, y1 - g.size().y / 2.0 - 1.0), g.size() + vec2(10.0, 2.0));
@@ -303,31 +329,45 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             let sg = p.layout_job(job);
             p.galley(pos2(left + 2.0, y1 - sg.size().y / 2.0), sg, theme::TEXT());
 
-            // ---- line 2, right (right to left): time, task keys, PR status
+            // ---- line 2, right (right to left): time, task keys, PR status.
+            // Each keeps the author readable; as the column narrows the PR
+            // label goes first, then the task, then the time (all still in
+            // the tooltip).
+            const AUTHOR_MIN: f32 = 60.0;
+            let rp2 = ui.painter_at(Rect::from_min_max(pos2(left, rect.center().y), pos2(right, rect.bottom())));
             let mut rx = right;
             let tg = p.layout_no_wrap(rel_time(now, c.time), small.clone(), theme::TEXT_DIM());
-            rx -= tg.size().x;
-            p.galley(pos2(rx, y2 - tg.size().y / 2.0), tg, theme::TEXT_DIM());
-            rx -= 8.0;
+            if rx - tg.size().x - left >= AUTHOR_MIN.min(text_w * 0.5) {
+                rx -= tg.size().x;
+                rp2.galley(pos2(rx, y2 - tg.size().y / 2.0), tg, theme::TEXT_DIM());
+                rx -= 8.0;
+            }
             // Task: one label, on the newest commit of that ticket only (see
             // `row_tasks`); "+N" when this commit starts more than one.
             let row_tasks = if visible.is_some() { &rv.filtered_tasks } else { &rv.row_tasks };
             if let Some(keys) = row_tasks.get(&c.id) {
-                if keys.len() > 1 {
-                    let g = p.layout_no_wrap(format!("+{}", keys.len() - 1), small.clone(), theme::TEXT_DIM());
-                    rx -= g.size().x;
-                    p.galley(pos2(rx, y2 - g.size().y / 2.0), g, theme::TEXT_DIM());
-                    rx -= 4.0;
-                }
-                rx = outline_chip_right(&p, rx, y2, &keys[0], None, theme::lane(0), &small, isz) - 4.0;
                 hover_extra += &format!("\n\nTasks: {}", keys.join(", "));
+                let plus = (keys.len() > 1).then(|| p.layout_no_wrap(format!("+{}", keys.len() - 1), small.clone(), theme::TEXT_DIM()));
+                let need = chip_width(&p, &keys[0], None, false, &small, isz) + plus.as_ref().map_or(0.0, |g| g.size().x + 4.0) + 4.0;
+                if text_w >= 180.0 && rx - need - left >= AUTHOR_MIN {
+                    if let Some(g) = plus {
+                        rx -= g.size().x;
+                        rp2.galley(pos2(rx, y2 - g.size().y / 2.0), g, theme::TEXT_DIM());
+                        rx -= 4.0;
+                    }
+                    rx = outline_chip_right(&rp2, rx, y2, &keys[0], None, theme::lane(0), &small, isz) - 4.0;
+                }
             }
             for b in tips.into_iter().flatten().rev() {
                 if let Some(pr) = rv.prs.get(b) {
-                    let tone = crate::pr_view::tone_color(pr.readiness().1);
-                    // [GitHub mark] #12 ● (CI) — coloured by merge readiness
-                    rx = outline_chip_dot(&p, rx, y2, &format!("#{}", pr.number), Some(Icon::Github), Some(ci_color(pr.ci)), tone, &small, isz) - 4.0;
                     hover_extra += &format!("\n\n{}", crate::pr_view::hover_summary(pr));
+                    let label = format!("#{}", pr.number);
+                    let need = chip_width(&p, &label, Some(Icon::Github), true, &small, isz) + 4.0;
+                    if text_w >= 240.0 && rx - need - left >= AUTHOR_MIN {
+                        let tone = crate::pr_view::tone_color(pr.readiness().1);
+                        // [GitHub mark] #12 ● (CI) — coloured by merge readiness
+                        rx = outline_chip_dot(&rp2, rx, y2, &label, Some(Icon::Github), Some(ci_color(pr.ci)), tone, &small, isz) - 4.0;
+                    }
                 }
             }
 
@@ -346,7 +386,7 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
             }
             // Branch notes ride on the branch's tip (they follow rebase/amend).
             for r in &c.refs {
-                let (label, _) = ref_chip(r);
+                let (label, _, _) = ref_chip(r, &remotes);
                 if !is_tip(&label) {
                     continue;
                 }
@@ -377,6 +417,12 @@ pub fn show(ui: &mut Ui, rv: &mut RepoView, actions: &mut Vec<Action>) {
 #[allow(clippy::too_many_arguments)]
 fn outline_chip_right(p: &egui::Painter, right: f32, y: f32, text: &str, icon: Option<Icon>, color: Color32, font: &FontId, isz: f32) -> f32 {
     outline_chip_dot(p, right, y, text, icon, None, color, font, isz)
+}
+
+/// The width `outline_chip_dot` would draw.
+fn chip_width(p: &egui::Painter, text: &str, icon: Option<Icon>, dot: bool, font: &FontId, isz: f32) -> f32 {
+    let g = p.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE);
+    g.size().x + if icon.is_some() { isz + 3.0 } else { 0.0 } + if dot { 9.0 } else { 0.0 } + 8.0
 }
 
 /// Same, with an optional status dot after the text (a fixed few pixels, not
@@ -446,47 +492,62 @@ fn bg(p: &egui::Painter, rect: Rect, selected: bool, hovered: bool, alt: bool) {
     p.rect_filled(rect, 0.0, color);
 }
 
-fn draw_graph(p: &egui::Painter, rect: Rect, rv: &RepoView, i: usize, is_head: bool) -> f32 {
-    let lanes_x = |c: u16| rect.left() + 10.0 + (c as usize).min(MAX_LANES) as f32 * LANE_W;
+/// How many lanes row `i` spans (its widest edge or dot, plus one).
+fn row_lanes(rv: &RepoView, i: usize) -> usize {
+    let Some(row) = rv.graph.get(i) else { return 1 };
+    let mut widest = row.col;
+    for e in &row.edges_up {
+        widest = widest.max(e.to);
+    }
+    if let Some(next) = rv.graph.get(i + 1) {
+        for e in &next.edges_up {
+            widest = widest.max(e.from).max(e.to);
+        }
+    }
+    (widest as usize).min(MAX_LANES) + 1
+}
+
+/// Draw row `i`'s part of the graph with lanes `lane_w` apart; returns its width.
+fn draw_graph(p: &egui::Painter, rect: Rect, rv: &RepoView, i: usize, is_head: bool, lane_w: f32) -> f32 {
+    let pad = lane_w.clamp(7.0, 10.0);
+    let lanes_x = |c: u16| rect.left() + pad + (c as usize).min(MAX_LANES) as f32 * lane_w;
+    let stroke = if lane_w < 8.0 { 1.3 } else { 1.6 };
     let Some(row) = rv.graph.get(i) else { return 20.0 };
     let (top, mid, bot) = (rect.top(), rect.center().y, rect.bottom());
     // top half: edges from previous row into this one
     for e in &row.edges_up {
         let xm = (lanes_x(e.from) + lanes_x(e.to)) / 2.0;
-        p.line_segment([pos2(xm, top), pos2(lanes_x(e.to), mid)], Stroke::new(1.6, theme::lane(e.color)));
+        p.line_segment([pos2(xm, top), pos2(lanes_x(e.to), mid)], Stroke::new(stroke, theme::lane(e.color)));
     }
     // bottom half: edges from this row into the next one
-    let mut widest = row.col;
     if let Some(next) = rv.graph.get(i + 1) {
         for e in &next.edges_up {
             let xm = (lanes_x(e.from) + lanes_x(e.to)) / 2.0;
-            p.line_segment([pos2(lanes_x(e.from), mid), pos2(xm, bot)], Stroke::new(1.6, theme::lane(e.color)));
-            widest = widest.max(e.from).max(e.to);
+            p.line_segment([pos2(lanes_x(e.from), mid), pos2(xm, bot)], Stroke::new(stroke, theme::lane(e.color)));
         }
     }
-    for e in &row.edges_up {
-        widest = widest.max(e.to);
-    }
     let c = pos2(lanes_x(row.col), mid);
-    p.circle_filled(c, 4.0, theme::lane(row.color));
+    let r = (lane_w / 3.0).clamp(2.8, 4.0);
+    p.circle_filled(c, r, theme::lane(row.color));
     if is_head {
-        p.circle_stroke(c, 6.5, Stroke::new(1.5, theme::TEXT()));
+        p.circle_stroke(c, r + 2.5, Stroke::new(1.5, theme::TEXT()));
     }
-    10.0 + (widest as usize).min(MAX_LANES) as f32 * LANE_W + 12.0
+    pad + (row_lanes(rv, i) - 1) as f32 * lane_w + (lane_w / 2.0 + 6.0).max(8.5)
 }
 
-fn ref_chip(r: &str) -> (String, Color32) {
+/// A ref decoration's label, colour and rank (0 local branch / HEAD,
+/// 1 remote branch, 2 tag: the order labels are kept in as space runs out).
+fn ref_chip(r: &str, remotes: &std::collections::HashSet<&str>) -> (String, Color32, u8) {
     if let Some(b) = r.strip_prefix("HEAD -> ") {
-        (b.to_string(), theme::ACCENT())
+        (b.to_string(), theme::ACCENT(), 0)
     } else if r == "HEAD" {
-        ("HEAD".into(), theme::ACCENT())
+        ("HEAD".into(), theme::ACCENT(), 0)
     } else if let Some(t) = r.strip_prefix("tag: ") {
-        (t.to_string(), Color32::from_rgb(0xc8, 0xa0, 0xe8))
-    } else if r.contains('/') && !r.starts_with("refs/") {
-        // remote-ish (origin/main) or local with slash; good enough heuristic
-        (r.to_string(), Color32::from_rgb(0x9c, 0xb8, 0xd8))
+        (t.to_string(), Color32::from_rgb(0xc8, 0xa0, 0xe8), 2)
+    } else if remotes.contains(r) || r.ends_with("/HEAD") {
+        (r.to_string(), Color32::from_rgb(0x9c, 0xb8, 0xd8), 1)
     } else {
-        (r.to_string(), Color32::from_rgb(0x9a, 0xd0, 0x8c))
+        (r.to_string(), Color32::from_rgb(0x9a, 0xd0, 0x8c), 0)
     }
 }
 
