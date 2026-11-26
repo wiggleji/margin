@@ -43,7 +43,7 @@ Everything Margin does, in detail. For a quick start see the [README](../README.
 - **‹ ›**: back and forward through what you selected (commits, working directory), like a browser. ⌘[ / ⌘] or the mouse back/forward buttons also work. Commits that no longer exist (rebased away) are skipped.
 - **[Fetch][▾]** fetches all remotes (with prune). **▾** opens a menu: Fetch now, Fetch a remote…, an auto-fetch toggle, **Fetch settings…**, and the last fetch time. The button reads *Fetch ⟳* while auto-fetch is on.
 - **Auto-fetch** (Settings → Fetch): enable/disable and set the interval in minutes (1–1440; presets 5/15/30/60). It's off by default. It runs in the background without blocking your own git operations, and waits if one is running. It's quiet on success (the graph and PR status just update) and shows a message only on failure. There's no polling: the app wakes once when the next fetch is due. Settings are saved in `settings.json` next to `config.json`.
-- **Status messages, errors, and Undo** appear just left of the Fetch/Pull/Push buttons. Stash and Refresh are in ⌘P; refresh also happens on window focus and ⌘R.
+- **Status messages, errors, and Undo / Redo** (see [Undo](#undo)) appear just left of the Fetch/Pull/Push buttons. Stash and Refresh are in ⌘P; refresh also happens on window focus and ⌘R.
 
 **Git (Sublime Merge–style)**
 - Commit graph across all branches, remotes, and tags, virtualised for large histories, with a filter box.
@@ -146,6 +146,17 @@ Who changed what, where and when, from the history: **⌘P / Ctrl+P → Insights
 - **Contributors:** commits, lines, files, active days, where each person works most, and their last commit; sort by any column. Click a person to see where they work.
 - **Hotspots:** the files changed most often, and by how many people (**busy** at 4 or more): where bugs and merge conflicts tend to come from. Click one to see who changed it.
 - The folder and person you chose show as chips; × takes one off. **Ignore generated files** (on by default) leaves out lock files and vendored or generated code (`package-lock.json`, `Cargo.lock`, `vendor/`, `*.min.js`, `schema.rb`, …), whose line counts would drown the rest.
+
+## Undo
+
+Git operations done in Margin can be undone: **⌘Z / Ctrl+Z** (when you're not typing in a text field), the **Undo** button next to the "done" message, or **⌘P → Undo "…"**, whose hint says what it will do ("main at 1a2b3c4d", "feat/login restored"). **⌘⇧Z / Ctrl+Shift+Z** (or Ctrl+Y) redoes. Up to 50 operations per repository tab can be undone, newest first, until Margin quits.
+
+- **Commit or amend:** the branch goes back and the commit's changes are staged again, with its message back in the commit box, ready to fix and commit again.
+- **Merge, pull, cherry-pick, revert, rebase, reset:** the branch goes back to where it was (`git reset --keep`, which won't overwrite uncommitted changes). A pull's fetched commits stay in `origin/…`. A soft or mixed reset is undone the same way, keeping your files.
+- **Branches and tags** created, deleted or renamed, checkouts, and git-flow steps are put back; **Drop stash** brings the stash back.
+- **Not undone:** push and fetch (they change the remote side), and operations that only change files: staging, discard, stash push / apply / pop, worktrees.
+
+Undo only runs while the repository is exactly as the operation left it. If anything changed since (a new commit, a checkout in a terminal), it says so and changes nothing, so it can't throw work away. Nothing an undo steps back from is lost either: the commits stay in git's reflog, and Redo brings them back.
 
 ## File history and blame
 
