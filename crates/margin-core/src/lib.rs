@@ -17,6 +17,7 @@
 //! * `rebase`   – interactive rebase from a plan (no editor).
 //! * `insights` – who changed what, where and when (git log --numstat).
 //! * `file_history` – one file through time: its commits (following renames) and blame.
+//! * `undo`     – undo / redo for git operations (what they changed in the local refs).
 
 pub mod config;
 pub mod conflict;
@@ -27,6 +28,7 @@ pub mod git;
 pub mod github;
 pub mod gitflow;
 pub mod insights;
+pub mod undo;
 pub mod history;
 pub mod journal;
 mod http;

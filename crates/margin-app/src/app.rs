@@ -7,6 +7,7 @@ use margin_core::config::{self, Config, State};
 use margin_core::diff;
 use margin_core::github::{GitHub, PrDetail, PrSummary};
 use margin_core::git::{CommitDetail, FileChange, Repo, ResetMode};
+use margin_core::undo::{UndoMode, UndoPoint};
 use margin_core::graph::{self, GraphRow};
 use margin_core::notes::{NoteStore, NoteTarget};
 use margin_core::tasks::{self, Task, TaskProvider};
@@ -127,6 +128,9 @@ pub enum Action {
     /// the branch split off from the default branch).
     OpenRebase(Option<String>),
     CloseRebase,
+    /// Undo the last git operation (⌘Z), or redo the last undone one (⌘⇧Z).
+    UndoGit,
+    RedoGit,
     /// Insights: who changed what, where and when (in place of the history).
     OpenInsights,
     CloseInsights,
@@ -421,6 +425,9 @@ pub struct RepoView {
     /// Insights, when open (in place of the history, like review mode).
     pub insights: Option<crate::insights::Insights>,
     insights_gen: u64,
+    /// Git operations that can be undone (newest last), and undone ones that can be redone.
+    pub undo: Vec<margin_core::undo::UndoPoint>,
+    pub redo: Vec<margin_core::undo::UndoPoint>,
     /// The file view, when open (in place of the history, like Insights).
     pub file_view: Option<crate::file_view::FileView>,
     file_view_gen: u64,
@@ -534,6 +541,8 @@ impl RepoView {
             rebase: None,
             insights: None,
             insights_gen: 0,
+            undo: vec![],
+            redo: vec![],
             file_view: None,
             file_view_gen: 0,
             // a repository opened in the middle of a conflicted merge: show the editor
@@ -615,6 +624,33 @@ impl RepoView {
 pub const RECENT_REPOS: usize = 10;
 
 /// `/Users/me/src` → `~/src` for display.
+/// How an operation is undone, if it can be: commits go back to the staging
+/// area, branch moves back with `reset --keep`. Operations that only change
+/// files or the remote (staging, discard, stash push / apply / pop, fetch,
+/// push) and worktree changes aren't undone this way.
+fn undo_mode(label: &str) -> Option<UndoMode> {
+    match label {
+        "Commit" => Some(UndoMode::Soft),
+        "Stage" | "Unstage" | "Hunk" | "Discard" | "Fetch" | "Push" | "Stash" | "Stash apply" | "Stash pop" => None,
+        l if l.to_lowercase().contains("worktree") => None,
+        _ => Some(UndoMode::Keep),
+    }
+}
+
+/// Remember an operation for undo (a new one clears what could be redone).
+fn push_undo(rv: &mut RepoView, p: UndoPoint) {
+    rv.redo.clear();
+    rv.undo.push(p);
+    if rv.undo.len() > 50 {
+        rv.undo.remove(0);
+    }
+}
+
+/// A shortcut as this OS writes it.
+fn keys(mac: &'static str, other: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") { mac } else { other }
+}
+
 pub fn tilde(p: &std::path::Path) -> String {
     let s = p.display().to_string();
     match margin_core::platform::home_dir().map(|h| h.display().to_string()) {
@@ -660,6 +696,8 @@ pub struct MarginApp {
     pub pending_copy: Option<String>,
     /// Journal ids the toolbar "Undo" button reverts (last auto re-attach).
     pub status_undo: Vec<String>,
+    /// The status line offers Undo (false) or Redo (true) for the last git operation.
+    pub status_git: Option<bool>,
     pub palette: Option<crate::palette::Palette>,
     /// Focus the commit search box on the next frame (Edit → Find Commits).
     pub focus_search: bool,
@@ -719,6 +757,7 @@ impl MarginApp {
             was_focused: true,
             pending_copy: None,
             status_undo: vec![],
+            status_git: None,
             palette: None,
             focus_search: false,
             diff_hovered: false,
@@ -757,11 +796,13 @@ impl MarginApp {
 
     fn err(&mut self, e: impl ToString) {
         self.status_undo.clear();
+        self.status_git = None;
         self.status_line = Some((e.to_string(), true));
     }
 
     fn info(&mut self, s: impl ToString) {
         self.status_undo.clear();
+        self.status_git = None;
         self.status_line = Some((s.to_string(), false));
     }
 
@@ -871,6 +912,12 @@ impl MarginApp {
     }
 
     fn op(&mut self, label: &str, f: impl FnOnce(&Repo) -> margin_core::Result<String> + Send + 'static) {
+        self.op_undo(label, undo_mode(label), f)
+    }
+
+    /// Run a git operation; with `undo`, remember what it changed in the
+    /// local refs so it can be undone that way (see `core::undo`).
+    fn op_undo(&mut self, label: &str, undo: Option<UndoMode>, f: impl FnOnce(&Repo) -> margin_core::Result<String> + Send + 'static) {
         let Some(rv) = &self.rv else { return };
         if let Some(b) = &self.busy {
             self.err(format!("Busy: {b}…"));
@@ -879,7 +926,18 @@ impl MarginApp {
         self.busy = Some(label.to_string());
         let repo = rv.repo.clone();
         let label = label.to_string();
-        self.jobs.spawn(move || Msg::OpDone { workdir: repo.workdir.clone(), result: f(&repo).map_err(|e| e.0), label, refresh: true });
+        self.jobs.spawn(move || {
+            let before = undo.and_then(|_| repo.ref_state().ok());
+            let result = f(&repo).map_err(|e| e.0);
+            // (an operation that stopped on conflicts is aborted, not undone)
+            let point = match (before, undo) {
+                (Some(before), Some(mode)) if result.is_ok() && repo.pending_operation().is_none() => {
+                    repo.ref_state().ok().and_then(|after| UndoPoint::new(&label, before, after, mode)).map(Box::new)
+                }
+                _ => None,
+            };
+            Msg::OpDone { workdir: repo.workdir.clone(), result, label, refresh: true, undo: point }
+        });
     }
 
     /// Load PR details for the branches containing the selected commit (their
@@ -1171,9 +1229,20 @@ impl MarginApp {
         }
         let tab = idx.map(|i| &mut self.others[i]);
         match m {
-            Msg::OpDone { .. } => {
+            Msg::OpDone { undo, .. } => {
                 if let Some(t) = tab {
                     t.stale = true;
+                    if let Some(p) = undo {
+                        push_undo(t, *p);
+                    }
+                }
+            }
+            Msg::UndoDone { redo, point, result, .. } => {
+                self.busy = None;
+                if let Some(t) = tab {
+                    t.stale = true;
+                    let ok = result.is_ok();
+                    if ok != redo { t.redo.push(*point) } else { t.undo.push(*point) }
                 }
             }
             Msg::GithubReady { result, .. } => {
@@ -1456,7 +1525,35 @@ impl MarginApp {
             Merge(b) => self.op("Merge", move |r| r.merge(&b)),
             CherryPick(id) => self.op("Cherry-pick", move |r| r.cherry_pick(&id)),
             Revert(id) => self.op("Revert", move |r| r.revert(&id)),
-            Reset(id, mode) => self.op("Reset", move |r| r.reset(&id, mode).map(|_| String::new())),
+            Reset(id, mode) => {
+                // undo puts the branch back the same way: soft and mixed keep
+                // the files as they are, hard brings them back from the commit
+                let undo = match mode {
+                    ResetMode::Soft => UndoMode::Soft,
+                    ResetMode::Mixed => UndoMode::Mixed,
+                    ResetMode::Hard => UndoMode::Keep,
+                };
+                self.op_undo("Reset", Some(undo), move |r| r.reset(&id, mode).map(|_| String::new()))
+            }
+            UndoGit | RedoGit => {
+                let redo = matches!(a, RedoGit);
+                let Some(rv) = &mut self.rv else { return };
+                if let Some(b) = &self.busy {
+                    return self.err(format!("Busy: {b}…"));
+                }
+                let Some(point) = (if redo { rv.redo.pop() } else { rv.undo.pop() }) else {
+                    return self.info(if redo { "Nothing to redo" } else { "No git operation to undo" });
+                };
+                self.busy = Some(if redo { "Redo" } else { "Undo" }.to_string());
+                let repo = rv.repo.clone();
+                self.jobs.spawn(move || {
+                    // an undone commit's message comes back to the commit box
+                    let message = (!redo && point.label == "Commit").then(|| repo.last_commit_message().ok()).flatten();
+                    let result = if redo { repo.redo(&point) } else { repo.undo(&point) }.map_err(|e| e.0);
+                    let message = message.filter(|_| result.is_ok());
+                    Msg::UndoDone { workdir: repo.workdir.clone(), redo, point: Box::new(point), result, message }
+                });
+            }
             Fetch => {
                 if self.rv.as_ref().is_some_and(|rv| rv.auto_fetching) {
                     return self.info("Already fetching in the background…");
@@ -2335,7 +2432,31 @@ impl MarginApp {
                     Err(e) => rv.commit_diff.set_error(e),
                 }
             }
-            Msg::OpDone { label, result, refresh, .. } => {
+            Msg::UndoDone { redo, point, result, message, .. } => {
+                self.busy = None;
+                let Some(rv) = &mut self.rv else { return };
+                if let Some(m) = message.filter(|_| rv.commit_msg.trim().is_empty()) {
+                    rv.commit_msg = m;
+                    rv.amend = false;
+                }
+                match result {
+                    Ok(what) => {
+                        // the other stack gets it: undone → can be redone, and back
+                        let label = point.label.clone();
+                        if redo { rv.undo.push(*point) } else { rv.redo.push(*point) }
+                        self.info(format!("{} “{label}”: {what}", if redo { "Redone" } else { "Undone" }));
+                        self.status_git = Some(!redo);
+                    }
+                    Err(e) => {
+                        // (it may work later, e.g. once a conflict is resolved)
+                        let label = point.label.clone();
+                        if redo { rv.redo.push(*point) } else { rv.undo.push(*point) }
+                        self.err(format!("Couldn't {} “{label}”: {e}", if redo { "redo" } else { "undo" }));
+                    }
+                }
+                self.refresh();
+            }
+            Msg::OpDone { label, result, refresh, undo, .. } => {
                 self.busy = None;
                 let succeeded = result.is_ok();
                 match result {
@@ -2348,6 +2469,10 @@ impl MarginApp {
                         }
                         let first = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("").to_string();
                         self.info(if first.is_empty() { format!("{label}: done") } else { format!("{label}: {first}") });
+                        if let (Some(p), Some(rv)) = (undo, &mut self.rv) {
+                            push_undo(rv, *p);
+                            self.status_git = Some(false);
+                        }
                     }
                     Err(e) => {
                         self.err(format!("{label} failed: {e}"));
@@ -3064,6 +3189,15 @@ impl MarginApp {
                 if busy.is_some() || working {
                     st.spinner();
                 }
+                if let Some(redo) = self.status_git {
+                    let next = if redo { rv.redo.last() } else { rv.undo.last() };
+                    if let Some(p) = next {
+                        let tip = format!("{} “{}”: {}\n({})", if redo { "Redo" } else { "Undo" }, p.label, if redo { p.describe_redo() } else { p.describe_undo() }, if redo { keys("⌘⇧Z", "Ctrl+Shift+Z") } else { keys("⌘Z", "Ctrl+Z") });
+                        if st.small_button(if redo { "Redo" } else { "Undo" }).on_hover_text(tip).clicked() {
+                            actions.push(if redo { Action::RedoGit } else { Action::UndoGit });
+                        }
+                    }
+                }
                 if !self.status_undo.is_empty() && st.small_button("Undo").clicked() {
                     for id in self.status_undo.drain(..) {
                         actions.push(Action::UndoReattach(id));
@@ -3150,6 +3284,21 @@ impl eframe::App for MarginApp {
             }
         }
 
+        // ⌘Z / ⌘⇧Z (Ctrl elsewhere) outside text fields: undo / redo the last
+        // git operation (in a text field they undo typing)
+        if ctx.memory(|m| m.focused().is_none()) && self.palette.is_none() && self.dialog.is_none() && !self.show_settings {
+            let (redo, undo) = ctx.input_mut(|i| {
+                (
+                    i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z) || (cfg!(not(target_os = "macos")) && i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)),
+                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z),
+                )
+            });
+            if redo {
+                self.handle(Action::RedoGit);
+            } else if undo {
+                self.handle(Action::UndoGit);
+            }
+        }
         // Global shortcuts
         let (refresh, save, palette) = ctx.input_mut(|i| {
             (

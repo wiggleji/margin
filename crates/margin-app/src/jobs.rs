@@ -42,7 +42,11 @@ pub enum Msg {
     WorkDiff { workdir: PathBuf, generation: u64, result: Result<crate::diff_view::WorkDiff, String> },
     CommitLoaded { workdir: PathBuf, generation: u64, result: Result<(CommitDetail, Vec<FileDiff>, bool, Vec<String>), String> },
     /// A git operation finished. `refresh`: reload repo state afterwards.
-    OpDone { workdir: PathBuf, label: String, result: Result<String, String>, refresh: bool },
+    /// A git operation finished; `undo` is what it changed, when it can be undone.
+    OpDone { workdir: PathBuf, label: String, result: Result<String, String>, refresh: bool, undo: Option<Box<margin_core::undo::UndoPoint>> },
+    /// An undo (or a redo, `redo`) of `point` finished.
+    /// (`message`: an undone commit's message, to edit and commit again)
+    UndoDone { workdir: PathBuf, redo: bool, point: Box<margin_core::undo::UndoPoint>, result: Result<String, String>, message: Option<String> },
     Task { key: String, result: Result<Task, String> },
     MyTasks(Result<Vec<Task>, String>),
     /// Settings → Accounts "Test": who the token signs in as ("github" / "jira").
@@ -100,6 +104,7 @@ impl Msg {
             | Msg::WorkDiff { workdir, .. }
             | Msg::CommitLoaded { workdir, .. }
             | Msg::OpDone { workdir, .. }
+            | Msg::UndoDone { workdir, .. }
             | Msg::AutoFetched { workdir, .. }
             | Msg::CodeSearch { workdir, .. }
             | Msg::Mentions { workdir, .. }

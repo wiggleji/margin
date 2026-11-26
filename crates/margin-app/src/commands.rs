@@ -75,6 +75,14 @@ pub fn build(app: &MarginApp) -> Vec<Command> {
     let default_remote = if remotes.iter().any(|r| r == "origin") { "origin".to_string() } else { remotes.first().cloned().unwrap_or_default() };
     let stash_items: Vec<Item> = snap.stashes.iter().map(|s| Item::new(s.title.clone(), s.name.clone(), s.name.clone())).collect();
 
+    // Undo / redo the last git operation (what it would do, as the hint)
+    let keys = |m: &str, o: &str| if cfg!(target_os = "macos") { m.to_string() } else { o.to_string() };
+    if let Some(p) = rv.undo.last() {
+        v.push(c(Group::Commit, &format!("Undo “{}”", p.label), &format!("{} · {}", p.describe_undo(), keys("⌘Z", "Ctrl+Z")), "undo revert back restore", vec![], act(|_| vec![Action::UndoGit])));
+    }
+    if let Some(p) = rv.redo.last() {
+        v.push(c(Group::Commit, &format!("Redo “{}”", p.label), &format!("{} · {}", p.describe_redo(), keys("⌘⇧Z", "Ctrl+Shift+Z")), "redo again", vec![], act(|_| vec![Action::RedoGit])));
+    }
     operation(rv, &mut v);
     remote(&remote_items, &remote_branch_items, &mut v);
     commit(rv, &mut v);
@@ -256,13 +264,13 @@ fn commit(rv: &RepoView, v: &mut Vec<Command>) {
         "",
         "undo move head",
         vec![pick("Mode", modes), input("Reset to", "HEAD~1"), confirm("Reset the current branch?")],
-        git("Reset", |r, x| {
+        act(|x| {
             let mode = match x[0].as_str() {
                 "soft" => ResetMode::Soft,
                 "hard" => ResetMode::Hard,
                 _ => ResetMode::Mixed,
             };
-            ok(r.reset(&x[1], mode))
+            vec![Action::Reset(x[1].clone(), mode)]
         }),
     ));
 }
