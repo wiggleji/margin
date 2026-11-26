@@ -106,9 +106,14 @@ fn working(ui: &mut Ui, rv: &mut RepoView, prefs: &mut crate::diff_view::DiffPre
         actions.push(match e {
             DiffEvent::Hunk(a) => {
                 let staged_view = rv.work_diff.section(a.file) == Some(crate::diff_view::Section::Staged);
-                let action = Action::Hunk { file: a.file, hunk: a.hunk, op: a.op, staged_view };
+                let what = match a.lines.len() {
+                    0 => "this hunk".to_string(),
+                    1 => "the selected line".to_string(),
+                    n => format!("the {n} selected lines"),
+                };
+                let action = Action::Hunk { file: a.file, hunk: a.hunk, op: a.op, staged_view, lines: a.lines };
                 if a.op == crate::app::HunkOp::Discard {
-                    Action::Confirm { msg: "Discard this hunk? This cannot be undone.".into(), action: Box::new(action) }
+                    Action::Confirm { msg: format!("Discard {what}? This cannot be undone."), action: Box::new(action) }
                 } else {
                     action
                 }
