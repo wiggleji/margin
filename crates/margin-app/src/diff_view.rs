@@ -1364,7 +1364,7 @@ impl DiffView {
                             // take just those ("Stage 2 lines"), as in Sublime Merge.
                             let picked = self.selected_lines(fi, hi);
                             let n = picked.len();
-                            let lines = |verb: &str| format!("{verb} {n} line{}", if n == 1 { "" } else { "s" });
+                            let lines = |verb: &str| format!("{verb} {n} selected line{}", if n == 1 { "" } else { "s" });
                             // Hunks of a `-w` diff don't match the file: no staging from them.
                             let ops: Vec<(HunkOp, String, &str)> = match self.sections.get(fi) {
                                 _ if ws_on => vec![],
@@ -1593,6 +1593,33 @@ impl DiffView {
                 // highlight
                 if let Some(s) = new_sel.unwrap_or(self.sel) {
                     let (a, b) = s.ordered();
+                    // changed lines a hunk button would take: an accent bar on
+                    // their numbers and a tint across the row (both halves of a
+                    // side-by-side row), so it's clear what "Stage 2 selected
+                    // lines" means
+                    let stageable = |fi: usize| !ws_on && matches!(self.sections.get(fi), Some(Section::Unstaged | Section::Staged));
+                    let changed = |fi: usize, hi: usize, li: usize| matches!(self.files[fi].hunks[hi].lines[li].kind, LineKind::Added | LineKind::Removed);
+                    for i in visible.clone().filter(|&i| s.a != s.b && i >= a.0 && i <= b.0) {
+                        let (top, h) = (geo.top0 + self.ry(i), self.rh(i));
+                        let mark = |x0: f32, code_x: f32, x1: f32| {
+                            let p = ui.painter();
+                            p.rect_filled(Rect::from_min_max(pos2(code_x, top), pos2(x1, top + h)), 0.0, theme::ACCENT().gamma_multiply(0.16));
+                            p.rect_filled(Rect::from_min_size(pos2(x0, top), vec2(3.0, h)), 0.0, theme::ACCENT());
+                        };
+                        match self.rows[i] {
+                            Row::Line(fi, hi, li, _) if stageable(fi) && changed(fi, hi, li) => mark(geo.x0, geo.x0 + geo.gutter - 4.0, geo.x0 + geo.width),
+                            Row::Pair(fi, hi, o, n, _) if stageable(fi) => {
+                                let half = geo.width / 2.0;
+                                if o.is_some_and(|li| changed(fi, hi, li)) {
+                                    mark(geo.x0, geo.x0 + geo.char_w * 6.0 + 4.0, geo.x0 + half);
+                                }
+                                if n.is_some_and(|li| changed(fi, hi, li)) {
+                                    mark(geo.x0 + half, geo.x0 + half + geo.char_w * 6.0 + 4.0, geo.x0 + geo.width);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     for i in visible.clone() {
                         if i < a.0 || i > b.0 {
                             continue;
