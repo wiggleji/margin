@@ -65,6 +65,99 @@ impl FileDiff {
     }
 }
 
+impl FileDiff {
+    /// A patch of hunk `idx` with only the changed lines in `lines` (indices
+    /// into the hunk's lines): the rest of the hunk stays as it is.
+    ///
+    /// `reverse`: the patch will be applied with `--reverse` (unstaging, or
+    /// discarding from the working tree). Lines left out are dropped from the
+    /// side being created and kept as context on the side being matched, so
+    /// that side is still exactly what the file has.
+    pub fn lines_patch(&self, idx: usize, lines: &std::collections::BTreeSet<usize>, reverse: bool) -> Option<String> {
+        let h = self.hunks.get(idx)?;
+        let (old_start, new_start) = hunk_starts(&h.header)?;
+        // each line with the "\ No newline" marker that may follow it
+        let mut items: Vec<(usize, &DiffLine, Option<&str>)> = vec![];
+        for (i, l) in h.lines.iter().enumerate() {
+            match (l.kind, items.last_mut()) {
+                (LineKind::NoNewline, Some(last)) => last.2 = Some(&l.text),
+                (LineKind::NoNewline, None) => {}
+                _ => items.push((i, l, None)),
+            }
+        }
+        // A block of removed lines followed by added ones is paired line by
+        // line (as side by side shows it), so a staged replacement lands
+        // where the line it replaces was, not after the lines kept around it.
+        let mut order: Vec<usize> = vec![];
+        let mut k = 0;
+        while k < items.len() {
+            if items[k].1.kind != LineKind::Removed {
+                order.push(k);
+                k += 1;
+                continue;
+            }
+            let r0 = k;
+            while k < items.len() && items[k].1.kind == LineKind::Removed {
+                k += 1;
+            }
+            let a0 = k;
+            while k < items.len() && items[k].1.kind == LineKind::Added {
+                k += 1;
+            }
+            for j in 0..(a0 - r0).max(k - a0) {
+                order.extend((r0 + j < a0).then_some(r0 + j));
+                order.extend((a0 + j < k).then_some(a0 + j));
+            }
+        }
+        let mut body: Vec<(char, &str)> = vec![];
+        let mut picked = false;
+        for (i, l, marker) in order.into_iter().map(|o| items[o]) {
+            let chosen = lines.contains(&i);
+            let c = match (l.kind, chosen, reverse) {
+                (LineKind::Added, true, _) => Some('+'),
+                (LineKind::Removed, true, _) => Some('-'),
+                // left out: forward drops an addition and keeps a removal as
+                // context; reverse the other way round
+                (LineKind::Added, false, false) | (LineKind::Removed, false, true) => None,
+                _ => Some(' '),
+            };
+            picked |= chosen && matches!(l.kind, LineKind::Added | LineKind::Removed);
+            if let Some(c) = c {
+                body.push((c, &l.text));
+                if let Some(m) = marker {
+                    body.push(('\\', m));
+                }
+            }
+        }
+        if !picked {
+            return None;
+        }
+        let old_n = body.iter().filter(|(c, _)| *c == ' ' || *c == '-').count();
+        let new_n = body.iter().filter(|(c, _)| *c == ' ' || *c == '+').count();
+        let mut p = String::new();
+        for l in &self.header {
+            p.push_str(l);
+            p.push('\n');
+        }
+        // (the side being matched keeps its start; the other side's start
+        // doesn't matter to a single-hunk `git apply`)
+        p.push_str(&format!("@@ -{old_start},{old_n} +{new_start},{new_n} @@\n"));
+        for (c, t) in body {
+            p.push(c);
+            p.push_str(t);
+            p.push('\n');
+        }
+        Some(p)
+    }
+}
+
+/// The old and new start lines of a hunk header (`@@ -12,3 +12,4 @@`).
+fn hunk_starts(header: &str) -> Option<(u32, u32)> {
+    let mut it = header.split_whitespace().skip(1);
+    let num = |s: Option<&str>, sign: char| s?.strip_prefix(sign)?.split(',').next()?.parse::<u32>().ok();
+    Some((num(it.next(), '-')?, num(it.next(), '+')?))
+}
+
 /// Max bytes of diff text we parse; protects the UI from giant generated files.
 pub const MAX_DIFF_BYTES: usize = 8 * 1024 * 1024;
 
@@ -323,6 +416,83 @@ fn tokens(s: &str) -> Vec<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stage, unstage and discard single lines in a real repository.
+    #[test]
+    fn line_patches_apply_with_git() {
+        let d = std::env::temp_dir().join(format!("margin-lines-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let g = |args: &[&str]| {
+            let o = std::process::Command::new("git").arg("-C").arg(&d).args(["-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).to_string()
+        };
+        let apply = |patch: &str, args: &[&str]| {
+            use std::io::Write;
+            let mut c = std::process::Command::new("git").arg("-C").arg(&d).args(["apply", "--whitespace=nowarn"]).args(args).arg("-").stdin(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+            c.stdin.take().unwrap().write_all(patch.as_bytes()).unwrap();
+            let o = c.wait_with_output().unwrap();
+            assert!(o.status.success(), "git apply {args:?}: {}\n{patch}", String::from_utf8_lossy(&o.stderr));
+        };
+        g(&["init", "-q"]);
+        g(&["config", "user.name", "Mina"]);
+        g(&["config", "user.email", "mina@example.com"]);
+        g(&["config", "core.autocrlf", "false"]);
+        std::fs::write(d.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-qm", "first"]);
+        // change two, remove four, add five
+        std::fs::write(d.join("a.txt"), "one\nTWO\nthree\nfive\n").unwrap();
+        let worktree = |g: &dyn Fn(&[&str]) -> String| parse(&g(&["diff", "--no-color"])).0.remove(0);
+        let f = worktree(&g);
+        let h = &f.hunks[0];
+        let idx = |kind: LineKind, text: &str| h.lines.iter().position(|l| l.kind == kind && l.text == text).unwrap();
+
+        // stage only "two" → "TWO"
+        let sel = [idx(LineKind::Removed, "two"), idx(LineKind::Added, "TWO")].into_iter().collect();
+        apply(&f.lines_patch(0, &sel, false).unwrap(), &["--cached"]);
+        assert_eq!(g(&["show", ":a.txt"]), "one\nTWO\nthree\nfour\n");
+
+        // stage the added "five" alone (without removing "four")
+        let f = worktree(&g);
+        let h = &f.hunks[0];
+        let five = h.lines.iter().position(|l| l.kind == LineKind::Added && l.text == "five").unwrap();
+        apply(&f.lines_patch(0, &[five].into_iter().collect(), false).unwrap(), &["--cached"]);
+        assert_eq!(g(&["show", ":a.txt"]), "one\nTWO\nthree\nfour\nfive\n");
+
+        // unstage "TWO" again (reverse on the staged diff)
+        let staged = parse(&g(&["diff", "--cached", "--no-color"])).0.remove(0);
+        let h = &staged.hunks[0];
+        let sel = [h.lines.iter().position(|l| l.kind == LineKind::Removed && l.text == "two").unwrap(), h.lines.iter().position(|l| l.kind == LineKind::Added && l.text == "TWO").unwrap()].into_iter().collect();
+        apply(&staged.lines_patch(0, &sel, true).unwrap(), &["--cached", "--reverse"]);
+        assert_eq!(g(&["show", ":a.txt"]), "one\ntwo\nthree\nfour\nfive\n");
+
+        // discard the removal of "four" from the working tree only
+        let f = worktree(&g);
+        let h = &f.hunks[0];
+        let four = h.lines.iter().position(|l| l.kind == LineKind::Removed && l.text == "four").unwrap();
+        apply(&f.lines_patch(0, &[four].into_iter().collect(), true).unwrap(), &["--reverse"]);
+        assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "one\nTWO\nthree\nfour\nfive\n");
+
+        // a replacement in the middle of a block stays in place
+        std::fs::write(d.join("b.txt"), "port 1\nhost a\nlog x\n").unwrap();
+        g(&["add", "b.txt"]);
+        g(&["commit", "-qm", "b"]);
+        std::fs::write(d.join("b.txt"), "port 2\nhost b\nlog y\n").unwrap();
+        let fb = parse(&g(&["diff", "--no-color", "--", "b.txt"])).0.remove(0);
+        let hb = &fb.hunks[0];
+        let pick = |t: &str| hb.lines.iter().position(|l| l.text == t).unwrap();
+        let sel = [pick("host a"), pick("host b")].into_iter().collect();
+        apply(&fb.lines_patch(0, &sel, false).unwrap(), &["--cached"]);
+        assert_eq!(g(&["show", ":b.txt"]), "port 1\nhost b\nlog x\n");
+        // and discarding it from the working tree too
+        apply(&fb.lines_patch(0, &sel, true).unwrap(), &["--reverse"]);
+        assert_eq!(std::fs::read_to_string(d.join("b.txt")).unwrap(), "port 2\nhost a\nlog y\n");
+
+        // nothing chosen (or only context): no patch
+        assert!(f.lines_patch(0, &[0].into_iter().collect(), false).is_none());
+    }
 
     const D: &str = "diff --git a/src/x.rs b/src/x.rs
 index 111..222 100644

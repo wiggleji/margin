@@ -40,7 +40,8 @@ pub enum Action {
     Stage(Vec<String>),
     Unstage(Vec<String>),
     Discard(Vec<String>),
-    Hunk { file: usize, hunk: usize, op: HunkOp, staged_view: bool },
+    /// Stage / unstage / discard a hunk of the working diff, or only `lines` of it.
+    Hunk { file: usize, hunk: usize, op: HunkOp, staged_view: bool, lines: Vec<usize> },
     Commit,
     Checkout(String),
     CheckoutRemote(String),
@@ -1493,11 +1494,19 @@ impl MarginApp {
                 let changes: Vec<FileChange> = paths.iter().filter_map(|p| rv.change(p).cloned()).collect();
                 self.op("Discard", move |r| r.discard(&changes.iter().collect::<Vec<_>>()).map(|_| String::new()));
             }
-            Hunk { file, hunk, op, staged_view } => {
+            Hunk { file, hunk, op, staged_view, lines } => {
                 let Some(rv) = &self.rv else { return };
-                let Some(patch) = rv.work_diff.files.get(file).and_then(|f| f.hunk_patch(hunk)) else { return };
+                let Some(f) = rv.work_diff.files.get(file) else { return };
+                // (unstaging and discarding apply the patch in reverse)
+                let patch = if lines.is_empty() { f.hunk_patch(hunk) } else { f.lines_patch(hunk, &lines.into_iter().collect(), op != HunkOp::Stage) };
+                let Some(patch) = patch else { return };
                 let _ = staged_view;
-                self.op("Hunk", move |r| {
+                let label = match op {
+                    HunkOp::Stage => "Stage",
+                    HunkOp::Unstage => "Unstage",
+                    HunkOp::Discard => "Discard",
+                };
+                self.op(label, move |r| {
                     match op {
                         HunkOp::Stage => r.apply_patch(&patch, true, false),
                         HunkOp::Unstage => r.apply_patch(&patch, true, true),

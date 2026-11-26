@@ -131,6 +131,8 @@ pub struct DiffAction {
     pub file: usize,
     pub hunk: usize,
     pub op: HunkOp,
+    /// Only these changed lines of the hunk (indices into its lines); empty: the whole hunk.
+    pub lines: Vec<usize>,
 }
 
 /// Find in the diff: the query, its matches, the current one.
@@ -194,6 +196,9 @@ pub struct DiffView {
     /// Text selection in the code, and whether a drag is extending it.
     sel: Option<TextSel>,
     dragging: bool,
+    /// A drag that started on a line number selects whole lines from this
+    /// line (its first and last wrapped rows).
+    line_drag: Option<(usize, usize)>,
     /// Height of the header above the toolbar (measured last frame).
     header_h: f32,
     /// ↑/↓ clicked in the toolbar, applied next frame.
@@ -470,6 +475,7 @@ impl DiffView {
         self.reply_text.clear();
         self.sel = None;
         self.dragging = false;
+        self.line_drag = None;
         self.nav_row = None;
         self.offset = 0.0;
         self.jump = Some(0.0);
@@ -588,6 +594,28 @@ impl DiffView {
     /// The row at height `y` within the rows (clamped to the first / last).
     fn row_at(&self, y: f32) -> usize {
         self.row_top.partition_point(|&t| t <= y).saturating_sub(1).min(self.rows.len().saturating_sub(1))
+    }
+
+    /// The changed lines of hunk (fi, hi) the code selection touches (in
+    /// side by side, both halves of a selected row): what "Stage lines" takes.
+    fn selected_lines(&self, fi: usize, hi: usize) -> Vec<usize> {
+        let Some(s) = self.sel.filter(|s| s.a != s.b) else { return vec![] };
+        let (a, b) = s.ordered();
+        let lines = &self.files[fi].hunks[hi].lines;
+        let mut out = std::collections::BTreeSet::new();
+        for r in a.0..=b.0.min(self.rows.len().saturating_sub(1)) {
+            match self.rows[r] {
+                Row::Line(f, h, l, _) if (f, h) == (fi, hi) => {
+                    out.insert(l);
+                }
+                Row::Pair(f, h, o, n, _) if (f, h) == (fi, hi) => {
+                    out.extend(o);
+                    out.extend(n);
+                }
+                _ => {}
+            }
+        }
+        out.into_iter().filter(|&l| matches!(lines[l].kind, LineKind::Added | LineKind::Removed)).collect()
     }
 
     fn row_text(&self, row: usize, side: Side, geo: &Geo) -> Option<RowText<'_>> {
@@ -1062,6 +1090,7 @@ impl DiffView {
         let mut first: Option<Geo> = None;
         let mut new_sel: Option<Option<TextSel>> = None;
         let mut drag_start = false;
+        let mut new_line_drag: Option<(usize, usize)> = None;
         let mut auto_scroll = 0.0;
         let mut copy_now = false;
         let base_id = ui.scope_id().with(id).with("text");
@@ -1331,20 +1360,33 @@ impl DiffView {
                             }
                             let h = &self.files[fi].hunks[hi];
                             let mut x = rect.left() + 6.0;
+                            // With changed lines of this hunk selected, the buttons
+                            // take just those ("Stage 2 lines"), as in Sublime Merge.
+                            let picked = self.selected_lines(fi, hi);
+                            let n = picked.len();
+                            let lines = |verb: &str| format!("{verb} {n} line{}", if n == 1 { "" } else { "s" });
                             // Hunks of a `-w` diff don't match the file: no staging from them.
-                            let ops: &[(HunkOp, &str)] = match self.sections.get(fi) {
-                                _ if ws_on => &[],
-                                Some(Section::Unstaged) => &[(HunkOp::Stage, "Stage hunk"), (HunkOp::Discard, "Discard")],
-                                Some(Section::Staged) => &[(HunkOp::Unstage, "Unstage hunk")],
-                                _ => &[],
+                            let ops: Vec<(HunkOp, String, &str)> = match self.sections.get(fi) {
+                                _ if ws_on => vec![],
+                                Some(Section::Unstaged) if n > 0 => vec![
+                                    (HunkOp::Stage, lines("Stage"), "Stage the selected changed lines only"),
+                                    (HunkOp::Discard, lines("Discard"), "Undo the selected changed lines in the file"),
+                                ],
+                                Some(Section::Staged) if n > 0 => vec![(HunkOp::Unstage, lines("Unstage"), "Unstage the selected changed lines only")],
+                                Some(Section::Unstaged) => vec![
+                                    (HunkOp::Stage, "Stage hunk".into(), "Stage this hunk (select lines to stage just those)"),
+                                    (HunkOp::Discard, "Discard".into(), "Undo this hunk in the file (select lines to discard just those)"),
+                                ],
+                                Some(Section::Staged) => vec![(HunkOp::Unstage, "Unstage hunk".into(), "Unstage this hunk (select lines to unstage just those)")],
+                                _ => vec![],
                             };
-                            for (op, text) in ops {
+                            for (op, text, tip) in &ops {
                                 let pad = ui.spacing().button_padding.x * 2.0 + 6.0;
                                 let bw = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), small.clone(), Color32::WHITE).size().x) + pad;
                                 let r = Rect::from_min_size(pos2(x, rect.top() + 2.0), vec2(bw, row_h - 4.0));
-                                let btn = row_button(ui, r, base_id.with(("hunk-btn", i, *text)), text, &small);
+                                let btn = row_button(ui, r, base_id.with(("hunk-btn", i, *op as u8)), text, &small).on_hover_text(*tip);
                                 if btn.clicked() {
-                                    events.push(DiffEvent::Hunk(DiffAction { file: fi, hunk: hi, op: *op }));
+                                    events.push(DiffEvent::Hunk(DiffAction { file: fi, hunk: hi, op: *op, lines: picked.clone() }));
                                 }
                                 x += bw + 6.0;
                             }
@@ -1479,8 +1521,65 @@ impl DiffView {
                         });
                     }
                 }
+                // line numbers: a click selects the whole line (shift-click
+                // extends the selection to it), a drag selects whole lines;
+                // with changed lines selected, a hunk's buttons take just those
+                let line_rows = |i: usize, side: Side| -> (usize, usize, usize) {
+                    let line = self.row_text(i, side, &geo).map(|t| t.line);
+                    let same = |r: usize| line.is_some() && self.row_text(r, side, &geo).map(|t| t.line) == line;
+                    let (mut f, mut l) = (i, i);
+                    while f > 0 && same(f - 1) {
+                        f -= 1;
+                    }
+                    while same(l + 1) {
+                        l += 1;
+                    }
+                    (f, l, self.row_text(l, side, &geo).map_or(0, |t| t.to - t.from))
+                };
+                for i in visible.clone() {
+                    for &side in sides {
+                        let Some(t) = self.row_text(i, side, &geo) else { continue };
+                        let left = if side == Side::New { geo.x0 + geo.width / 2.0 } else { geo.x0 };
+                        let r = Rect::from_min_max(pos2(left, t.rect.top()), pos2(t.rect.left(), t.rect.bottom()));
+                        if r.width() < 4.0 {
+                            continue;
+                        }
+                        let resp = ui.interact(r, base_id.with(("line-no", i, side as u8)), Sense::click_and_drag());
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if resp.clicked() || resp.drag_started() {
+                            let (f, l, end) = line_rows(i, side);
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            let sel = match self.sel.filter(|s| shift && s.side == side) {
+                                Some(s) => {
+                                    let (a, b) = s.ordered();
+                                    if f < a.0 { TextSel { side, a: b, b: (f, 0) } } else { TextSel { side, a, b: (l, end) } }
+                                }
+                                None => TextSel { side, a: (f, 0), b: (l, end) },
+                            };
+                            new_sel = Some(Some(sel));
+                            if resp.drag_started() {
+                                drag_start = true;
+                                new_line_drag = Some((f, l));
+                            }
+                        }
+                    }
+                }
                 // extend while the button is held (also above / below the view)
-                if self.dragging {
+                if self.dragging && self.line_drag.is_some() {
+                    if let (Some(p), Some(s), Some((f0, l0))) = (pointer, self.sel, self.line_drag) {
+                        let (f, l, end) = line_rows(self.row_at(p.y - geo.top0), s.side);
+                        let (_, _, a_end) = line_rows(l0, s.side);
+                        new_sel = Some(Some(if f >= f0 { TextSel { side: s.side, a: (f0, 0), b: (l, end) } } else { TextSel { side: s.side, a: (l0, a_end), b: (f, 0) } }));
+                        let clip = ui.clip_rect();
+                        if p.y > clip.bottom() - 4.0 {
+                            auto_scroll = row_h;
+                        } else if p.y < clip.top() + 4.0 {
+                            auto_scroll = -row_h;
+                        }
+                    }
+                } else if self.dragging {
                     if let (Some(p), Some(s)) = (pointer, self.sel) {
                         new_sel = Some(Some(TextSel { b: pos_of(p, s.side), ..s }));
                         let clip = ui.clip_rect();
@@ -1847,9 +1946,11 @@ impl DiffView {
         }
         if drag_start {
             self.dragging = true;
+            self.line_drag = new_line_drag;
         }
         if self.dragging && !ui.input(|i| i.pointer.primary_down()) {
             self.dragging = false;
+            self.line_drag = None;
         }
         if self.dragging && auto_scroll != 0.0 {
             self.jump = Some((self.offset + auto_scroll).max(0.0));
